@@ -28,6 +28,7 @@ import {
   UserRound,
   X,
   Zap,
+  MessageCircle,
 } from 'lucide-react';
 import {
   api,
@@ -41,6 +42,7 @@ import {
   type User,
 } from './api';
 import Studio from './Studio';
+import Support from './Support';
 
 type Route = { page: string; id?: string; episode?: number };
 const readRoute = (): Route => {
@@ -246,8 +248,9 @@ export default function App() {
         ? filtered.filter((d) => d.badge === '완결')
         : filtered;
   const activeNav = ['drama', 'watch'].includes(route.page) ? 'home' : route.page;
+  const managing = route.page === 'studio' && !!user && user.role !== 'viewer';
   return (
-    <>
+    <div className={managing ? 'site-layout management-layout' : 'site-layout'}>
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <aside className="left-rail">
@@ -298,7 +301,7 @@ export default function App() {
         className={'app-shell ' + (['watch'].includes(route.page) ? 'watch-shell' : '')}
         ref={shell}
       >
-        {route.page !== 'watch' && (
+        {route.page !== 'watch' && !managing && (
           <header className="app-header">
             <a href="#/home" aria-label="숏핑 홈">
               <Brand small />
@@ -724,7 +727,7 @@ export default function App() {
                 onLogin={async (u) => {
                   setUser(u);
                   await reloadLibrary();
-                  navigate('home');
+                  navigate(u.role === 'viewer' ? 'home' : 'studio');
                   notify('숏핑에 오신 것을 환영해요.');
                 }}
                 info={info}
@@ -768,7 +771,9 @@ export default function App() {
                     {user.role !== 'viewer' && (
                       <button className="studio-entry" onClick={() => navigate('studio')}>
                         <Clapperboard size={22} />
-                        {user.role === 'admin' ? '슈퍼관리자 대시보드' : 'PD 스튜디오'}
+                        {user.role === 'admin'
+                          ? '슈퍼관리자 페이지 바로가기'
+                          : 'PD 관리자 페이지 바로가기'}
                         <ArrowRight size={18} />
                       </button>
                     )}
@@ -808,15 +813,7 @@ export default function App() {
                         </button>
                       )}
                     </details>
-                    <button
-                      className="support-link"
-                      onClick={() =>
-                        info(
-                          '숏핑 고객센터',
-                          '현재 로컬 개발 버전입니다. 실제 고객센터와 운영 정책은 정식 서비스 출시 시 안내할 예정이에요.',
-                        )
-                      }
-                    >
+                    <button className="support-link" onClick={() => navigate('support')}>
                       도움이 필요하신가요? <ChevronRight size={16} />
                     </button>
                   </>
@@ -830,6 +827,7 @@ export default function App() {
                 )}
               </div>
             )}
+            {route.page === 'support' && <Support user={user} notify={notify} />}
             {route.page === 'studio' &&
               (user && user.role !== 'viewer' ? (
                 <Studio
@@ -837,6 +835,8 @@ export default function App() {
                   demo={config.demo}
                   notify={notify}
                   reloadCatalog={reloadCatalog}
+                  section={route.id}
+                  logout={logout}
                 />
               ) : (
                 <Empty
@@ -856,6 +856,7 @@ export default function App() {
               'login',
               'my',
               'studio',
+              'support',
             ].includes(route.page) && (
               <Empty
                 title="페이지를 찾을 수 없어요"
@@ -866,7 +867,7 @@ export default function App() {
             )}
           </>
         )}
-        {route.page !== 'watch' && (
+        {route.page !== 'watch' && !managing && (
           <nav className="bottom-nav" aria-label="주 메뉴">
             {[
               { id: 'home', label: '홈', icon: Home },
@@ -888,6 +889,63 @@ export default function App() {
         )}
       </div>
       <aside className="right-rail">
+        <div className="desktop-account">
+          <a href="#/home">
+            <Brand small />
+          </a>
+          {user ? (
+            <div className="rail-account-card">
+              <button onClick={() => navigate('my')}>
+                <span className="avatar">{user.name[0]}</span>
+                <span>
+                  <strong>{user.name}</strong>
+                  <small>{roleLabel[user.role]}</small>
+                </span>
+              </button>
+              <button onClick={logout} aria-label="사이드바 로그아웃">
+                <LogOut size={18} />
+              </button>
+            </div>
+          ) : (
+            <>
+              <p>오늘, 어떤 이야기에 빠져볼까요?</p>
+              <button className="primary full" onClick={() => navigate('login')}>
+                <UserRound size={17} />
+                로그인 / 회원가입
+              </button>
+            </>
+          )}
+        </div>
+        <nav className="desktop-menu" aria-label="PC 메뉴">
+          {[
+            { id: 'home', label: '홈', icon: Home },
+            { id: 'explore', label: '작품 발견', icon: Clapperboard },
+            { id: 'search', label: '검색', icon: Search },
+            { id: 'membership', label: '숏핑 패스', icon: Crown },
+            { id: 'my', label: '마이페이지', icon: UserRound },
+            { id: 'support', label: '문의하기', icon: MessageCircle },
+            ...(user && user.role !== 'viewer'
+              ? [
+                  {
+                    id: 'studio',
+                    label: user.role === 'admin' ? '슈퍼관리자 페이지' : 'PD 관리자 페이지',
+                    icon: ShieldCheck,
+                  },
+                ]
+              : []),
+          ].map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => navigate(id)}
+              className={activeNav === id ? 'active' : ''}
+              aria-current={activeNav === id ? 'page' : undefined}
+            >
+              <Icon size={20} />
+              <span>{label}</span>
+              <ChevronRight size={14} />
+            </button>
+          ))}
+        </nav>
         <div className="app-intro">
           <span className="mini-label">
             <Smartphone size={13} /> TAKE YOUR STORIES WITH YOU
@@ -1022,7 +1080,7 @@ export default function App() {
           </button>
         </Modal>
       )}
-    </>
+    </div>
   );
 }
 function ArrowUpRightIcon() {
@@ -1169,10 +1227,12 @@ function Footer({ info }: { info: (a: string, b: string) => void }) {
           <button
             key={t}
             onClick={() =>
-              info(
-                t,
-                '현재 로컬 개발 버전입니다. 정식 운영 전 사업자 정보와 서비스 정책을 확정하여 공개할 예정입니다. 이 화면의 작품과 결제는 기능 확인을 위한 데모입니다.',
-              )
+              t === '고객센터'
+                ? navigate('support')
+                : info(
+                    t,
+                    '현재 로컬 개발 버전입니다. 정식 운영 전 사업자 정보와 서비스 정책을 확정하여 공개할 예정입니다. 이 화면의 작품과 결제는 기능 확인을 위한 데모입니다.',
+                  )
             }
           >
             {t}

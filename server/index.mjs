@@ -11,7 +11,7 @@ import { seed, hashPassword } from './seed.mjs';
 
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
 const demo = !production && process.env.ENABLE_DEMO !== 'false';
-const port = Number(process.env.PORT || 5173);
+const port = Number(process.env.PORT || 3033);
 const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
 if (production && (!process.env.DATABASE_URL || !origin.startsWith('https://')))
   throw new Error('Production requires DATABASE_URL and HTTPS APP_ORIGIN');
@@ -358,6 +358,20 @@ app.get('/api/studio', roles('pd', 'admin'), async (req, res) => {
   res.json({
     dramas: ds,
     orders,
+    subscriptions: isAdmin
+      ? await db.all(
+          'SELECT s.user_id,s.expires_at,s.auto_renew,u.name,u.email FROM subscriptions s JOIN users u ON s.user_id=u.id ORDER BY s.expires_at DESC',
+        )
+      : [],
+    operations: isAdmin
+      ? {
+          database: process.env.DATABASE_URL ? 'PostgreSQL' : 'SQLite',
+          environment: production ? 'production' : 'development',
+          demo,
+          androidReady: Boolean(process.env.ANDROID_STORE_URL),
+          iosReady: Boolean(process.env.IOS_STORE_URL),
+        }
+      : null,
     users: isAdmin
       ? await db.all(
           'SELECT id,email,name,role,status,created_at FROM users ORDER BY created_at DESC',
@@ -539,6 +553,49 @@ app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
     'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
     [randomUUID(), req.user.id, `user:${b.role}:${b.status}`, req.params.id, now()],
   );
+  res.json({ ok: true });
+});
+app.get('/api/support', requireAuth, async (req, res) => {
+  const admin = req.user.role === 'admin';
+  res.json(
+    await db.all(
+      'SELECT t.*,u.name FROM support_tickets t JOIN users u ON t.user_id=u.id' +
+        (admin ? '' : ' WHERE t.user_id=?') +
+        ' ORDER BY t.created_at DESC',
+      admin ? [] : [req.user.id],
+    ),
+  );
+});
+app.post('/api/support', requireAuth, async (req, res) => {
+  const b = z
+    .object({
+      category: z.enum(['이용 문의', '결제 · 구독', '콘텐츠 신고', 'PD · 제휴']),
+      title: z.string().trim().min(2).max(100),
+      body: z.string().trim().min(10).max(5000),
+    })
+    .parse(req.body);
+  const id = randomUUID();
+  await db.run(
+    'INSERT INTO support_tickets (id,user_id,category,title,body,created_at) VALUES (?,?,?,?,?,?)',
+    [id, req.user.id, b.category, b.title, b.body, now()],
+  );
+  res.status(201).json({ id });
+});
+app.patch('/api/admin/support/:id', roles('admin'), async (req, res) => {
+  const b = z.object({ reply: z.string().trim().min(2).max(5000) }).parse(req.body);
+  if (!(await db.get('SELECT id FROM support_tickets WHERE id=?', [req.params.id])))
+    fail(404, '문의를 찾을 수 없습니다.');
+  await db.transaction(async () => {
+    await db.run("UPDATE support_tickets SET reply=?,status='answered',replied_at=? WHERE id=?", [
+      b.reply,
+      now(),
+      req.params.id,
+    ]);
+    await db.run(
+      'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
+      [randomUUID(), req.user.id, 'support:replied', req.params.id, now()],
+    );
+  });
   res.json({ ok: true });
 });
 app.use('/api', (req, res) => res.status(404).json({ error: '요청을 찾을 수 없습니다.' }));

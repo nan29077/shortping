@@ -18,7 +18,7 @@ CloudFront/ALB(ACM TLS) → ECS Fargate Node.js 앱 → RDS PostgreSQL. 프런�
 ```dotenv
 NODE_ENV=production
 HOST=0.0.0.0
-PORT=5173
+PORT=3033
 APP_ORIGIN=https://your-confirmed-domain.example
 DATABASE_URL=postgresql://...confirmed-production-connection...
 ENABLE_DEMO=false

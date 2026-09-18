@@ -393,6 +393,89 @@ test('admin user management, audit trail, and protected administrator', async ()
   assert.ok(s.data.logs.length >= 3);
   assert.equal(s.data.users.find((u) => u.id === newUser.id).role, 'pd');
 });
+test('studio exposes operational and subscription data only to administrators', async () => {
+  const a = await request('/studio', { cookie: admin });
+  assert.equal(a.data.operations.database, 'SQLite');
+  assert.equal(a.data.operations.demo, true);
+  assert.ok(Array.isArray(a.data.subscriptions));
+  const p = await request('/studio', { cookie: pd });
+  assert.equal(p.data.operations, null);
+  assert.deepEqual(p.data.subscriptions, []);
+  assert.deepEqual(p.data.users, []);
+  assert.deepEqual(p.data.logs, []);
+});
+test('support tickets are private, validated, and answered only by administrators', async () => {
+  assert.equal((await request('/support')).status, 401);
+  assert.equal(
+    (
+      await request('/support', {
+        method: 'POST',
+        cookie: viewer,
+        body: { category: '이용 문의', title: '짧음', body: '짧음' },
+      })
+    ).status,
+    400,
+  );
+  const submitted = await request('/support', {
+    method: 'POST',
+    cookie: viewer,
+    body: {
+      category: '결제 · 구독',
+      title: '구독 이용 문의',
+      body: '테스트 구독 종료 방법을 알려주세요.',
+    },
+  });
+  assert.equal(submitted.status, 201);
+  const id = submitted.data.id;
+  assert.ok((await request('/support', { cookie: viewer })).data.some((t) => t.id === id));
+  assert.ok(!(await request('/support', { cookie: pd })).data.some((t) => t.id === id));
+  assert.ok((await request('/support', { cookie: admin })).data.some((t) => t.id === id));
+  for (const cookie of [viewer, pd])
+    assert.equal(
+      (
+        await request('/admin/support/' + id, {
+          method: 'PATCH',
+          cookie,
+          body: { reply: '허용되지 않는 답변' },
+        })
+      ).status,
+      403,
+    );
+  assert.equal(
+    (await request('/admin/support/' + id, { method: 'PATCH', cookie: admin, body: { reply: '' } }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (
+      await request('/admin/support/missing', {
+        method: 'PATCH',
+        cookie: admin,
+        body: { reply: '없는 문의 답변' },
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await request('/admin/support/' + id, {
+        method: 'PATCH',
+        cookie: admin,
+        body: { reply: '마이페이지에서 테스트 구독을 종료할 수 있어요.' },
+      })
+    ).status,
+    200,
+  );
+  const ticket = (await request('/support', { cookie: viewer })).data.find((t) => t.id === id);
+  assert.equal(ticket.status, 'answered');
+  assert.match(ticket.reply, /마이페이지/);
+  assert.ok(ticket.replied_at);
+  assert.ok(
+    (await request('/studio', { cookie: admin })).data.logs.some(
+      (l) => l.action === 'support:replied' && l.target_id === id,
+    ),
+  );
+});
 test('logout invalidates the server session', async () => {
   const c = await login('viewer');
   assert.equal((await request('/auth/me', { cookie: c })).data.user.role, 'viewer');

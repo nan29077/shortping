@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $shortpingRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $shortpingRoot
-$shortpingPort = 5173
+$shortpingPort = 3033
 if (Get-NetTCPConnection -LocalPort $shortpingPort -State Listen -ErrorAction SilentlyContinue) {
     Write-Host "Port $shortpingPort is already in use. Check http://localhost:$shortpingPort before starting another server."
     exit 0
