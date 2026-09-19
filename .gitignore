@@ -9,3 +9,6 @@ playwright-report/
 *.tsbuildinfo
 android/
 ios/
+
+# 대화에서 저장된 화면 캡처
+Claude outputs/

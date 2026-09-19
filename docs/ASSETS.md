@@ -1,5 +1,7 @@
 # 생성형 이미지 및 브랜드 에셋
 
+2026-09-19 추가: `public/avatars/block-01.webp`~`block-30.webp`는 내장 `image_gen`으로 만든 숏핑 전용 3D 블록 토이 프로필 30종입니다. 특정 완구 브랜드를 복제하지 않은 오리지널 캐릭터이며, 원본 시트는 `assets/source/shortping-block-avatars-sheet.png`, 분리·최적화 스크립트는 `scripts/prepare-avatars.mjs`입니다.
+
 2026-09-18, 내장 `image_gen` 도구로 생성했습니다. 별도 OpenAI API 키를 사용하지 않았습니다. 모든 최종 이미지를 프로젝트에 저장했으며 외부 생성 경로에 의존하지 않습니다.
 
 | 원본                              | 화면용 에셋               | 용도                                     |
@@ -41,3 +43,15 @@ Use case stylized-concept. Original premium 3D brand mascot for a short drama ap
 ## 글꼴
 
 `@fontsource-variable/noto-sans-kr`, `@fontsource-variable/noto-serif-kr` 패키지의 로컬 웹폰트. 해당 패키지에 포함된 SIL Open Font License 및 Lucide ISC 라이선스를 유지합니다.
+
+## Desktop cinema wallpaper · 2026-09-18
+
+- Generated with the built-in image_gen tool. Original: `assets/source/desktop-cinema-original.png`; optimized web asset: `public/images/desktop-cinema.webp`.
+- Replaces the reused drama-poster background on the right and supplies a coherent background for both desktop margins. Existing thumbnail artwork remains unchanged.
+- Final prompt: Use case: ads-marketing. Create a premium cinematic photographic background for Shortping, a Korean short-form drama streaming app. Asset: a single wide desktop wallpaper, no text or UI, 1536x1024 landscape composition. Original fictional Korean adult drama couple, woman in elegant charcoal coat near the far LEFT edge, man in dark tailored coat near the far RIGHT edge, both looking thoughtfully toward the middle from opposing sides of a nighttime Seoul cinema street. Keep the middle 50 percent mostly atmospheric dark teal negative space, distant wet street reflections and soft emerald/lime cinema lights. Characters placed in outermost quarters, half-body to full-body, real skin, editorial film still, restrained romantic mystery, sophisticated subtle lime green light accents matching #c4f562 and very dark navy #090d10. Outer edges have immersive architectural reflections, film-grain texture, soft bokeh. This image will sit behind a central mobile-width website and its left brand copy/right navigation. Left and right sides should each look beautiful as narrow vertical crops. No readable signs, no typography, no logos, no poster borders, no montage frames. Entire image is one coherent atmospheric scene, not a screenshot.
+
+## 관리자 선택형 메인 여백 테마 · 2026-09-19
+
+내장 `image_gen`으로 시네마틱·밝은 발견·판타지·고전 시네마·중세 서사의 5종을 생성했습니다. 원본은 `assets/source/home-*-original.png`, 화면용 파일은 `public/images/home-*.webp`이며 `scripts/prepare-home-themes.mjs`로 1920×1080 WebP를 다시 만들 수 있습니다.
+
+공통 프롬프트는 중앙 44%를 앱 콘텐츠용 저밀도 영역으로 비우고 인물과 주요 장면을 좌우 끝에 배치하도록 지정했습니다. 각 변형에는 현대 서울의 밤, 햇살이 드는 도심 옥상, 달빛 판타지 궁전, 1930년대 고전 극장가, 중세 성채의 새벽 분위기를 각각 적용했으며 이미지 내부의 문자·로고·UI·워터마크는 모두 제외했습니다.

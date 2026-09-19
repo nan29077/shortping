@@ -1,13 +1,11 @@
 import { useState } from 'react';
 import { ArrowRight, CheckCircle2, Download, Search } from 'lucide-react';
-import { won, type Order, type Drama, type User } from './api';
+import { localDay, won, type Order, type Drama, type User } from './api';
 import { Empty } from './App';
 import type { StudioData } from './Studio';
 
 const date = (value: string) => new Date(value).toLocaleString('ko-KR');
-const localDay = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-function downloadCsv(name: string, rows: (string | number)[][]) {
+export function downloadCsv(name: string, rows: (string | number)[][]) {
   // Quoting alone does not prevent spreadsheet formula execution.
   const safe = (value: string | number) => {
     let text = String(value);
@@ -270,15 +268,17 @@ export function StudioOrders({ orders }: { orders: Order[] }) {
 }
 
 const actionLabel = (action: string) =>
-  action === 'published'
-    ? '작품 공개 승인'
-    : action === 'rejected'
-      ? '작품 반려'
-      : action === 'support:replied'
-        ? '문의 답변 등록'
-        : action.startsWith('user:')
-          ? '회원 권한 · 상태 변경'
-          : action;
+  action === 'pending'
+    ? '작품 심사 요청'
+    : action === 'published'
+      ? '작품 공개 승인'
+      : action === 'rejected'
+        ? '작품 반려'
+        : action === 'support:replied'
+          ? '문의 답변 등록'
+          : action.startsWith('user:')
+            ? '회원 권한 · 상태 변경'
+            : action;
 export function StudioAudit({
   logs,
   dramas,
@@ -476,7 +476,10 @@ export function StudioOperations({ operations: op }: { operations: StudioData['o
 export function StudioGuide({ admin, onCreate }: { admin: boolean; onCreate: () => void }) {
   const steps = admin
     ? [
-        ['콘텐츠 심사', '심사 대기 작품의 소개, 가격, 무료 회차 수와 영상을 검토합니다.'],
+        [
+          '콘텐츠 심사',
+          '작품 검토창에서 포스터, 가격, 무료 회차 수와 모든 회차 영상을 확인합니다. 검토창 안에서 승인·반려할 수 있습니다.',
+        ],
         [
           '승인 또는 반려',
           '승인하면 시청자 화면에 공개됩니다. 수정이 필요하면 반려 사유를 입력해 PD에게 전달합니다.',
@@ -490,7 +493,7 @@ export function StudioGuide({ admin, onCreate }: { admin: boolean; onCreate: () 
         ['작품 정보 등록', '제목, 한 줄 소개, 시놉시스, 장르, 가격과 포스터를 입력합니다.'],
         [
           '회차 업로드',
-          '1화부터 순서대로 제목과 영상을 등록합니다. 업로드 제한은 파일당 250MB입니다.',
+          'H.264 MP4 파일을 1화부터 등록합니다. 파일당 최대 250MB·60분이며 영상 길이는 자동 측정됩니다. 기존 회차의 수정 버튼으로 제목·영상을 교체할 수 있습니다.',
         ],
         [
           '심사 요청과 공개',

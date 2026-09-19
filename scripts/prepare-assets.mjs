@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import ffmpeg from 'ffmpeg-static';
 mkdirSync('public/images', { recursive: true });
-for (const name of ['hero', 'spring', 'shadow', 'moon', 'mascot']) {
+for (const name of ['hero', 'spring', 'shadow', 'moon', 'mascot', 'desktop-cinema']) {
   const source = `assets/source/${name}-original.png`;
   if (existsSync(source))
     await sharp(source)

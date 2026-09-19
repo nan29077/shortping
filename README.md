@@ -28,8 +28,8 @@ PowerShell `./scripts/start-local.ps1`로 숨김 창에서 실행할 수도 있�
 | 계정        | 동작                                                                                                             |
 | ----------- | ---------------------------------------------------------------------------------------------------------------- |
 | 시청자      | 작품 검색·장르 필터, 무료 회차, 잠긴 회차, 전체 작품 소장, 30일 구독, 찜, 이어보기, 구매 내역, 구독 종료         |
-| 업로더 (PD) | 내 작품 대시보드, 작품 등록·수정, 표지 업로드, MP4 회차 업로드·수정, 심사 요청, 반려 의견, 본인 작품 테스트 매출 |
-| 슈퍼관리자  | 전체 작품·매출, 영상 검토, 승인·반려, 회원 역할·이용 상태 변경, 운영 감사 기록                                   |
+| 업로더 (PD) | 내 작품 대시보드, 작품 등록·수정, 표지 업로드, MP4 회차 업로드·수정, 심사 요청, 반려 의견, 마이 방송국(배너·카테고리·진열), 정산 달력·출금 신청, 세무 정보 |
+| 슈퍼관리자  | 전체 작품·매출, 영상 검토, 승인·반려, 회원 관리(유형별 탭·상세·메모), 방송국 추천·노출, 작품 판매 설정, PD 정산·출금 승인, 세무 관리, 구독료·수수료 정책, 메인페이지 관리, 운영 감사 기록 |
 
 추천 검증 순서:
 
@@ -75,16 +75,25 @@ npm run mobile:sync       # 웹 빌드 후 생성된 네이티브 프로젝트�
 ## 구조
 
 ```text
-src/                 시청자 앱, PD·관리자 스튜디오, 공통 디자인
-server/index.mjs     인증·작품·영상 권한·주문·스튜디오 API
-server/db.mjs        SQLite/PostgreSQL 어댑터, 공통 스키마, 트랜잭션
-server/seed.mjs      개발용 계정·작품·회차
-public/images/      실제 서비스 화면용 WebP 이미지
-public/demo/        권한 검사 후 API로 제공하는 시연 티저
-assets/source/      생성 이미지 원본
-tests/              분리 DB 기반 통합 테스트
-docs/               설계, 배포, 검증, 이미지 생성 기록
-data/ uploads/      로컬 영속 데이터 (Git 제외)
+src/                    시청자 앱, PD·관리자 스튜디오, 공통 디자인
+src/Channels.tsx        방송국 목록·상세, 메인 추천 방송국
+src/ChannelStudio.tsx   PD 마이 방송국 관리 (배너·카테고리·작품 진열)
+src/Settlement.tsx      PD 정산 달력·출금 신청·세무 정보
+src/AdminSettlement.tsx 관리자 정산·출금 승인·세무·요금 정책·방송국 관리
+src/AdminMembers.tsx    관리자 회원 관리 (유형별 탭, 상세, 운영 메모)
+server/index.mjs        인증·작품·영상 권한·주문·스튜디오 API
+server/routes-studio.mjs 방송국 API, PD 정산·출금·세무 API
+server/routes-admin.mjs  관리자 정산·세무·회원·요금·방송국 API
+server/settlement.mjs   정산 원장, 수수료·원천징수 계산, 출금 처리
+server/settings.mjs     구독료·수수료율 등 운영 설정값
+server/db.mjs           SQLite/PostgreSQL 어댑터, 공통 스키마, 트랜잭션
+server/seed.mjs         개발용 계정·작품·회차·방송국
+public/images/          실제 서비스 화면용 WebP 이미지
+public/demo/            권한 검사 후 API로 제공하는 시연 티저
+assets/source/          생성 이미지 원본
+tests/                  분리 DB 기반 통합 테스트
+docs/                   설계, 배포, 검증, 이미지 생성 기록
+data/ uploads/          로컬 영속 데이터 (Git 제외)
 ```
 
-후속 배포·통합: [AWS·모바일 확장 안내](docs/DEPLOYMENT.md), [프로세스 설계](docs/PRODUCT.md), [검증 기록](docs/QA.md), [이미지 기록](docs/ASSETS.md).
+후속 배포·통합: [AWS·모바일 확장 안내](docs/DEPLOYMENT.md), [프로세스 설계](docs/PRODUCT.md), [정산·방송국 설계](docs/SETTLEMENT.md), [검증 기록](docs/QA.md), [이미지 기록](docs/ASSETS.md).

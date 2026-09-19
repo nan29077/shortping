@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -29,20 +29,31 @@ import {
   X,
   Zap,
   MessageCircle,
+  Radio,
 } from 'lucide-react';
 import {
   api,
   count,
+  defaultHomeAppearance,
   emptyLibrary,
   won,
   type Detail,
   type Drama,
+  type HomeAppearance,
+  type Channel,
   type Library,
   type Role,
   type User,
 } from './api';
 import Studio from './Studio';
+import {
+  ChannelListPage,
+  ChannelPage,
+  ChannelLogo,
+  FeaturedChannels,
+} from './Channels';
 import Support from './Support';
+import AccountSettings, { Avatar } from './AccountSettings';
 
 type Route = { page: string; id?: string; episode?: number };
 const readRoute = (): Route => {
@@ -64,7 +75,7 @@ export function Brand({ small = false }: { small?: boolean }) {
     </span>
   );
 }
-function Poster({ d, rank, onClick }: { d: Drama; rank?: number; onClick?: () => void }) {
+export function Poster({ d, rank, onClick }: { d: Drama; rank?: number; onClick?: () => void }) {
   return (
     <button
       className="poster-card"
@@ -97,7 +108,13 @@ export default function App() {
       demo: false,
       androidUrl: null as string | null,
       iosUrl: null as string | null,
+      homeAppearance: defaultHomeAppearance,
+      subscriptionPrice: 7900,
+      subscriptionDays: 30,
+      defaultPrice: 3900,
+      defaultFreeEpisodes: 3,
     }),
+    [channels, setChannels] = useState<Channel[]>([]),
     [ready, setReady] = useState(false),
     [loadError, setLoadError] = useState(''),
     [toast, setToast] = useState(''),
@@ -118,16 +135,25 @@ export default function App() {
     }
   }, []);
   const reloadCatalog = useCallback(async () => setDramas(await api<Drama[]>('/dramas')), []);
+  const reloadChannels = useCallback(async () => {
+    try {
+      setChannels(await api<Channel[]>('/channels'));
+    } catch {
+      setChannels([]);
+    }
+  }, []);
   useEffect(() => {
     Promise.all([
       api<{ user: User | null }>('/auth/me'),
       api<typeof config>('/config'),
       api<Drama[]>('/dramas'),
+      api<Channel[]>('/channels').catch(() => [] as Channel[]),
     ])
-      .then(([u, c, d]) => {
+      .then(([u, c, d, ch]) => {
         setUser(u.user);
         setConfig(c);
         setDramas(d);
+        setChannels(ch);
         if (u.user) void reloadLibrary();
       })
       .catch((e) => setLoadError(e.message))
@@ -247,10 +273,28 @@ export default function App() {
       : feed === '완결'
         ? filtered.filter((d) => d.badge === '완결')
         : filtered;
-  const activeNav = ['drama', 'watch'].includes(route.page) ? 'home' : route.page;
+  const newest = [...dramas].sort(
+    (a, b) =>
+      new Date(b.published_at || b.created_at).getTime() -
+      new Date(a.published_at || a.created_at).getTime(),
+  );
+  const freePicks = dramas.filter((d) => d.price === 0 || d.free_episodes >= 5);
+  const featuredChannels = channels.filter((c) => c.featured);
+  const followedChannels = channels.filter((c) => lib.channels.includes(c.id));
+  const activeNav =
+    route.page === 'settings'
+      ? 'my'
+      : ['drama', 'watch'].includes(route.page)
+        ? 'home'
+        : route.page === 'channel'
+          ? 'channels'
+          : route.page;
   const managing = route.page === 'studio' && !!user && user.role !== 'viewer';
+  const siteStyle = {
+    '--home-wallpaper': `url("${config.homeAppearance.image}")`,
+  } as CSSProperties;
   return (
-    <div className={managing ? 'site-layout management-layout' : 'site-layout'}>
+    <div className={managing ? 'site-layout management-layout' : 'site-layout'} style={siteStyle}>
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <aside className="left-rail">
@@ -259,18 +303,14 @@ export default function App() {
         </a>
         <div className="rail-copy">
           <span className="eyebrow">
-            <span /> YOUR NEXT LITTLE OBSESSION
+            <span /> {config.homeAppearance.eyebrow}
           </span>
           <h1>
-            짧지만,
+            {config.homeAppearance.headline}
             <br />
-            <em>깊게 빠지다.</em>
+            <em>{config.homeAppearance.highlight}</em>
           </h1>
-          <p>
-            단 1분, 일상이 드라마가 되는 순간.
-            <br />
-            지금, 당신의 이야기를 발견하세요.
-          </p>
+          <p>{config.homeAppearance.description}</p>
         </div>
         <div className="rail-art">
           <div className="art-orbit" />
@@ -293,9 +333,9 @@ export default function App() {
           <span className="art-spark">✳</span>
         </div>
         <div className="rail-caption">
-          <span className="green-dot" /> 매일 새로운 이야기, 숏핑 오리지널
+          <span className="green-dot" /> {config.homeAppearance.caption}
         </div>
-        <small className="rail-copyright">© 2026 SHORTPING. ALL STORIES MATTER.</small>
+        <small className="rail-copyright">{config.homeAppearance.copyright}</small>
       </aside>
       <div
         className={'app-shell ' + (['watch'].includes(route.page) ? 'watch-shell' : '')}
@@ -325,7 +365,7 @@ export default function App() {
               </button>
               {user ? (
                 <button className="avatar" onClick={() => navigate('my')} aria-label="내 계정">
-                  {user.name[0]}
+                  <Avatar user={user} />
                 </button>
               ) : (
                 <button className="login-link" onClick={() => navigate('login')}>
@@ -352,6 +392,9 @@ export default function App() {
             {route.page === 'home' && (
               <>
                 <nav className="feed-tabs">
+                  <a className="desktop-feed-brand" href="#/home" aria-label="숏핑 홈">
+                    <Brand small />
+                  </a>
                   {['추천', '인기', '신작', '완결'].map((t) => (
                     <button
                       key={t}
@@ -475,6 +518,20 @@ export default function App() {
                     </div>
                   </section>
                 )}
+                {channels.length > 0 && feed === '추천' && genre === '전체' && (
+                  <section className="content-section">
+                    <SectionTitle
+                      title="지금 주목할 방송국"
+                      subtitle="PD가 직접 운영하는 방송국에서 골라 보기"
+                      eyebrow="SHORTPING CHANNELS"
+                      icon={<Radio size={19} className="lime" />}
+                      onMore={() => navigate('channels')}
+                    />
+                    <FeaturedChannels
+                      channels={featuredChannels.length ? featuredChannels : channels}
+                    />
+                  </section>
+                )}
                 <section className="content-section">
                   <SectionTitle
                     title={
@@ -532,6 +589,57 @@ export default function App() {
                     ))}
                   </div>
                 </section>
+                {feed === '추천' && genre === '전체' && (
+                  <>
+                    <section className="content-section">
+                      <SectionTitle
+                        title="새로 올라온 이야기"
+                        subtitle="가장 최근 공개된 숏핑 오리지널"
+                        eyebrow="JUST ARRIVED"
+                        icon={<Sparkles size={19} className="lime" />}
+                        onMore={() => setFeed('신작')}
+                      />
+                      <div className="poster-row">
+                        {newest.slice(0, 6).map((d) => (
+                          <Poster key={d.id} d={d} />
+                        ))}
+                      </div>
+                    </section>
+                    {freePicks.length > 0 && (
+                      <section className="content-section">
+                        <SectionTitle
+                          title="무료로 먼저 만나보세요"
+                          subtitle="첫 화부터 부담 없이 시작하는 작품"
+                          eyebrow="FREE TO START"
+                          icon={<Ticket size={19} className="lime" />}
+                          onMore={() => navigate('explore')}
+                        />
+                        <div className="poster-row">
+                          {freePicks.slice(0, 6).map((d) => (
+                            <Poster key={d.id} d={d} />
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    {followedChannels.length > 0 && (
+                      <section className="content-section">
+                        <SectionTitle
+                          title="구독 중인 방송국의 새 소식"
+                          subtitle="내가 구독한 방송국의 작품"
+                          onMore={() => navigate('channels')}
+                        />
+                        <div className="poster-row">
+                          {dramas
+                            .filter((d) => followedChannels.some((c) => c.id === d.channel_id))
+                            .slice(0, 6)
+                            .map((d) => (
+                              <Poster key={d.id} d={d} />
+                            ))}
+                        </div>
+                      </section>
+                    )}
+                  </>
+                )}
                 <section className="editorial-banner">
                   <span>SHORT STORIES, BIG FEELINGS.</span>
                   <h3>
@@ -606,6 +714,7 @@ export default function App() {
                 favorite={favorite}
                 buy={buy}
                 notify={notify}
+                pass={config.subscriptionPrice}
               />
             )}
             {route.page === 'watch' && (
@@ -619,6 +728,7 @@ export default function App() {
                 favorite={favorite}
                 notify={notify}
                 reloadLibrary={reloadLibrary}
+                pass={config.subscriptionPrice}
               />
             )}
             {route.page === 'membership' && (
@@ -644,7 +754,8 @@ export default function App() {
                     <Crown size={25} className="lime" />
                   </div>
                   <div className="price">
-                    7,900<span>원 / 30일</span>
+                    {new Intl.NumberFormat('ko-KR').format(config.subscriptionPrice)}
+                    <span>원 / {config.subscriptionDays}일</span>
                   </div>
                   <ul>
                     {[
@@ -741,17 +852,64 @@ export default function App() {
                 {user ? (
                   <>
                     <div className="profile-card">
-                      <div className="large-avatar">{user.name[0]}</div>
+                      <button
+                        className="large-avatar"
+                        aria-label="프로필 설정"
+                        onClick={() => navigate('settings')}
+                      >
+                        <Avatar user={user} />
+                      </button>
                       <div>
                         <h2>
                           {user.name}
                           <span className="role-badge">{roleLabel[user.role]}</span>
                         </h2>
                         <p>{user.email}</p>
+                        {user.bio && <p className="profile-bio">{user.bio}</p>}
                       </div>
                       <button onClick={logout} aria-label="로그아웃">
                         <LogOut size={21} />
                       </button>
+                    </div>
+                    <div className="my-summary">
+                      {[
+                        {
+                          label: '소장 작품',
+                          value: lib.purchases.length + '편',
+                          icon: <Ticket size={16} />,
+                        },
+                        {
+                          label: '찜한 작품',
+                          value: lib.favorites.length + '편',
+                          icon: <Heart size={16} />,
+                        },
+                        {
+                          label: '시청 중',
+                          value: lib.history.length + '편',
+                          icon: <CirclePlay size={16} />,
+                        },
+                        {
+                          label: '숏핑 패스',
+                          value: lib.subscription
+                            ? Math.max(
+                                0,
+                                Math.ceil(
+                                  (new Date(lib.subscription.expires_at).getTime() - Date.now()) /
+                                    86400000,
+                                ),
+                              ) + '일 남음'
+                            : '미이용',
+                          icon: <Crown size={16} />,
+                        },
+                      ].map((card) => (
+                        <div key={card.label}>
+                          <span>
+                            {card.icon}
+                            {card.label}
+                          </span>
+                          <strong>{card.value}</strong>
+                        </div>
+                      ))}
                     </div>
                     <button className="my-pass" onClick={() => navigate('membership')}>
                       <Crown className="lime" />
@@ -778,6 +936,43 @@ export default function App() {
                       </button>
                     )}
                     <LibraryView lib={lib} dramas={dramas} />
+                    <div className="section-heading">
+                      <h3>
+                        구독 중인 방송국 <span className="lime">{followedChannels.length}</span>
+                      </h3>
+                      <button onClick={() => navigate('channels')}>
+                        방송국 더 보기 <ChevronRight size={14} />
+                      </button>
+                    </div>
+                    {followedChannels.length ? (
+                      <div className="followed-channels">
+                        {followedChannels.map((c) => (
+                          <button
+                            key={c.id}
+                            className="followed-channel"
+                            onClick={() => navigate('channel/' + c.id)}
+                          >
+                            <ChannelLogo channel={c} size={44} />
+                            <div>
+                              <strong>{c.name}</strong>
+                              <span>
+                                작품 {c.drama_count}편 · 구독자 {count(c.followers)}
+                              </span>
+                            </div>
+                            <ChevronRight size={17} />
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="muted">
+                        마음에 드는 방송국을 구독하면 새 작품 소식을 여기에서 볼 수 있어요.
+                      </p>
+                    )}
+                    <button className="studio-entry" onClick={() => navigate('settings')}>
+                      <UserRound size={20} />
+                      프로필 · 계정 설정
+                      <ChevronRight size={18} />
+                    </button>
                     <details className="order-details">
                       <summary>
                         구매 · 구독 관리 <ChevronDown size={17} />
@@ -827,7 +1022,42 @@ export default function App() {
                 )}
               </div>
             )}
+            {route.page === 'channels' && <ChannelListPage channels={channels} />}
+            {route.page === 'channel' && route.id && (
+              <ChannelPage
+                key={route.id}
+                id={route.id}
+                user={user}
+                lib={lib}
+                notify={notify}
+                reloadLibrary={reloadLibrary}
+              />
+            )}
             {route.page === 'support' && <Support user={user} notify={notify} />}
+            {route.page === 'settings' && (
+              <div className="page-content">
+                <button className="back-link" onClick={() => navigate('my')}>
+                  <ArrowLeft size={16} />
+                  마이페이지
+                </button>
+                {user ? (
+                  <AccountSettings
+                    key={user.id}
+                    user={user}
+                    onUser={setUser}
+                    notify={notify}
+                    onHistoryCleared={reloadLibrary}
+                  />
+                ) : (
+                  <Empty
+                    title="로그인이 필요해요"
+                    text="로그인 후 계정 설정을 변경할 수 있어요."
+                    action={() => navigate('login')}
+                    label="로그인하기"
+                  />
+                )}
+              </div>
+            )}
             {route.page === 'studio' &&
               (user && user.role !== 'viewer' ? (
                 <Studio
@@ -835,8 +1065,14 @@ export default function App() {
                   demo={config.demo}
                   notify={notify}
                   reloadCatalog={reloadCatalog}
+                  reloadChannels={reloadChannels}
                   section={route.id}
                   logout={logout}
+                  onUser={setUser}
+                  reloadLibrary={reloadLibrary}
+                  onAppearance={(homeAppearance: HomeAppearance) =>
+                    setConfig((current) => ({ ...current, homeAppearance }))
+                  }
                 />
               ) : (
                 <Empty
@@ -852,11 +1088,14 @@ export default function App() {
               'search',
               'drama',
               'watch',
+              'channels',
+              'channel',
               'membership',
               'login',
               'my',
               'studio',
               'support',
+              'settings',
             ].includes(route.page) && (
               <Empty
                 title="페이지를 찾을 수 없어요"
@@ -872,6 +1111,7 @@ export default function App() {
             {[
               { id: 'home', label: '홈', icon: Home },
               { id: 'explore', label: '발견', icon: Clapperboard },
+              { id: 'channels', label: '방송국', icon: Radio },
               { id: 'membership', label: '숏핑 패스', icon: Crown },
               { id: 'my', label: '마이', icon: UserRound },
             ].map(({ id, label, icon: Icon }) => (
@@ -896,7 +1136,9 @@ export default function App() {
           {user ? (
             <div className="rail-account-card">
               <button onClick={() => navigate('my')}>
-                <span className="avatar">{user.name[0]}</span>
+                <span className="avatar">
+                  <Avatar user={user} />
+                </span>
                 <span>
                   <strong>{user.name}</strong>
                   <small>{roleLabel[user.role]}</small>
@@ -920,6 +1162,7 @@ export default function App() {
           {[
             { id: 'home', label: '홈', icon: Home },
             { id: 'explore', label: '작품 발견', icon: Clapperboard },
+            { id: 'channels', label: '방송국', icon: Radio },
             { id: 'search', label: '검색', icon: Search },
             { id: 'membership', label: '숏핑 패스', icon: Crown },
             { id: 'my', label: '마이페이지', icon: UserRound },
@@ -1057,7 +1300,11 @@ export default function App() {
               <img src={checkout.image} alt="" />
             )}
             <div>
-              <h3>{checkout === 'subscription' ? '숏핑 패스 · 30일' : checkout.title}</h3>
+              <h3>
+                {checkout === 'subscription'
+                  ? `숏핑 패스 · ${config.subscriptionDays}일`
+                  : checkout.title}
+              </h3>
               <p>
                 {checkout === 'subscription'
                   ? '모든 공개 작품 무제한 시청'
@@ -1067,7 +1314,9 @@ export default function App() {
           </div>
           <div className="checkout-price">
             <span>결제 금액</span>
-            <strong>{won(checkout === 'subscription' ? 7900 : checkout.price)}</strong>
+            <strong>
+              {won(checkout === 'subscription' ? config.subscriptionPrice : checkout.price)}
+            </strong>
           </div>
           <div className="info-box">
             <ShieldCheck size={18} />
@@ -1162,12 +1411,16 @@ export function Modal({
   title,
   children,
   close,
+  className = '',
 }: {
   title: string;
   children: React.ReactNode;
   close: () => void;
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement;
     const old = document.body.style.overflow;
@@ -1176,6 +1429,11 @@ export function Modal({
       ref.current?.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex="0"]');
     focusables()?.[0]?.focus();
     const trap = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeRef.current();
+        return;
+      }
       if (e.key !== 'Tab') return;
       const f = focusables();
       if (!f?.length) return;
@@ -1199,7 +1457,7 @@ export function Modal({
   return (
     <div className="modal-backdrop" onClick={close}>
       <div
-        className="modal"
+        className={'modal ' + className}
         ref={ref}
         role="dialog"
         aria-modal="true"
@@ -1392,6 +1650,7 @@ function DramaPage({
   favorite,
   buy,
   notify,
+  pass,
 }: {
   id: string;
   user: User | null;
@@ -1399,6 +1658,7 @@ function DramaPage({
   favorite: (d: Drama) => void;
   buy: (d: Drama | 'subscription') => void;
   notify: (s: string) => void;
+  pass: number;
 }) {
   const [d, setD] = useState<Detail | null>(null),
     [error, setError] = useState('');
@@ -1470,7 +1730,11 @@ function DramaPage({
           <h3>
             전체 에피소드 <span>{d.episode_count}</span>
           </h3>
-          <span>첫 {d.free_episodes}화 무료</span>
+          <span>
+            {d.price === 0
+              ? '전 회차 무료'
+              : `첫 ${Math.min(d.free_episodes, d.episode_count)}화 무료`}
+          </span>
         </div>
         <div className="episode-grid">
           {d.episodes.map((e) => (
@@ -1499,7 +1763,7 @@ function DramaPage({
             <Crown size={21} />
             <span>
               <strong>숏핑 패스로 무제한 정주행</strong>
-              <small>월 7,900원으로 모든 이야기</small>
+              <small>{won(pass)}으로 모든 이야기</small>
             </span>
             <ChevronRight size={18} />
           </button>
@@ -1533,6 +1797,7 @@ function WatchPage({
   favorite,
   notify,
   reloadLibrary,
+  pass,
 }: {
   id: string;
   number: number;
@@ -1542,6 +1807,7 @@ function WatchPage({
   favorite: (d: Drama) => void;
   notify: (s: string) => void;
   reloadLibrary: () => Promise<void>;
+  pass: number;
 }) {
   const [d, setD] = useState<Detail | null>(null),
     [error, setError] = useState(''),
@@ -1633,7 +1899,7 @@ function WatchPage({
                 전체 소장 · {won(d.price)}
               </button>
               <button className="secondary full" onClick={() => buy('subscription')}>
-                <Crown size={18} /> 숏핑 패스 · 7,900원
+                <Crown size={18} /> 숏핑 패스 · {won(pass)}
               </button>
               <small>구매한 작품은 마이페이지에서 확인하세요.</small>
             </div>
@@ -1657,7 +1923,12 @@ function WatchPage({
               onPause={() => void save(true)}
               onEnded={() => {
                 void save(true);
-                if (number < d.episode_count) navigate('watch/' + id + '/' + (number + 1));
+                if (
+                  user?.auto_next !== false &&
+                  number < d.episode_count &&
+                  !d.episodes.find((e) => e.number === number + 1)?.locked
+                )
+                  navigate('watch/' + id + '/' + (number + 1));
               }}
             />
             {videoError && (

@@ -38,3 +38,7 @@ PD 작성 → draft → 회차 파일 등록 → pending → 관리자 영상·�
 ## 데이터
 
 users, sessions, dramas, episodes, favorites, history, orders, entitlements, subscriptions, audit_logs, media_files. UUID와 ISO UTC 문자열·정수 화폐 단위를 사용하며 SQLite 전용 비즈니스 SQL을 피했습니다. 운영 PostgreSQL 연결은 `pg` 어댑터로 전환합니다. 스키마 생성은 멱등적이며 후속 컬럼 변경은 버전별 마이그레이션 추가가 필요합니다.
+
+## 방송국과 정산
+
+PD는 마이 방송국을 열어 자신의 작품을 카테고리로 진열하고, 시청자는 메인 화면과 방송국 메뉴에서 방송국 단위로 작품을 찾습니다. 판매가 발생하면 주문과 같은 트랜잭션에서 정산 원장이 기록되고, 판매 확정 → 출금 가능 → 출금 신청 → 지급 완료 순으로 상태가 바뀝니다. 사업자와 비사업자를 구분해 세금계산서와 원천징수로 나누어 처리합니다. 자세한 흐름은 [정산·방송국 설계](SETTLEMENT.md)에 정리했습니다.

@@ -3,6 +3,37 @@ export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
   return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
 }
+// 방송국(마이 방송국) demo data: two uploaders, each with their own station shelf.
+export const secondPd = 'demo-pd-2';
+export const pd2Dramas = new Set(['moon', 'promise', 'summer']);
+export const seedChannels = [
+  [
+    'channel-shortping',
+    'demo-pd',
+    '스튜디오 숏핑',
+    'shortping-studio',
+    '설렘부터 서스펜스까지, 매주 새로운 숏폼 드라마',
+    '숏핑 오리지널을 만드는 제작 스튜디오입니다. 로맨스와 스릴러를 중심으로 매주 새로운 이야기를 공개합니다.',
+    '/images/hero.webp',
+    '#c4f562',
+    1,
+    0,
+    ['신작', '로맨스', '스릴러'],
+  ],
+  [
+    'channel-moonlight',
+    secondPd,
+    '달빛 스튜디오',
+    'moonlight',
+    '시간을 건너는 사랑 이야기',
+    '사극 판타지와 청춘 감성을 전문으로 하는 스튜디오입니다. 달빛 아래 너, 천 년의 약속을 제작했습니다.',
+    '/images/moon.webp',
+    '#b5aecf',
+    1,
+    1,
+    ['판타지', '청춘', '완결작'],
+  ],
+];
 export const seedDramas = [
   [
     'midnight',
@@ -103,16 +134,17 @@ export const seedDramas = [
 ];
 export async function seed(db) {
   const now = new Date().toISOString();
-  for (const [role, name] of [
-    ['admin', '숏핑 관리자'],
-    ['pd', '스튜디오 숏핑'],
-    ['viewer', '숏핑러'],
+  for (const [id, role, name] of [
+    ['demo-admin', 'admin', '숏핑 관리자'],
+    ['demo-pd', 'pd', '스튜디오 숏핑'],
+    [secondPd, 'pd', '달빛 스튜디오'],
+    ['demo-viewer', 'viewer', '숏핑러'],
   ]) {
     await db.run(
       'INSERT INTO users (id,email,name,password,role,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
       [
-        `demo-${role}`,
-        `${role}@shortping.local`,
+        id,
+        `${id.replace('demo-', '')}@shortping.local`,
         name,
         hashPassword(randomBytes(32).toString('hex')),
         role,
@@ -133,10 +165,10 @@ export async function seed(db) {
     price,
   ] of seedDramas) {
     await db.run(
-      'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,accent,badge,status,price,views,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
+      'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,accent,badge,status,price,views,created_at,published_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
       [
         id,
-        'demo-pd',
+        pd2Dramas.has(id) ? secondPd : 'demo-pd',
         title,
         tagline,
         synopsis,
@@ -147,6 +179,7 @@ export async function seed(db) {
         'published',
         price,
         views,
+        now,
         now,
       ],
     );
@@ -174,6 +207,34 @@ export async function seed(db) {
           '/demo/preview.mp4',
           12,
         ],
+      );
+  }
+  for (const [
+    id,
+    owner,
+    name,
+    slug,
+    tagline,
+    description,
+    banner,
+    accent,
+    featured,
+    order,
+    categories,
+  ] of seedChannels) {
+    await db.run(
+      "INSERT INTO channels (id,owner_id,name,slug,tagline,description,banner,logo,accent,status,featured,featured_order,created_at) VALUES (?,?,?,?,?,?,?,'',?,'active',?,?,?) ON CONFLICT(id) DO NOTHING",
+      [id, owner, name, slug, tagline, description, banner, accent, featured, order, now],
+    );
+    await db.run('UPDATE dramas SET channel_id=? WHERE owner_id=? AND channel_id IS NULL', [
+      id,
+      owner,
+    ]);
+    let sort = 0;
+    for (const category of categories)
+      await db.run(
+        'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?) ON CONFLICT(channel_id,name) DO NOTHING',
+        [`${id}-${sort}`, id, category, sort++],
       );
   }
 }

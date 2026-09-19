@@ -3,11 +3,24 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import multer from 'multer';
 import { z } from 'zod';
-import { randomUUID, randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { mkdirSync, openSync, readSync, closeSync, unlinkSync } from 'node:fs';
+import {
+  randomUUID,
+  randomBytes,
+  randomInt,
+  scryptSync,
+  timingSafeEqual,
+  createHash,
+} from 'node:crypto';
+import { mkdirSync, openSync, readSync, closeSync, unlinkSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { openDb, migrate } from './db.mjs';
 import { seed, hashPassword } from './seed.mjs';
+import { inspectMedia } from './media.mjs';
+import { loadSettings } from './settings.mjs';
+import { backfillEntries, recordSale, refreshEntries } from './settlement.mjs';
+import { studioRoutes } from './routes-studio.mjs';
+import { adminRoutes } from './routes-admin.mjs';
+import { appearanceFromSettings } from './home-appearance.mjs';
 
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
 const demo = !production && process.env.ENABLE_DEMO !== 'false';
@@ -18,6 +31,21 @@ if (production && (!process.env.DATABASE_URL || !origin.startsWith('https://')))
 const db = await openDb();
 await migrate(db);
 if (demo) await seed(db);
+const randomAvatar = () => `/avatars/block-${String(randomInt(1, 31)).padStart(2, '0')}.webp`;
+async function ensureProfile(id) {
+  await db.run(
+    'INSERT INTO user_profiles (user_id,avatar) VALUES (?,?) ON CONFLICT(user_id) DO NOTHING',
+    [id, randomAvatar()],
+  );
+  await db.run(
+    "UPDATE user_profiles SET avatar=? WHERE user_id=? AND avatar LIKE '/avatars/ping-%.svg'",
+    [randomAvatar(), id],
+  );
+  return db.get('SELECT avatar,bio,auto_next FROM user_profiles WHERE user_id=?', [id]);
+}
+for (const user of await db.all('SELECT id FROM users')) await ensureProfile(user.id);
+const startupSettings = await loadSettings(db);
+await backfillEntries(db, startupSettings);
 const app = express();
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY_HOPS) app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS));
@@ -50,13 +78,20 @@ app.use('/api', (req, res, next) => {
     return res.status(403).json({ error: '허용되지 않은 요청입니다.' });
   next();
 });
+// Integration tests drive hundreds of calls from one address; production keeps the real limits.
+const testing = process.env.NODE_ENV === 'test';
 app.use(
   '/api',
-  rateLimit({ windowMs: 60_000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false }),
+  rateLimit({
+    windowMs: 60_000,
+    limit: testing ? 20_000 : 240,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }),
 );
 const authLimiter = rateLimit({
   windowMs: 15 * 60_000,
-  limit: 40,
+  limit: testing ? 2_000 : 40,
   message: { error: '잠시 후 다시 시도해 주세요.' },
 });
 const fail = (status, message) => {
@@ -66,7 +101,18 @@ const fail = (status, message) => {
 };
 const now = () => new Date().toISOString();
 const publicUser = (u) =>
-  u ? { id: u.id, name: u.name, email: u.email, role: u.role, status: u.status } : null;
+  u
+    ? {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        avatar: u.avatar,
+        bio: u.bio || '',
+        auto_next: u.auto_next !== 0,
+      }
+    : null;
 const cookieToken = (req) => {
   const raw = req.headers.cookie
     ?.split(';')
@@ -80,7 +126,7 @@ app.use('/api', async (req, res, next) => {
     const token = cookieToken(req);
     req.user = token
       ? await db.get(
-          'SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?',
+          'SELECT u.*,p.avatar,p.bio,p.auto_next FROM users u JOIN sessions s ON s.user_id=u.id LEFT JOIN user_profiles p ON p.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?',
           [token, now(), 'active'],
         )
       : null;
@@ -107,6 +153,7 @@ async function session(req, res, user) {
     user.id,
     new Date(Date.now() + 7 * 86400000).toISOString(),
   ]);
+  await db.run('UPDATE users SET last_login_at=? WHERE id=?', [now(), user.id]);
   res.cookie('sp_session', token, {
     httpOnly: true,
     sameSite: 'lax',
@@ -114,7 +161,7 @@ async function session(req, res, user) {
     maxAge: 7 * 86400000,
     path: '/',
   });
-  res.json({ user: publicUser(user) });
+  res.json({ user: publicUser({ ...user, ...(await ensureProfile(user.id)) }) });
 }
 const credentials = z.object({
   email: z
@@ -123,13 +170,19 @@ const credentials = z.object({
     .transform((v) => v.toLowerCase()),
   password: z.string().min(8).max(128),
 });
-app.get('/api/config', (req, res) =>
+app.get('/api/config', async (req, res) => {
+  const settings = await loadSettings(db);
   res.json({
     demo,
     androidUrl: process.env.ANDROID_STORE_URL || null,
     iosUrl: process.env.IOS_STORE_URL || null,
-  }),
-);
+    subscriptionPrice: settings.subscription_price,
+    subscriptionDays: settings.subscription_days,
+    defaultPrice: settings.default_drama_price,
+    defaultFreeEpisodes: settings.default_free_episodes,
+    homeAppearance: appearanceFromSettings(settings),
+  });
+});
 app.get('/api/health', (req, res) => res.json({ ok: true, database: db.engine }));
 app.get('/api/auth/me', (req, res) => res.json({ user: publicUser(req.user) }));
 app.post('/api/auth/demo', authLimiter, async (req, res) => {
@@ -169,8 +222,86 @@ app.post('/api/auth/logout', async (req, res) => {
   await db.run('DELETE FROM sessions WHERE token=?', [cookieToken(req)]);
   res.clearCookie('sp_session', { path: '/' }).json({ ok: true });
 });
+app.patch('/api/account/profile', requireAuth, async (req, res) => {
+  const b = z
+    .object({
+      name: z.string().trim().min(2).max(30),
+      bio: z.string().trim().max(160),
+      auto_next: z.boolean(),
+      avatar: z
+        .string()
+        .regex(
+          /^\/(avatars\/block-(0[1-9]|[12][0-9]|30)\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/,
+        ),
+    })
+    .parse(req.body);
+  const profile = await ensureProfile(req.user.id);
+  if (b.avatar.startsWith('/avatars/') && b.avatar !== profile.avatar)
+    fail(403, '기본 아바타는 계정에 자동 배정됩니다.');
+  if (b.avatar.startsWith('/uploads/')) {
+    const file = await db.get('SELECT owner_id FROM media_files WHERE url=?', [b.avatar]);
+    if (file?.owner_id !== req.user.id)
+      fail(403, '본인이 업로드한 프로필 이미지만 사용할 수 있어요.');
+  }
+  await checkMedia(req, b.avatar);
+  await db.transaction(async () => {
+    await db.run('UPDATE users SET name=? WHERE id=?', [b.name, req.user.id]);
+    await db.run('UPDATE user_profiles SET avatar=?,bio=?,auto_next=? WHERE user_id=?', [
+      b.avatar,
+      b.bio,
+      b.auto_next ? 1 : 0,
+      req.user.id,
+    ]);
+  });
+  res.json({ user: publicUser({ ...req.user, ...b, auto_next: b.auto_next ? 1 : 0 }) });
+});
+app.get('/api/account/sessions', requireAuth, async (req, res) => {
+  const sessions = await db.all(
+    'SELECT expires_at,token FROM sessions WHERE user_id=? AND expires_at>? ORDER BY expires_at DESC',
+    [req.user.id, now()],
+  );
+  res.json(
+    sessions.map((s) => ({ current: s.token === cookieToken(req), expires_at: s.expires_at })),
+  );
+});
+app.post('/api/account/revoke-sessions', requireAuth, async (req, res) => {
+  await db.run('DELETE FROM sessions WHERE user_id=? AND token<>?', [
+    req.user.id,
+    cookieToken(req),
+  ]);
+  res.json({ ok: true });
+});
+app.post('/api/account/password', requireAuth, authLimiter, async (req, res) => {
+  if (req.user.id.startsWith('demo-'))
+    fail(400, '공용 테스트 계정은 비밀번호를 변경할 수 없습니다.');
+  const b = z
+    .object({
+      currentPassword: z.string().min(1).max(128),
+      newPassword: z.string().min(8).max(128),
+    })
+    .parse(req.body);
+  const [salt, hash] = req.user.password.split(':');
+  if (!timingSafeEqual(scryptSync(b.currentPassword, salt, 64), Buffer.from(hash, 'hex')))
+    fail(400, '현재 비밀번호가 일치하지 않습니다.');
+  if (b.currentPassword === b.newPassword) fail(400, '기존과 다른 비밀번호를 입력해 주세요.');
+  await db.transaction(async () => {
+    await db.run('UPDATE users SET password=? WHERE id=?', [
+      hashPassword(b.newPassword),
+      req.user.id,
+    ]);
+    await db.run('DELETE FROM sessions WHERE user_id=? AND token<>?', [
+      req.user.id,
+      cookieToken(req),
+    ]);
+  });
+  res.json({ ok: true });
+});
+app.delete('/api/account/history', requireAuth, async (req, res) => {
+  await db.run('DELETE FROM history WHERE user_id=?', [req.user.id]);
+  res.json({ ok: true });
+});
 const catalogSql =
-  'SELECT d.*, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_count FROM dramas d';
+  'SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_count FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id';
 app.get('/api/dramas', async (req, res) =>
   res.json(await db.all(catalogSql + " WHERE d.status='published' ORDER BY d.views DESC")),
 );
@@ -190,6 +321,7 @@ app.get('/api/dramas/:id', async (req, res) => {
   });
 });
 async function hasAccess(user, d) {
+  if (d.price === 0) return true;
   if (!user) return false;
   if (user.role === 'admin' || user.id === d.owner_id) return true;
   return !!(
@@ -236,6 +368,9 @@ app.get('/api/library', requireAuth, async (req, res) => {
     purchases: (await db.all('SELECT drama_id FROM entitlements WHERE user_id=?', [u])).map(
       (x) => x.drama_id,
     ),
+    channels: (await db.all('SELECT channel_id FROM channel_follows WHERE user_id=?', [u])).map(
+      (x) => x.channel_id,
+    ),
     subscription:
       (await db.get('SELECT * FROM subscriptions WHERE user_id=? AND expires_at>?', [u, now()])) ||
       null,
@@ -277,6 +412,7 @@ app.post('/api/history', requireAuth, async (req, res) => {
 });
 app.post('/api/checkout', requireAuth, async (req, res) => {
   if (!demo) fail(503, '결제 서비스 연동 준비 중입니다.');
+  const settings = await loadSettings(db);
   const b = z
     .object({
       kind: z.enum(['drama', 'subscription']),
@@ -294,22 +430,23 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
       if (existing.user_id !== req.user.id) fail(409, '중복 요청입니다.');
       return existing;
     }
-    let amount = 7900,
-      dramaId = null;
+    let amount = settings.subscription_price,
+      dramaId = null,
+      drama = null;
     if (b.kind === 'drama') {
-      const d = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
+      drama = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
         b.dramaId || '',
       ]);
-      if (!d) fail(404, '작품을 찾을 수 없습니다.');
+      if (!drama) fail(404, '작품을 찾을 수 없습니다.');
       if (
         await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [
           req.user.id,
-          d.id,
+          drama.id,
         ])
       )
         fail(409, '이미 구매한 작품입니다.');
-      amount = d.price;
-      dramaId = d.id;
+      amount = drama.price;
+      dramaId = drama.id;
     } else if (
       await db.get('SELECT user_id FROM subscriptions WHERE user_id=? AND expires_at>?', [
         req.user.id,
@@ -317,20 +454,31 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
       ])
     )
       fail(409, '이미 구독 중입니다.');
-    const id = randomUUID();
+    const id = randomUUID(),
+      createdAt = now();
     await db.run(
       'INSERT INTO orders (id,user_id,drama_id,kind,amount,status,idempotency_key,created_at) VALUES (?,?,?,?,?,?,?,?)',
-      [id, req.user.id, dramaId, b.kind, amount, 'test_paid', b.idempotencyKey, now()],
+      [id, req.user.id, dramaId, b.kind, amount, 'test_paid', b.idempotencyKey, createdAt],
     );
-    if (b.kind === 'drama')
+    if (b.kind === 'drama') {
       await db.run(
         'INSERT INTO entitlements (user_id,drama_id,order_id) VALUES (?,?,?) ON CONFLICT DO NOTHING',
         [req.user.id, dramaId, id],
       );
-    else
+      // The seller ledger is written with the order so settlement can never drift from sales.
+      await recordSale(db, {
+        order: { id, kind: b.kind, amount, created_at: createdAt },
+        drama,
+        settings,
+      });
+    } else
       await db.run(
         'INSERT INTO subscriptions (user_id,order_id,expires_at,auto_renew) VALUES (?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET order_id=excluded.order_id,expires_at=excluded.expires_at,auto_renew=0',
-        [req.user.id, id, new Date(Date.now() + 30 * 86400000).toISOString()],
+        [
+          req.user.id,
+          id,
+          new Date(Date.now() + settings.subscription_days * 86400000).toISOString(),
+        ],
       );
     return { id, amount, status: 'test_paid' };
   });
@@ -374,7 +522,7 @@ app.get('/api/studio', roles('pd', 'admin'), async (req, res) => {
       : null,
     users: isAdmin
       ? await db.all(
-          'SELECT id,email,name,role,status,created_at FROM users ORDER BY created_at DESC',
+          'SELECT u.id,u.email,u.name,u.role,u.status,u.created_at,p.avatar FROM users u LEFT JOIN user_profiles p ON p.user_id=u.id ORDER BY u.created_at DESC',
         )
       : [],
     logs: isAdmin
@@ -399,13 +547,46 @@ async function checkMedia(req, url) {
     if (!file || (file.owner_id !== req.user.id && req.user.role !== 'admin'))
       fail(403, '본인이 업로드한 파일만 사용할 수 있어요.');
   }
+  if (!existsSync(mediaPath(url)))
+    fail(400, '등록된 파일을 찾을 수 없습니다. 다시 업로드해 주세요.');
+}
+const mediaPath = (url) =>
+  url.startsWith('/uploads/')
+    ? path.join(uploadDir, path.basename(url))
+    : path.resolve('public', url.slice(1));
+async function contentIssues(d) {
+  const episodes = await db.all('SELECT * FROM episodes WHERE drama_id=? ORDER BY number', [d.id]);
+  const issues = [];
+  if (!existsSync(mediaPath(d.image))) issues.push('포스터 파일을 찾을 수 없습니다.');
+  if (!episodes.length) issues.push('영상이 포함된 회차를 먼저 등록해 주세요.');
+  if (episodes.some((e, i) => e.number !== i + 1))
+    issues.push('1화부터 빠진 회차 없이 영상을 등록해 주세요.');
+  for (const e of episodes) {
+    if (!e.video || !existsSync(mediaPath(e.video)))
+      issues.push(`${e.number}화 영상 파일을 찾을 수 없습니다.`);
+    if (!demo && e.video.startsWith('/demo/'))
+      issues.push(`${e.number}화 샘플 영상을 실제 영상으로 교체해 주세요.`);
+  }
+  return { episodes, issues };
+}
+async function contentEvent(req, id, status, note = '') {
+  const timestamp = now();
+  await db.run(
+    'INSERT INTO content_reviews (id,drama_id,actor_id,status,note,created_at) VALUES (?,?,?,?,?,?)',
+    [randomUUID(), id, req.user.id, status, note, timestamp],
+  );
+  await db.run(
+    'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
+    [randomUUID(), req.user.id, status, id, timestamp],
+  );
 }
 app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
   const b = dramaSchema.parse(req.body),
     id = randomUUID();
   await checkMedia(req, b.image);
+  const channel = await db.get('SELECT id FROM channels WHERE owner_id=?', [req.user.id]);
   await db.run(
-    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,price,free_episodes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,price,free_episodes,created_at,channel_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     [
       id,
       req.user.id,
@@ -417,41 +598,61 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
       b.price,
       b.free_episodes,
       now(),
+      channel?.id || null,
     ],
   );
   res.json({ id });
 });
-async function owned(req) {
-  const d = await db.get('SELECT * FROM dramas WHERE id=?', [req.params.id]);
+async function owned(req, lock = false) {
+  const d = await db.get(
+    'SELECT * FROM dramas WHERE id=?' + (lock && db.engine === 'postgresql' ? ' FOR UPDATE' : ''),
+    [req.params.id],
+  );
   if (!d) fail(404, '작품을 찾을 수 없습니다.');
   if (req.user.role !== 'admin' && d.owner_id !== req.user.id)
     fail(403, '본인 작품만 수정할 수 있습니다.');
   return d;
 }
-app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
+app.get('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
   const d = await owned(req);
-  if (d.status === 'published' || d.status === 'pending')
-    fail(409, '임시저장 또는 반려된 작품만 수정할 수 있어요.');
-  const b = dramaSchema.parse(req.body);
-  await checkMedia(req, b.image);
-  await db.run(
-    'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,price=?,free_episodes=? WHERE id=?',
-    [b.title, b.tagline, b.synopsis, b.genre, b.image, b.price, b.free_episodes, d.id],
+  const { episodes, issues } = await contentIssues(d);
+  const owner = await db.get('SELECT name FROM users WHERE id=?', [d.owner_id]);
+  const reviews = await db.all(
+    'SELECT r.*,u.name FROM content_reviews r JOIN users u ON u.id=r.actor_id WHERE drama_id=? ORDER BY r.created_at DESC',
+    [d.id],
   );
+  res.json({
+    ...d,
+    episode_count: episodes.length,
+    episodes,
+    issues,
+    reviews,
+    owner_name: owner.name,
+  });
+});
+app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
+  await db.transaction(async () => {
+    const d = await owned(req, true);
+    if (d.status === 'published' || d.status === 'pending')
+      fail(409, '임시저장 또는 반려된 작품만 수정할 수 있어요.');
+    const b = dramaSchema.parse(req.body);
+    await checkMedia(req, b.image);
+    await db.run(
+      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,price=?,free_episodes=? WHERE id=?',
+      [b.title, b.tagline, b.synopsis, b.genre, b.image, b.price, b.free_episodes, d.id],
+    );
+  });
   res.json({ ok: true });
 });
 app.post('/api/studio/dramas/:id/submit', roles('pd', 'admin'), async (req, res) => {
-  const d = await owned(req);
-  if (!['draft', 'rejected'].includes(d.status)) fail(409, '현재 상태에서는 제출할 수 없습니다.');
-  if (!(await db.get("SELECT id FROM episodes WHERE drama_id=? AND video<>''", [d.id])))
-    fail(400, '영상이 포함된 회차를 먼저 등록해 주세요.');
-  const episodes = await db.all(
-    'SELECT number,video FROM episodes WHERE drama_id=? ORDER BY number',
-    [d.id],
-  );
-  if (episodes.some((e, index) => e.number !== index + 1 || !e.video))
-    fail(400, '1화부터 빠진 회차 없이 영상을 등록해 주세요.');
-  await db.run("UPDATE dramas SET status='pending',review_note='' WHERE id=?", [d.id]);
+  await db.transaction(async () => {
+    const d = await owned(req, true);
+    if (!['draft', 'rejected'].includes(d.status)) fail(409, '현재 상태에서는 제출할 수 없습니다.');
+    const { issues } = await contentIssues(d);
+    if (issues.length) fail(400, issues.join(' '));
+    await db.run("UPDATE dramas SET status='pending',review_note='' WHERE id=?", [d.id]);
+    await contentEvent(req, d.id, 'pending');
+  });
   res.json({ ok: true });
 });
 const storage = multer.diskStorage({
@@ -471,9 +672,13 @@ const upload = multer({
   fileFilter: (req, file, cb) =>
     cb(null, ['video/mp4', 'image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)),
 });
-app.post('/api/studio/upload', roles('pd', 'admin'), upload.single('file'), async (req, res) => {
+async function uploadMedia(req, res) {
   const f = req.file;
   if (!f) fail(400, 'MP4, JPG, PNG, WEBP 파일만 업로드할 수 있어요.');
+  if (req.path === '/api/account/avatar' && !f.mimetype.startsWith('image/')) {
+    unlinkSync(f.path);
+    fail(400, '프로필은 JPG, PNG, WEBP 이미지만 등록할 수 있어요.');
+  }
   const head = Buffer.alloc(16),
     fd = openSync(f.path, 'r');
   try {
@@ -493,51 +698,102 @@ app.post('/api/studio/upload', roles('pd', 'admin'), upload.single('file'), asyn
     fail(400, '파일 형식이 올바르지 않습니다.');
   }
   const url = '/uploads/' + f.filename;
-  await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [
-    url,
-    req.user.id,
-    f.mimetype,
-    now(),
-  ]);
-  res.json({ url, type: f.mimetype });
-});
+  try {
+    const metadata = await inspectMedia(f, f.mimetype);
+    await db.transaction(async () => {
+      await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [
+        url,
+        req.user.id,
+        f.mimetype,
+        now(),
+      ]);
+      await db.run('INSERT INTO media_metadata (url,duration,width,height) VALUES (?,?,?,?)', [
+        url,
+        metadata.duration,
+        metadata.width,
+        metadata.height,
+      ]);
+    });
+    res.json({ url, type: f.mimetype, ...metadata });
+  } catch (error) {
+    if (existsSync(f.path)) unlinkSync(f.path);
+    throw error;
+  }
+}
+app.post('/api/studio/upload', roles('pd', 'admin'), upload.single('file'), uploadMedia);
+app.post(
+  '/api/account/avatar',
+  requireAuth,
+  multer({
+    storage,
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+    fileFilter: (req, file, cb) =>
+      cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)),
+  }).single('file'),
+  uploadMedia,
+);
 app.get('/uploads/:file', (req, res) => {
   if (!/^[a-f0-9-]+\.(jpg|png|webp)$/.test(req.params.file)) return res.sendStatus(404);
   res.sendFile(path.join(uploadDir, req.params.file));
 });
 app.post('/api/studio/dramas/:id/episodes', roles('pd', 'admin'), async (req, res) => {
-  const d = await owned(req);
-  if (!['draft', 'rejected'].includes(d.status))
-    fail(409, '임시저장 또는 반려 상태에서 회차를 수정해 주세요.');
-  const b = z
-    .object({
-      number: z.number().int().min(1).max(500),
-      title: z.string().trim().min(1).max(100),
-      video: z.string().regex(/^\/(uploads\/[a-f0-9-]+\.mp4|demo\/preview\.mp4)$/),
-      duration: z.number().int().min(1).max(3600),
-    })
-    .parse(req.body);
-  if (b.video.startsWith('/demo/') && !demo)
-    fail(400, '샘플 영상은 개발 환경에서만 사용할 수 있습니다.');
-  await checkMedia(req, b.video);
-  await db.run(
-    'INSERT INTO episodes (id,drama_id,number,title,video,duration) VALUES (?,?,?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration',
-    [randomUUID(), d.id, b.number, b.title, b.video, b.duration],
-  );
+  await db.transaction(async () => {
+    const d = await owned(req, true);
+    if (!['draft', 'rejected'].includes(d.status))
+      fail(409, '임시저장 또는 반려 상태에서 회차를 수정해 주세요.');
+    const b = z
+      .object({
+        number: z.number().int().min(1).max(500),
+        title: z.string().trim().min(1).max(100),
+        video: z.string().regex(/^\/(uploads\/[a-f0-9-]+\.mp4|demo\/preview\.mp4)$/),
+        duration: z.number().int().min(1).max(3600),
+      })
+      .parse(req.body);
+    if (b.video.startsWith('/demo/') && !demo)
+      fail(400, '샘플 영상은 개발 환경에서만 사용할 수 있습니다.');
+    await checkMedia(req, b.video);
+    const metadata = await db.get('SELECT duration FROM media_metadata WHERE url=?', [b.video]);
+    const duration = b.video === '/demo/preview.mp4' ? 12 : metadata?.duration || b.duration;
+    await db.run(
+      'INSERT INTO episodes (id,drama_id,number,title,video,duration) VALUES (?,?,?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration',
+      [randomUUID(), d.id, b.number, b.title, b.video, duration],
+    );
+  });
+  res.json({ ok: true });
+});
+app.delete('/api/studio/dramas/:id/episodes/:number', roles('pd', 'admin'), async (req, res) => {
+  await db.transaction(async () => {
+    const d = await owned(req, true);
+    if (!['draft', 'rejected'].includes(d.status))
+      fail(409, '임시저장 또는 반려 상태에서 회차를 삭제해 주세요.');
+    const number = z.coerce.number().int().min(1).parse(req.params.number);
+    const last = await db.get('SELECT MAX(number) AS number FROM episodes WHERE drama_id=?', [
+      d.id,
+    ]);
+    if (last?.number !== number)
+      fail(409, '회차 순서를 유지하기 위해 마지막 회차부터 삭제해 주세요.');
+    await db.run('DELETE FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
+  });
   res.json({ ok: true });
 });
 app.post('/api/admin/dramas/:id/review', roles('admin'), async (req, res) => {
   const b = z
     .object({ status: z.enum(['published', 'rejected']), note: z.string().max(1000).default('') })
     .parse(req.body);
-  const d = await owned(req);
-  if (d.status !== 'pending') fail(409, '심사 대기 중인 작품만 처리할 수 있어요.');
-  if (b.status === 'rejected' && !b.note.trim()) fail(400, '반려 사유를 입력해 주세요.');
-  await db.run('UPDATE dramas SET status=?,review_note=? WHERE id=?', [b.status, b.note, d.id]);
-  await db.run(
-    'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
-    [randomUUID(), req.user.id, b.status, d.id, now()],
-  );
+  await db.transaction(async () => {
+    const d = await owned(req, true);
+    if (d.status !== 'pending') fail(409, '심사 대기 중인 작품만 처리할 수 있어요.');
+    if (b.status === 'rejected' && !b.note.trim()) fail(400, '반려 사유를 입력해 주세요.');
+    if (b.status === 'published') {
+      const { issues } = await contentIssues(d);
+      if (issues.length) fail(400, issues.join(' '));
+    }
+    await db.run(
+      'UPDATE dramas SET status=?,review_note=?,published_at=COALESCE(published_at,?) WHERE id=?',
+      [b.status, b.note, b.status === 'published' ? now() : null, d.id],
+    );
+    await contentEvent(req, d.id, b.status, b.note.trim());
+  });
   res.json({ ok: true });
 });
 app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
@@ -548,11 +804,13 @@ app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
     fail(400, '현재 관리자 계정은 변경할 수 없어요.');
   if (!(await db.get('SELECT id FROM users WHERE id=?', [req.params.id])))
     fail(404, '회원을 찾을 수 없습니다.');
-  await db.run('UPDATE users SET role=?,status=? WHERE id=?', [b.role, b.status, req.params.id]);
-  await db.run(
-    'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
-    [randomUUID(), req.user.id, `user:${b.role}:${b.status}`, req.params.id, now()],
-  );
+  await db.transaction(async () => {
+    await db.run('UPDATE users SET role=?,status=? WHERE id=?', [b.role, b.status, req.params.id]);
+    await db.run(
+      'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
+      [randomUUID(), req.user.id, `user:${b.role}:${b.status}`, req.params.id, now()],
+    );
+  });
   res.json({ ok: true });
 });
 app.get('/api/support', requireAuth, async (req, res) => {
@@ -598,6 +856,11 @@ app.patch('/api/admin/support/:id', roles('admin'), async (req, res) => {
   });
   res.json({ ok: true });
 });
+const routeContext = { app, db, fail, now, roles, requireAuth, checkMedia, catalogSql };
+studioRoutes(routeContext);
+adminRoutes(routeContext);
+// Confirmed sales become withdrawable on their own schedule, so refresh on a timer too.
+setInterval(() => void refreshEntries(db).catch(() => {}), 60 * 60 * 1000).unref();
 app.use('/api', (req, res) => res.status(404).json({ error: '요청을 찾을 수 없습니다.' }));
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
