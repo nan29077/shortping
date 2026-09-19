@@ -99,6 +99,7 @@ const initialForm = {
   synopsis: '',
   genre: '로맨스',
   price: 3900,
+  episode_price: 500,
   free_episodes: 3,
   image: '/images/hero.webp',
 };
@@ -721,6 +722,7 @@ function DramaEditor({
             synopsis: drama.synopsis,
             genre: drama.genre,
             price: drama.price,
+            episode_price: drama.episode_price || 500,
             free_episodes: drama.free_episodes,
             image: drama.image,
           },
@@ -826,6 +828,17 @@ function DramaEditor({
             />
           </label>
           <label>
+            회차 구매 가격 (원)
+            <input
+              type="number"
+              value={f.episode_price}
+              min={0}
+              max={100000}
+              onChange={(e) => setF({ ...f, episode_price: Number(e.target.value) })}
+              required
+            />
+          </label>
+          <label>
             무료 회차 수
             <input
               type="number"
@@ -837,6 +850,10 @@ function DramaEditor({
             />
           </label>
         </div>
+        <p className="field-hint">
+          시청자는 잠긴 회차에서 회차 구매 가격으로 한 편씩 결제하거나, 전체 소장 가격으로 모든
+          회차를 소장할 수 있어요.
+        </p>
         <label>작품 포스터</label>
         <img className="editor-poster-preview" src={f.image} alt="선택한 작품 포스터 미리보기" />
         <div className="poster-picker">

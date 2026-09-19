@@ -1,7 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Save, ShieldCheck, Upload } from 'lucide-react';
-import { api, type User } from './api';
-import { Modal } from './App';
+import { ChevronRight, Save, ShieldCheck, Upload } from 'lucide-react';
+import {
+  api,
+  won,
+  type AdminSettlement,
+  type Channel,
+  type Library,
+  type StudioSettlement,
+  type User,
+} from './api';
+import { Modal, navigate } from './App';
+
+const roleName: Record<string, string> = {
+  admin: '슈퍼관리자',
+  pd: '업로더 (PD)',
+  viewer: '시청자',
+};
 
 export function Avatar({ user }: { user: Pick<User, 'name' | 'avatar'> }) {
   return (
@@ -17,6 +31,149 @@ export function Avatar({ user }: { user: Pick<User, 'name' | 'avatar'> }) {
     />
   );
 }
+// 내 계정 첫 화면에 역할별 요약과 바로가기를 보여줍니다.
+type Tile = { label: string; value: string; hint?: string };
+function AccountOverview({ user }: { user: User }) {
+  const [tiles, setTiles] = useState<Tile[] | null>(null);
+  const links =
+    user.role === 'pd'
+      ? [
+          { label: '마이 방송국', to: 'studio/channel' },
+          { label: '정산 현황', to: 'studio/settlement' },
+          { label: '출금 관리', to: 'studio/payouts' },
+          { label: '세무 · 정산 정보', to: 'studio/tax' },
+        ]
+      : user.role === 'admin'
+        ? [
+            { label: '정산 관리', to: 'studio/settlement' },
+            { label: '출금 승인', to: 'studio/payouts' },
+            { label: '회원 관리', to: 'studio/members' },
+            { label: '요금 · 정책 설정', to: 'studio/policy' },
+          ]
+        : [
+            { label: '마이페이지', to: 'my' },
+            { label: '방송국', to: 'channels' },
+            { label: '숏핑 패스', to: 'membership' },
+            { label: '문의하기', to: 'support' },
+          ];
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        if (user.role === 'viewer') {
+          const lib = await api<Library>('/library');
+          const days = lib.subscription
+            ? Math.max(
+                0,
+                Math.ceil((new Date(lib.subscription.expires_at).getTime() - Date.now()) / 86400000),
+              )
+            : 0;
+          if (active)
+            setTiles([
+              { label: '소장 작품', value: lib.purchases.length + '편' },
+              { label: '구매 회차', value: lib.episodes.length + '화' },
+              { label: '찜한 작품', value: lib.favorites.length + '편' },
+              {
+                label: '숏핑 패스',
+                value: lib.subscription ? days + '일 남음' : '미이용',
+                hint: lib.subscription ? '자동 갱신 없음' : '패스로 전 작품 무제한',
+              },
+            ]);
+        } else if (user.role === 'pd') {
+          const [settlement, channel] = await Promise.all([
+            api<StudioSettlement>('/studio/settlement'),
+            api<{ channel: Channel | null; dramas: unknown[] }>('/studio/channel'),
+          ]);
+          if (active)
+            setTiles([
+              {
+                label: '내 방송국',
+                value: channel.channel
+                  ? channel.channel.status === 'active'
+                    ? '공개 중'
+                    : '준비 중'
+                  : '미개설',
+                hint: channel.channel ? channel.channel.name : '방송국을 열어보세요',
+              },
+              { label: '등록 작품', value: channel.dramas.length + '편' },
+              {
+                label: '출금 가능',
+                value: won(settlement.balance.available),
+                hint: '정산 예정 ' + won(settlement.balance.pending),
+              },
+              {
+                label: '세무 정보',
+                value: settlement.profile.verified ? '검증 완료' : '검증 대기',
+                hint:
+                  settlement.profile.business_type === 'business'
+                    ? '사업자 · 세금계산서'
+                    : '비사업자 · 원천징수 3.3%',
+              },
+            ]);
+        } else {
+          const admin = await api<AdminSettlement>('/admin/settlements');
+          if (active)
+            setTiles([
+              { label: '총 판매액', value: won(admin.totals.gross) },
+              { label: '정산 예정', value: won(admin.totals.pending) },
+              { label: '출금 가능', value: won(admin.totals.available) },
+              {
+                label: '출금 승인 대기',
+                value: admin.payouts.filter((p) => p.status === 'requested').length + '건',
+              },
+            ]);
+        }
+      } catch {
+        if (active) setTiles([]);
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [user.id, user.role]);
+  return (
+    <section className="settings-card account-overview">
+      <div className="panel-heading">
+        <div>
+          <h2>내 계정 한눈에</h2>
+          <p>
+            {user.role === 'viewer'
+              ? '구매와 시청 상태를 확인하고 바로 이동할 수 있어요.'
+              : '운영에 필요한 화면으로 바로 이동할 수 있어요.'}
+          </p>
+        </div>
+        <span className={'role-chip ' + user.role}>{roleName[user.role]}</span>
+      </div>
+      {tiles === null ? (
+        <div className="loading compact">
+          <span className="spinner" />
+        </div>
+      ) : tiles.length ? (
+        <div className="overview-tiles">
+          {tiles.map((t) => (
+            <div key={t.label}>
+              <span>{t.label}</span>
+              <strong>{t.value}</strong>
+              {t.hint && <small>{t.hint}</small>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">요약 정보를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</p>
+      )}
+      <div className="overview-links">
+        {links.map((l) => (
+          <button key={l.to} className="secondary compact" onClick={() => navigate(l.to)}>
+            {l.label}
+            <ChevronRight size={14} />
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function AccountSettings({
   user,
   onUser,
@@ -63,6 +220,7 @@ export default function AccountSettings({
   }
   return (
     <div className="account-settings">
+      <AccountOverview user={user} />
       <form
         className="settings-card"
         onSubmit={(e) => {

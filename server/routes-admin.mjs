@@ -178,6 +178,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         subscription_days: z.number().int().min(1).max(365),
         default_drama_price: z.number().int().min(0).max(1000000),
         default_free_episodes: z.number().int().min(1).max(50),
+        default_episode_price: z.number().int().min(0).max(100000),
         platform_fee_rate: z.number().min(0).max(90),
         pg_fee_rate: z.number().min(0).max(20),
         settle_hold_days: z.number().int().min(0).max(90),
@@ -378,6 +379,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     const b = z
       .object({
         price: z.number().int().min(0).max(1000000),
+        episode_price: z.number().int().min(0).max(100000).default(0),
         free_episodes: z.number().int().min(1).max(50),
         badge: z.enum(['NEW', 'HOT', '독점', '완결', '추천']),
         status: z.enum(['published', 'hidden']),
@@ -387,13 +389,10 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     if (!drama) fail(404, '작품을 찾을 수 없습니다.');
     if (!['published', 'hidden'].includes(drama.status))
       fail(409, '공개된 작품의 판매 설정만 변경할 수 있어요.');
-    await db.run('UPDATE dramas SET price=?,free_episodes=?,badge=?,status=? WHERE id=?', [
-      b.price,
-      b.free_episodes,
-      b.badge,
-      b.status,
-      drama.id,
-    ]);
+    await db.run(
+      'UPDATE dramas SET price=?,episode_price=?,free_episodes=?,badge=?,status=? WHERE id=?',
+      [b.price, b.episode_price, b.free_episodes, b.badge, b.status, drama.id],
+    );
     await audit(req.user.id, `drama:pricing:${b.status}`, drama.id);
     res.json({ ok: true });
   });

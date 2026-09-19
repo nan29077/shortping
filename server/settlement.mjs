@@ -34,7 +34,7 @@ export function taxFor(amount, profile, settings) {
   };
 }
 export async function recordSale(db, { order, drama, settings }) {
-  if (!drama || order.kind !== 'drama' || order.amount <= 0) return null;
+  if (!drama || !['drama', 'episode'].includes(order.kind) || order.amount <= 0) return null;
   const { gross, platformFee, pgFee, net } = breakdown(order.amount, settings);
   const confirmAt = new Date(
     new Date(order.created_at).getTime() + settings.settle_hold_days * 86400000,
@@ -46,7 +46,7 @@ export async function recordSale(db, { order, drama, settings }) {
       drama.owner_id,
       order.id,
       drama.id,
-      'drama',
+      order.kind,
       periodOf(order.created_at),
       gross,
       platformFee,
@@ -216,7 +216,7 @@ export async function processPayout(db, { payoutId, action, actorId, memo = '' }
 }
 export async function backfillEntries(db, settings) {
   const orders = await db.all(
-    "SELECT o.*, d.owner_id FROM orders o JOIN dramas d ON d.id=o.drama_id WHERE o.kind='drama' AND NOT EXISTS (SELECT 1 FROM settlement_entries s WHERE s.order_id=o.id)",
+    "SELECT o.*, d.owner_id FROM orders o JOIN dramas d ON d.id=o.drama_id WHERE o.kind IN ('drama','episode') AND NOT EXISTS (SELECT 1 FROM settlement_entries s WHERE s.order_id=o.id)",
   );
   for (const order of orders)
     await recordSale(db, {

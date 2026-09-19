@@ -4920,8 +4920,8 @@ details > p {
   color: var(--muted);
 }
 .channel-more-icon {
-  width: 52px;
-  height: 52px;
+  width: 54px;
+  height: 54px;
   border-radius: 50%;
   border: 1px dashed #3d4b43;
   display: flex;
@@ -4934,16 +4934,66 @@ details > p {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  border: 1.5px solid var(--lime);
+  border: 2px solid var(--channel-accent, #c4f562);
   overflow: hidden;
   background: #1b2429;
   flex-shrink: 0;
   color: #9fb5a4;
+  box-shadow: 0 6px 20px #00000055;
 }
 .channel-logo img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+/* 배너는 원본을 자르지 않고 전부 보여주고, 남는 자리는 같은 이미지를 흐리게 깔아 채웁니다. */
+.channel-hero {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 1;
+  overflow: hidden;
+  background: #0e1417;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.channel-hero.tall {
+  max-height: 240px;
+}
+.channel-hero-backdrop {
+  position: absolute;
+  inset: -8%;
+  width: 116%;
+  height: 116%;
+  object-fit: cover;
+  filter: blur(26px) saturate(1.15);
+  opacity: 0.55;
+}
+.channel-hero-image {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.channel-hero-image.contain {
+  object-fit: contain;
+}
+.channel-hero-image.cover {
+  object-fit: cover;
+}
+.channel-hero-empty {
+  position: absolute;
+  inset: 0;
+  background: var(--channel-accent, #c4f562);
+  opacity: 0.14;
+}
+.channel-hero-veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(9, 13, 16, 0.08) 35%,
+    rgba(9, 13, 16, var(--channel-veil, 0.45)) 100%
+  );
 }
 .channel-grid {
   display: grid;
@@ -4955,32 +5005,13 @@ details > p {
   width: 100%;
   text-align: left;
   border: 1px solid #27322c;
-  border-radius: 16px;
+  border-radius: 18px;
   overflow: hidden;
   background: #151c1f;
 }
 .channel-card:hover {
-  border-color: #3d5344;
+  border-color: var(--channel-accent, #3d5344);
   color: inherit;
-}
-.channel-banner {
-  position: relative;
-  height: 96px;
-  border-bottom: 1px solid #27322c;
-  overflow: hidden;
-}
-.channel-banner img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.channel-banner-fallback,
-.channel-banner-shade {
-  position: absolute;
-  inset: 0;
-}
-.channel-banner-shade {
-  background: linear-gradient(180deg, #0b0f1200 35%, #10161acc);
 }
 .channel-card-body {
   display: flex;
@@ -5022,76 +5053,156 @@ details > p {
 .channel-card-posters {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  padding: 0 10px 10px;
+  gap: 5px;
+  padding: 0 12px 12px;
 }
 .channel-card-posters img {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
-  border-radius: 7px;
+  border-radius: 8px;
 }
-.channel-page .channel-banner {
-  height: 160px;
-  border-radius: 0;
+.channel-verified {
+  color: var(--channel-accent, #c4f562);
 }
-.channel-head {
-  margin-top: -32px;
+/* 방송국 상세: 배너 위로 소개 카드가 겹쳐 올라옵니다. */
+.channel-intro {
   position: relative;
+  z-index: 2;
+  margin: -58px 16px 0;
+  padding: 24px 20px 20px;
+  background: #151c1f;
+  border: 1px solid #27322c;
+  border-top: 2px solid var(--channel-accent, #c4f562);
+  border-radius: 20px;
+  text-align: center;
+  box-shadow: 0 20px 55px #00000066;
 }
-.channel-head h1 {
+.channel-intro h1 {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  margin: 12px 0 4px;
+  font-size: 21px;
+  margin: 12px 0 6px;
+}
+.channel-intro > .channel-logo,
+.channel-mock-intro > .channel-logo {
+  display: flex;
+  margin: 0 auto;
+}
+.channel-intro > .channel-greeting,
+.channel-mock-intro > .channel-greeting {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto 12px;
+}
+.channel-greeting {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 10px;
+  background: #ffffff0a;
+  border: 1px solid #2d3a33;
+  color: #b9c7bd;
 }
 .channel-tagline {
   color: #a7b5ab;
-  font-size: 13px;
-  margin: 0 0 14px;
+  font-size: 12.5px;
+  margin: 0 0 16px;
+  line-height: 1.8;
 }
-.channel-stats {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 11px;
-  color: var(--muted);
+.channel-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  background: #10171a;
+  border: 1px solid #263029;
+  border-radius: 14px;
+  overflow: hidden;
   margin-bottom: 16px;
 }
-.channel-stats strong {
-  color: #eef4e6;
-  font-size: 13px;
+.channel-metrics > div {
+  padding: 14px 6px;
+  border-left: 1px solid #263029;
 }
-.channel-stats i {
-  width: 1px;
-  height: 11px;
-  background: #33413a;
+.channel-metrics > div:first-child {
+  border-left: 0;
 }
-.channel-actions {
-  display: flex;
-  gap: 9px;
-  margin-bottom: 18px;
+.channel-metrics strong {
+  display: block;
+  font-size: 16px;
+  color: var(--channel-accent, #c4f562);
 }
-.channel-actions button {
-  flex: 1;
+.channel-metrics span {
+  font-size: 10px;
+  color: #8fa294;
 }
-.channel-description {
+.channel-note {
   font-size: 12px;
   line-height: 2;
   color: #a3b1a8;
   white-space: pre-line;
+  background: #10171a;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 0 0 16px;
+  text-align: left;
+}
+.channel-cta {
+  display: flex;
+  gap: 8px;
   margin-bottom: 14px;
 }
+.channel-cta button {
+  flex: 1;
+  justify-content: center;
+}
+.channel-cta .secondary.following {
+  border-color: var(--channel-accent, #c4f562);
+  color: var(--channel-accent, #c4f562);
+}
+.channel-page .primary,
+.channel-mock .primary {
+  background: var(--channel-accent, #c4f562);
+  color: #14200d;
+}
 .channel-owner {
+  font-size: 11px;
+  color: #8fa294;
+  margin: 0;
+}
+.channel-body {
+  padding-top: 8px;
+}
+.section-divider {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  margin: 26px 0 16px;
+  color: #93a79a;
   font-size: 11px;
-  color: #90a396;
-  padding: 12px 14px;
-  border: 1px solid #27322c;
-  border-radius: 11px;
-  margin-bottom: 20px;
+}
+.section-divider::before,
+.section-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #27322c;
+}
+.section-divider span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.section-divider span::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--channel-accent, #c4f562);
 }
 .back-button.floating {
   position: absolute;
@@ -5104,42 +5215,79 @@ details > p {
   height: 36px;
   border-radius: 50%;
 }
-.channel-preview {
+/* 스튜디오 미리보기 */
+.channel-mock {
   border: 1px solid #2a3833;
-  border-radius: 14px;
+  border-radius: 16px;
   overflow: hidden;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
+  background: #121a1c;
 }
-.channel-preview > img {
-  width: 100%;
-  height: 120px;
-  object-fit: cover;
+.channel-mock-intro {
+  padding: 16px;
+  text-align: center;
+  margin-top: -34px;
+  position: relative;
+  z-index: 2;
+}
+.channel-mock-intro > strong {
   display: block;
+  font-size: 15px;
+  margin: 10px 0 4px;
 }
-.channel-preview-empty {
-  height: 120px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-size: 10px;
-  color: #8fa294;
-}
-.channel-preview-body {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-}
-.channel-preview-body strong {
-  font-size: 14px;
-}
-.channel-preview-body span {
+.channel-mock-intro > span {
   display: block;
   font-size: 11px;
   color: var(--muted);
-  margin-top: 3px;
+  margin-bottom: 14px;
+}
+.theme-picker {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.theme-picker button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 13px;
+  border: 1px solid #2b3630;
+  border-radius: 12px;
+  text-align: left;
+}
+.theme-picker button.selected {
+  border-color: var(--swatch);
+  background: #ffffff08;
+}
+.theme-picker strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.theme-picker small {
+  font-size: 9.5px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.theme-swatch {
+  width: 100%;
+  height: 18px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--swatch), #1b2429);
+}
+.reset-images {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.field-hint {
+  font-size: 10.5px;
+  color: #7f9589;
+  line-height: 1.8;
+  margin: -6px 0 14px;
 }
 .category-chips {
   display: flex;
@@ -5173,44 +5321,58 @@ details > p {
   padding: 11px 13px;
   color: inherit;
   font-size: 12px;
+  margin: 0;
 }
-.shelf-list {
+/* 작품 진열: 카드 그리드 */
+.shelf-grid {
   display: grid;
-  gap: 9px;
-}
-.shelf-row {
-  display: flex;
-  align-items: center;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 12px;
-  padding: 11px;
+}
+.shelf-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
   border: 1px solid #27322c;
-  border-radius: 11px;
+  border-radius: 13px;
+  background: #141c1e;
+  min-width: 0;
 }
-.shelf-row img {
-  width: 40px;
-  height: 54px;
+.shelf-card img {
+  width: 54px;
+  height: 74px;
   object-fit: cover;
-  border-radius: 7px;
+  border-radius: 8px;
+  flex-shrink: 0;
 }
-.shelf-row > div {
+.shelf-card-body {
   flex: 1;
   min-width: 0;
 }
-.shelf-row strong {
+.shelf-card-body strong {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
+  margin: 7px 0 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.shelf-row small {
+.shelf-card-body small {
+  display: block;
   font-size: 10px;
   color: var(--muted);
+  margin-bottom: 10px;
 }
-.shelf-row select {
-  background: #10171a;
-  border: 1px solid #2b3630;
-  border-radius: 8px;
-  color: inherit;
+.shelf-select {
+  font-size: 9.5px;
+  color: #7f9589;
+  margin: 0;
+}
+.shelf-select select {
+  margin-top: 5px;
   padding: 8px 10px;
   font-size: 11px;
+  height: auto;
 }
 .upload-button.compact {
   padding: 11px;
@@ -5246,7 +5408,7 @@ details > p {
 }
 .my-summary {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 9px;
   margin-bottom: 16px;
 }
@@ -5266,6 +5428,157 @@ details > p {
 }
 .my-summary strong {
   font-size: 14px;
+}
+.my-continue {
+  margin-bottom: 6px;
+}
+.my-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 9px;
+  margin-bottom: 18px;
+}
+.my-shortcuts button {
+  flex-direction: column;
+  gap: 7px;
+  padding: 15px 6px;
+  border: 1px solid #27322c;
+  border-radius: 13px;
+  font-size: 10.5px;
+  color: #b4c0b6;
+  background: #151c1f;
+}
+.my-shortcuts button:hover {
+  border-color: #3d5344;
+}
+.order-kind {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  margin-right: 6px;
+  background: #ffffff0d;
+  color: #9fb0a4;
+}
+.order-kind.episode {
+  background: #c4f56218;
+  color: #d1f59b;
+}
+.order-kind.subscription {
+  background: #f5d76218;
+  color: #ecd79b;
+}
+.order-note {
+  font-size: 10px;
+  color: #7f9589;
+  line-height: 1.8;
+  margin: 12px 0;
+}
+.owned-episodes {
+  display: grid;
+  gap: 10px;
+}
+.owned-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #27322c;
+  border-radius: 13px;
+}
+.owned-row img {
+  width: 48px;
+  height: 66px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.owned-row > div {
+  flex: 1;
+  min-width: 0;
+}
+.owned-row strong {
+  display: block;
+  font-size: 13px;
+}
+.owned-row small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin: 3px 0 9px;
+}
+.owned-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.owned-chips button {
+  font-size: 10px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid #33473a;
+  color: #cfe0d3;
+}
+.episode-grid button.owned {
+  border-color: var(--lime);
+  color: #d5f5a5;
+}
+.upsell {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 15px;
+  border: 1px dashed #3d5344;
+  border-radius: 12px;
+  margin-bottom: 14px;
+  text-align: left;
+}
+.upsell span {
+  flex: 1;
+  min-width: 0;
+}
+.upsell strong {
+  display: block;
+  font-size: 12px;
+}
+.upsell small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.account-overview .overview-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.overview-tiles > div {
+  border: 1px solid #27322c;
+  border-radius: 12px;
+  padding: 14px;
+  background: #121a1c;
+}
+.overview-tiles span {
+  display: block;
+  font-size: 9.5px;
+  color: #8fa294;
+  margin-bottom: 7px;
+}
+.overview-tiles strong {
+  display: block;
+  font-size: 15px;
+}
+.overview-tiles small {
+  display: block;
+  font-size: 9.5px;
+  color: #7f9589;
+  margin-top: 5px;
+  line-height: 1.6;
+}
+.overview-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.loading.compact {
+  padding: 20px 0;
 }
 
 /* ── 정산 · 출금 · 세무 ────────────────────────────────────── */
@@ -5726,4 +6039,91 @@ details > p {
 }
 .inline-form input[type='month'] {
   max-width: 220px;
+}
+
+@media (max-width: 720px) {
+  .theme-picker {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .shelf-grid {
+    grid-template-columns: 1fr;
+  }
+  .channel-intro {
+    margin: -48px 12px 0;
+    padding: 20px 16px 18px;
+  }
+  .channel-cta {
+    flex-wrap: wrap;
+  }
+  .channel-cta button {
+    flex: 1 1 42%;
+  }
+}
+
+/* 방송국 배너 프리셋 선택 */
+.channel-design-help {
+  font-size: 10.5px;
+  color: #7f9589;
+  line-height: 1.8;
+  margin: -6px 0 12px;
+}
+.channel-banner-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.channel-banner-picker button {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #2b3630;
+  border-radius: 12px;
+  text-align: left;
+  background: #121a1c;
+}
+.channel-banner-picker button.selected {
+  border-color: var(--lime);
+  box-shadow: 0 0 0 1px #c4f56255;
+}
+.channel-banner-picker img {
+  width: 100%;
+  aspect-ratio: 3 / 1;
+  object-fit: cover;
+  display: block;
+}
+.channel-banner-picker button > span {
+  display: block;
+  min-height: 56px;
+}
+.channel-banner-picker strong {
+  display: block;
+  font-size: 12px;
+  padding: 10px 12px 2px;
+}
+.channel-banner-picker small {
+  display: block;
+  font-size: 9.5px;
+  color: var(--muted);
+  padding: 0 12px 11px;
+}
+.channel-banner-picker button > i {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--lime);
+  color: #14200d;
+  box-shadow: 0 4px 12px #0008;
+}
+@media (max-width: 720px) {
+  .channel-banner-picker {
+    grid-template-columns: 1fr;
+  }
 }

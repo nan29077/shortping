@@ -180,6 +180,7 @@ app.get('/api/config', async (req, res) => {
     subscriptionDays: settings.subscription_days,
     defaultPrice: settings.default_drama_price,
     defaultFreeEpisodes: settings.default_free_episodes,
+    defaultEpisodePrice: settings.default_episode_price,
     homeAppearance: appearanceFromSettings(settings),
   });
 });
@@ -310,6 +311,8 @@ app.get('/api/dramas/:id', async (req, res) => {
   if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
     fail(404, '작품을 찾을 수 없습니다.');
   const entitled = await hasAccess(req.user, d);
+  const settings = await loadSettings(db);
+  const owned = await ownedEpisodes(req.user, d.id);
   const episodes = await db.all(
     "SELECT id,number,title,duration,CASE WHEN video='/demo/preview.mp4' THEN 1 ELSE 0 END AS is_demo FROM episodes WHERE drama_id=? ORDER BY number",
     [d.id],
@@ -317,9 +320,36 @@ app.get('/api/dramas/:id', async (req, res) => {
   res.json({
     ...d,
     entitled,
-    episodes: episodes.map((e) => ({ ...e, locked: !entitled && e.number > d.free_episodes })),
+    episode_price: episodePriceOf(d, settings),
+    episodes: episodes.map((e) => ({
+      ...e,
+      owned: owned.includes(e.number),
+      locked: !entitled && e.number > d.free_episodes && !owned.includes(e.number),
+    })),
   });
 });
+// 회차 단건 구매는 작품 소장·구독과 별개로 그 회차만 열어 줍니다.
+const episodePriceOf = (d, settings) =>
+  d.price === 0 ? 0 : d.episode_price > 0 ? d.episode_price : settings.default_episode_price;
+async function ownedEpisodes(user, dramaId) {
+  if (!user) return [];
+  return (
+    await db.all('SELECT episode FROM episode_entitlements WHERE user_id=? AND drama_id=?', [
+      user.id,
+      dramaId,
+    ])
+  ).map((r) => Number(r.episode));
+}
+async function canWatch(user, d, number) {
+  if (number <= d.free_episodes || (await hasAccess(user, d))) return true;
+  return !!(
+    user &&
+    (await db.get(
+      'SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? AND episode=?',
+      [user.id, d.id, number],
+    ))
+  );
+}
 async function hasAccess(user, d) {
   if (d.price === 0) return true;
   if (!user) return false;
@@ -342,8 +372,8 @@ app.get('/api/play/:id/:number', async (req, res) => {
   if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
     fail(404, '작품을 찾을 수 없습니다.');
   const number = z.coerce.number().int().min(1).parse(req.params.number);
-  if (number > d.free_episodes && !(await hasAccess(req.user, d)))
-    fail(403, '이 회차는 작품 구매 또는 구독 후 시청할 수 있어요.');
+  if (!(await canWatch(req.user, d, number)))
+    fail(403, '이 회차는 회차 구매, 작품 소장 또는 구독 후 시청할 수 있어요.');
   const e = await db.get('SELECT * FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
   if (!e?.video) fail(404, '영상이 아직 등록되지 않았습니다.');
   const file = e.video.startsWith('/demo/')
@@ -362,7 +392,7 @@ app.get('/api/library', requireAuth, async (req, res) => {
     ),
     history: await db.all('SELECT * FROM history WHERE user_id=? ORDER BY updated_at DESC', [u]),
     orders: await db.all(
-      'SELECT o.*,d.title FROM orders o LEFT JOIN dramas d ON d.id=o.drama_id WHERE o.user_id=? ORDER BY o.created_at DESC',
+      'SELECT o.*,d.title,(SELECT e.episode FROM episode_entitlements e WHERE e.order_id=o.id) AS episode FROM orders o LEFT JOIN dramas d ON d.id=o.drama_id WHERE o.user_id=? ORDER BY o.created_at DESC',
       [u],
     ),
     purchases: (await db.all('SELECT drama_id FROM entitlements WHERE user_id=?', [u])).map(
@@ -370,6 +400,10 @@ app.get('/api/library', requireAuth, async (req, res) => {
     ),
     channels: (await db.all('SELECT channel_id FROM channel_follows WHERE user_id=?', [u])).map(
       (x) => x.channel_id,
+    ),
+    episodes: await db.all(
+      'SELECT drama_id, episode FROM episode_entitlements WHERE user_id=? ORDER BY drama_id, episode',
+      [u],
     ),
     subscription:
       (await db.get('SELECT * FROM subscriptions WHERE user_id=? AND expires_at>?', [u, now()])) ||
@@ -400,8 +434,7 @@ app.post('/api/history', requireAuth, async (req, res) => {
     .parse(req.body);
   const d = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [b.dramaId]);
   if (!d) fail(404, '작품을 찾을 수 없습니다.');
-  if (b.episode > d.free_episodes && !(await hasAccess(req.user, d)))
-    fail(403, '시청 권한이 없습니다.');
+  if (!(await canWatch(req.user, d, b.episode))) fail(403, '시청 권한이 없습니다.');
   if (!(await db.get('SELECT id FROM episodes WHERE drama_id=? AND number=?', [d.id, b.episode])))
     fail(404, '회차를 찾을 수 없습니다.');
   await db.run(
@@ -415,8 +448,9 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
   const settings = await loadSettings(db);
   const b = z
     .object({
-      kind: z.enum(['drama', 'subscription']),
+      kind: z.enum(['drama', 'subscription', 'episode']),
       dramaId: z.string().optional(),
+      episode: z.number().int().min(1).max(500).optional(),
       idempotencyKey: z.string().uuid(),
     })
     .parse(req.body);
@@ -432,8 +466,33 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
     }
     let amount = settings.subscription_price,
       dramaId = null,
-      drama = null;
-    if (b.kind === 'drama') {
+      drama = null,
+      episode = null;
+    if (b.kind === 'episode') {
+      drama = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
+        b.dramaId || '',
+      ]);
+      if (!drama) fail(404, '작품을 찾을 수 없습니다.');
+      if (!b.episode) fail(400, '구매할 회차를 선택해 주세요.');
+      if (drama.price === 0 || b.episode <= drama.free_episodes)
+        fail(400, '무료로 시청할 수 있는 회차입니다.');
+      if (!(await db.get('SELECT id FROM episodes WHERE drama_id=? AND number=?', [
+        drama.id,
+        b.episode,
+      ])))
+        fail(404, '회차를 찾을 수 없습니다.');
+      if (await hasAccess(req.user, drama)) fail(409, '이미 시청할 수 있는 작품입니다.');
+      if (
+        await db.get(
+          'SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? AND episode=?',
+          [req.user.id, drama.id, b.episode],
+        )
+      )
+        fail(409, '이미 구매한 회차입니다.');
+      amount = episodePriceOf(drama, settings);
+      dramaId = drama.id;
+      episode = b.episode;
+    } else if (b.kind === 'drama') {
       drama = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
         b.dramaId || '',
       ]);
@@ -460,7 +519,17 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
       'INSERT INTO orders (id,user_id,drama_id,kind,amount,status,idempotency_key,created_at) VALUES (?,?,?,?,?,?,?,?)',
       [id, req.user.id, dramaId, b.kind, amount, 'test_paid', b.idempotencyKey, createdAt],
     );
-    if (b.kind === 'drama') {
+    if (b.kind === 'episode') {
+      await db.run(
+        'INSERT INTO episode_entitlements (user_id,drama_id,episode,order_id,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING',
+        [req.user.id, dramaId, episode, id, createdAt],
+      );
+      await recordSale(db, {
+        order: { id, kind: b.kind, amount, created_at: createdAt },
+        drama,
+        settings,
+      });
+    } else if (b.kind === 'drama') {
       await db.run(
         'INSERT INTO entitlements (user_id,drama_id,order_id) VALUES (?,?,?) ON CONFLICT DO NOTHING',
         [req.user.id, dramaId, id],
@@ -480,7 +549,7 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
           new Date(Date.now() + settings.subscription_days * 86400000).toISOString(),
         ],
       );
-    return { id, amount, status: 'test_paid' };
+    return { id, amount, status: 'test_paid', kind: b.kind, episode };
   });
   res.json(result);
 });
@@ -539,6 +608,7 @@ const dramaSchema = z.object({
   genre: z.enum(['로맨스', '스릴러', '판타지', '코미디', '청춘']),
   price: z.number().int().min(0).max(100000),
   free_episodes: z.number().int().min(1).max(50),
+  episode_price: z.number().int().min(0).max(100000).default(0),
   image: z.string().regex(/^\/(images\/[a-z0-9-]+\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/),
 });
 async function checkMedia(req, url) {
@@ -586,7 +656,7 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
   await checkMedia(req, b.image);
   const channel = await db.get('SELECT id FROM channels WHERE owner_id=?', [req.user.id]);
   await db.run(
-    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,price,free_episodes,created_at,channel_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,price,free_episodes,created_at,channel_id,episode_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
     [
       id,
       req.user.id,
@@ -599,6 +669,7 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
       b.free_episodes,
       now(),
       channel?.id || null,
+      b.episode_price,
     ],
   );
   res.json({ id });
@@ -638,8 +709,18 @@ app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
     const b = dramaSchema.parse(req.body);
     await checkMedia(req, b.image);
     await db.run(
-      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,price=?,free_episodes=? WHERE id=?',
-      [b.title, b.tagline, b.synopsis, b.genre, b.image, b.price, b.free_episodes, d.id],
+      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,price=?,free_episodes=?,episode_price=? WHERE id=?',
+      [
+        b.title,
+        b.tagline,
+        b.synopsis,
+        b.genre,
+        b.image,
+        b.price,
+        b.free_episodes,
+        b.episode_price,
+        d.id,
+      ],
     );
   });
   res.json({ ok: true });

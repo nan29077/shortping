@@ -110,7 +110,14 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
         description: z.string().trim().max(1500).default(''),
         banner: imageField.default(''),
         logo: imageField.default(''),
-        accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#c4f562'),
+        accent: z
+          .string()
+          .regex(/^#[0-9a-fA-F]{6}$/)
+          .default('#c4f562'),
+        theme: z.enum(['lime', 'coral', 'ocean', 'violet', 'sand', 'mono']).default('lime'),
+        banner_fit: z.enum(['contain', 'cover']).default('contain'),
+        overlay: z.number().int().min(0).max(90).default(45),
+        greeting: z.string().trim().max(120).default(''),
         status: z.enum(['draft', 'active', 'hidden']).default('draft'),
       })
       .parse(req.body);
@@ -121,13 +128,27 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     const existing = await myChannel(req.user.id);
     if (existing)
       await db.run(
-        'UPDATE channels SET name=?,slug=?,tagline=?,description=?,banner=?,logo=?,accent=?,status=? WHERE id=?',
-        [b.name, b.slug, b.tagline, b.description, b.banner, b.logo, b.accent, b.status, existing.id],
+        'UPDATE channels SET name=?,slug=?,tagline=?,description=?,banner=?,logo=?,accent=?,theme=?,banner_fit=?,overlay=?,greeting=?,status=? WHERE id=?',
+        [
+          b.name,
+          b.slug,
+          b.tagline,
+          b.description,
+          b.banner,
+          b.logo,
+          b.accent,
+          b.theme,
+          b.banner_fit,
+          b.overlay,
+          b.greeting,
+          b.status,
+          existing.id,
+        ],
       );
     else {
       const id = randomUUID();
       await db.run(
-        'INSERT INTO channels (id,owner_id,name,slug,tagline,description,banner,logo,accent,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO channels (id,owner_id,name,slug,tagline,description,banner,logo,accent,theme,banner_fit,overlay,greeting,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [
           id,
           req.user.id,
@@ -138,6 +159,10 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
           b.banner,
           b.logo,
           b.accent,
+          b.theme,
+          b.banner_fit,
+          b.overlay,
+          b.greeting,
           b.status,
           now(),
         ],

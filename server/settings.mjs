@@ -5,6 +5,7 @@ export const settingDefaults = {
   subscription_days: 30,
   default_drama_price: 3900,
   default_free_episodes: 3,
+  default_episode_price: 500, // 회차 단건 구매 기본가
   platform_fee_rate: 30, // %, 플랫폼 수수료
   pg_fee_rate: 0, // %, 결제대행 수수료 (연동 후 사용)
   settle_hold_days: 7, // 구매 후 판매 확정까지

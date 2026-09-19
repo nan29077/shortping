@@ -51,6 +51,7 @@ export type Drama = {
   badge: string;
   status: string;
   price: number;
+  episode_price: number;
   free_episodes: number;
   views: number;
   episode_count: number;
@@ -64,12 +65,14 @@ export type Episode = {
   duration: number;
   is_demo: number;
   locked: boolean;
+  owned?: boolean;
 };
 export type Detail = Drama & { episodes: Episode[]; entitled: boolean };
 export type Order = {
   id: string;
   title: string | null;
   kind: string;
+  episode?: number | null;
   amount: number;
   status: string;
   created_at: string;
@@ -78,6 +81,7 @@ export type Library = {
   favorites: string[];
   purchases: string[];
   channels: string[];
+  episodes: { drama_id: string; episode: number }[];
   history: { drama_id: string; episode: number; progress: number; updated_at: string }[];
   orders: Order[];
   subscription: { expires_at: string; auto_renew: number } | null;
@@ -86,6 +90,7 @@ export const emptyLibrary: Library = {
   favorites: [],
   purchases: [],
   channels: [],
+  episodes: [],
   history: [],
   orders: [],
   subscription: null,
@@ -103,6 +108,10 @@ export type Channel = {
   banner: string;
   logo: string;
   accent: string;
+  theme: string;
+  banner_fit: string;
+  overlay: number;
+  greeting: string;
   status: string;
   featured: number;
   featured_order: number;
@@ -203,6 +212,7 @@ export type PlatformSettings = {
   subscription_days: number;
   default_drama_price: number;
   default_free_episodes: number;
+  default_episode_price: number;
   platform_fee_rate: number;
   pg_fee_rate: number;
   settle_hold_days: number;

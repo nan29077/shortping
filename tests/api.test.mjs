@@ -985,12 +985,23 @@ test('channels are public, owned by one PD, and only the owner can edit shelves'
       slug: 'shortping-studio',
       tagline: '검수용 소개',
       description: '통합 테스트에서 수정한 소개입니다.',
-      accent: '#c4f562',
+      banner: '/images/channel-fantasy.webp',
+      accent: '#bda7f0',
+      theme: 'violet',
+      banner_fit: 'cover',
+      overlay: 30,
+      greeting: '새로운 판타지를 만나보세요',
       status: 'active',
     },
   });
   assert.equal(renamed.status, 200);
-  assert.equal((await request('/channels/shortping-studio')).data.tagline, '검수용 소개');
+  const decorated = (await request('/channels/shortping-studio')).data;
+  assert.equal(decorated.tagline, '검수용 소개');
+  assert.equal(decorated.banner, '/images/channel-fantasy.webp');
+  assert.equal(decorated.theme, 'violet');
+  assert.equal(decorated.banner_fit, 'cover');
+  assert.equal(decorated.overlay, 30);
+  assert.equal(decorated.greeting, '새로운 판타지를 만나보세요');
 
   const category = await request('/studio/channel/categories', {
     method: 'POST',
@@ -1026,10 +1037,12 @@ test('channels are public, owned by one PD, and only the owner can edit shelves'
     404,
   );
   assert.equal(
-    (await request('/studio/channel/categories/' + moonlight.categories[0].id, {
-      method: 'DELETE',
-      cookie: pd,
-    })).status,
+    (
+      await request('/studio/channel/categories/' + moonlight.categories[0].id, {
+        method: 'DELETE',
+        cookie: pd,
+      })
+    ).status,
     404,
   );
   assert.equal(
@@ -1199,7 +1212,10 @@ test('payout requests withhold 3.3% for individuals and lock the settled entries
   assert.equal(after.available, 0);
   assert.equal(after.requested, before.available);
   // 중복 신청은 남은 금액이 없으므로 거부된다.
-  assert.equal((await request('/studio/payouts', { method: 'POST', cookie: pd, body: {} })).status, 400);
+  assert.equal(
+    (await request('/studio/payouts', { method: 'POST', cookie: pd, body: {} })).status,
+    400,
+  );
 
   assert.equal(
     (
@@ -1455,7 +1471,11 @@ test('subscription revenue is shared by watched episodes when a month is closed'
   });
   assert.equal(closed.status, 200);
   assert.equal(closed.data.pool, 0);
-  assert.equal((await request('/admin/settlements/close', { method: 'POST', cookie: pd, body: { period } })).status, 403);
+  assert.equal(
+    (await request('/admin/settlements/close', { method: 'POST', cookie: pd, body: { period } }))
+      .status,
+    403,
+  );
 
   const overview = await request('/admin/settlements', { cookie: admin });
   assert.equal(overview.status, 200);
@@ -1480,5 +1500,232 @@ test('subscription revenue is shared by watched episodes when a month is closed'
       })
     ).status,
     200,
+  );
+});
+
+const publishWithEpisodes = async (count, overrides = {}) => {
+  const created = await request('/studio/dramas', {
+    method: 'POST',
+    cookie: pd,
+    body: { ...draftBody, free_episodes: 1, ...overrides },
+  });
+  assert.equal(created.status, 200);
+  const id = created.data.id;
+  for (let number = 1; number <= count; number++)
+    assert.equal(
+      (
+        await request('/studio/dramas/' + id + '/episodes', {
+          method: 'POST',
+          cookie: pd,
+          body: { number, title: `${number}화`, duration: 12, video: '/demo/preview.mp4' },
+        })
+      ).status,
+      200,
+    );
+  assert.equal(
+    (await request('/studio/dramas/' + id + '/submit', { method: 'POST', cookie: pd })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/admin/dramas/' + id + '/review', {
+        method: 'POST',
+        cookie: admin,
+        body: { status: 'published' },
+      })
+    ).status,
+    200,
+  );
+  return id;
+};
+
+test('single episode purchase unlocks only that episode and is settled like a sale', async () => {
+  const id = await publishWithEpisodes(3, {
+    title: '회차 결제 검수',
+    price: 9000,
+    episode_price: 700,
+  });
+  const buyer = await request('/auth/register', {
+    method: 'POST',
+    body: { email: `ep-${runId}@example.test`, password: 'LocalTest!2026', name: '회차 검수' },
+  });
+  const cookie = buyer.cookie;
+  const detail = await request('/dramas/' + id, { cookie });
+  assert.equal(detail.data.episode_price, 700);
+  assert.equal(detail.data.episodes[0].locked, false);
+  assert.equal(detail.data.episodes[1].locked, true);
+  assert.equal((await request('/play/' + id + '/2', { cookie })).status, 403);
+
+  // 무료 회차는 결제 대상이 아니다.
+  assert.equal(
+    (
+      await request('/checkout', {
+        method: 'POST',
+        cookie,
+        body: { kind: 'episode', dramaId: id, episode: 1, idempotencyKey: randomUUID() },
+      })
+    ).status,
+    400,
+  );
+  const order = await request('/checkout', {
+    method: 'POST',
+    cookie,
+    body: { kind: 'episode', dramaId: id, episode: 2, idempotencyKey: randomUUID() },
+  });
+  assert.equal(order.status, 200);
+  assert.equal(order.data.amount, 700);
+  assert.equal(order.data.kind, 'episode');
+
+  // 산 회차만 열리고 다음 회차는 그대로 잠겨 있다.
+  assert.equal(
+    (await fetch(base + '/api/play/' + id + '/2', { headers: { cookie, Range: 'bytes=0-10' } }))
+      .status,
+    206,
+  );
+  assert.equal((await request('/play/' + id + '/3', { cookie })).status, 403);
+  const after = await request('/dramas/' + id, { cookie });
+  assert.equal(after.data.episodes[1].locked, false);
+  assert.equal(after.data.episodes[1].owned, true);
+  assert.equal(after.data.episodes[2].locked, true);
+  assert.equal(after.data.entitled, false);
+
+  const library = await request('/library', { cookie });
+  assert.deepEqual(library.data.episodes, [{ drama_id: id, episode: 2 }]);
+  assert.equal(library.data.orders[0].kind, 'episode');
+  assert.equal(library.data.orders[0].episode, 2);
+  assert.equal(library.data.purchases.includes(id), false);
+
+  // 같은 회차를 다시 살 수 없고, 시청 기록도 구매한 회차까지만 저장된다.
+  assert.equal(
+    (
+      await request('/checkout', {
+        method: 'POST',
+        cookie,
+        body: { kind: 'episode', dramaId: id, episode: 2, idempotencyKey: randomUUID() },
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await request('/history', {
+        method: 'POST',
+        cookie,
+        body: { dramaId: id, episode: 2, progress: 4 },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/history', {
+        method: 'POST',
+        cookie,
+        body: { dramaId: id, episode: 3, progress: 4 },
+      })
+    ).status,
+    403,
+  );
+
+  // 회차 매출도 PD 정산 원장에 남는다.
+  const settlement = await request('/studio/settlement', { cookie: pd });
+  const entry = settlement.data.entries.find((e) => e.drama_id === id && e.kind === 'episode');
+  assert.ok(entry);
+  assert.equal(entry.gross, 700);
+  assert.equal(entry.net, 700 - Math.round(700 * 0.3));
+});
+
+test('owning a title or a pass makes episode checkout unnecessary', async () => {
+  const id = await publishWithEpisodes(2, { title: '회차 중복 결제 검수', price: 5000 });
+  const owner = await request('/auth/register', {
+    method: 'POST',
+    body: { email: `own-${runId}@example.test`, password: 'LocalTest!2026', name: '소장 검수' },
+  });
+  const cookie = owner.cookie;
+  assert.equal(
+    (
+      await request('/checkout', {
+        method: 'POST',
+        cookie,
+        body: { kind: 'drama', dramaId: id, idempotencyKey: randomUUID() },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/checkout', {
+        method: 'POST',
+        cookie,
+        body: { kind: 'episode', dramaId: id, episode: 2, idempotencyKey: randomUUID() },
+      })
+    ).status,
+    409,
+  );
+  // 회차 가격을 지정하지 않으면 요금 정책의 기본값을 사용한다.
+  const fallback = await publishWithEpisodes(2, { title: '기본 회차가 검수', price: 4000 });
+  const settings = (await request('/admin/settings', { cookie: admin })).data.settings;
+  assert.equal(
+    (await request('/dramas/' + fallback)).data.episode_price,
+    settings.default_episode_price,
+  );
+  assert.equal(
+    (
+      await request('/admin/dramas/' + fallback + '/pricing', {
+        method: 'PATCH',
+        cookie: admin,
+        body: {
+          price: 4000,
+          episode_price: 1200,
+          free_episodes: 1,
+          badge: 'NEW',
+          status: 'published',
+        },
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await request('/dramas/' + fallback)).data.episode_price, 1200);
+});
+
+test('channel styling is stored and served to viewers', async () => {
+  const saved = await request('/studio/channel', {
+    method: 'PUT',
+    cookie: pd,
+    body: {
+      name: '스튜디오 숏핑',
+      slug: 'shortping-studio',
+      tagline: '검수용 소개',
+      greeting: '매주 목요일 밤 10시',
+      description: '분위기 검수',
+      accent: '#ff9d7a',
+      theme: 'coral',
+      banner_fit: 'cover',
+      overlay: 70,
+      status: 'active',
+    },
+  });
+  assert.equal(saved.status, 200);
+  const page = await request('/channels/shortping-studio');
+  assert.equal(page.data.theme, 'coral');
+  assert.equal(page.data.accent, '#ff9d7a');
+  assert.equal(page.data.banner_fit, 'cover');
+  assert.equal(page.data.overlay, 70);
+  assert.equal(page.data.greeting, '매주 목요일 밤 10시');
+  // 잘못된 값은 저장하지 않는다.
+  assert.equal(
+    (
+      await request('/studio/channel', {
+        method: 'PUT',
+        cookie: pd,
+        body: {
+          name: '스튜디오 숏핑',
+          slug: 'shortping-studio',
+          theme: 'rainbow',
+          status: 'active',
+        },
+      })
+    ).status,
+    400,
   );
 });

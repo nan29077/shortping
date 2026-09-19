@@ -56,6 +56,10 @@ import Support from './Support';
 import AccountSettings, { Avatar } from './AccountSettings';
 
 type Route = { page: string; id?: string; episode?: number };
+// 구매 대상: 작품 전체 소장, 숏핑 패스, 회차 단건.
+export type Purchase = Drama | 'subscription' | { drama: Drama; episode: number };
+const isEpisodeBuy = (p: Purchase): p is { drama: Drama; episode: number } =>
+  typeof p === 'object' && 'episode' in p;
 const readRoute = (): Route => {
   const p = location.hash.replace('#', '').split('/').filter(Boolean);
   return { page: p[0] || 'home', id: p[1], episode: Number(p[2]) || 1 };
@@ -113,6 +117,7 @@ export default function App() {
       subscriptionDays: 30,
       defaultPrice: 3900,
       defaultFreeEpisodes: 3,
+      defaultEpisodePrice: 500,
     }),
     [channels, setChannels] = useState<Channel[]>([]),
     [ready, setReady] = useState(false),
@@ -123,7 +128,7 @@ export default function App() {
     [feed, setFeed] = useState('추천'),
     [query, setQuery] = useState(''),
     [heroIndex, setHeroIndex] = useState(0),
-    [checkout, setCheckout] = useState<Drama | 'subscription' | null>(null),
+    [checkout, setCheckout] = useState<Purchase | null>(null),
     [busy, setBusy] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
   const notify = useCallback((s: string) => setToast(s), []);
@@ -226,7 +231,7 @@ export default function App() {
       notify((e as Error).message);
     }
   };
-  const buy = (d: Drama | 'subscription') => {
+  const buy = (d: Purchase) => {
     if (!user) {
       navigate('login');
       return;
@@ -237,14 +242,22 @@ export default function App() {
     if (!checkout || busy) return;
     setBusy(true);
     try {
+      const episodeBuy = isEpisodeBuy(checkout);
       await api('/checkout', 'POST', {
-        kind: checkout === 'subscription' ? 'subscription' : 'drama',
-        dramaId: checkout === 'subscription' ? undefined : checkout.id,
+        kind:
+          checkout === 'subscription' ? 'subscription' : episodeBuy ? 'episode' : 'drama',
+        dramaId:
+          checkout === 'subscription' ? undefined : episodeBuy ? checkout.drama.id : checkout.id,
+        episode: episodeBuy ? checkout.episode : undefined,
         idempotencyKey: crypto.randomUUID(),
       });
       await reloadLibrary();
       setCheckout(null);
-      notify('테스트 결제가 완료됐어요. 지금 시청해 보세요!');
+      notify(
+        episodeBuy
+          ? `${(checkout as { episode: number }).episode}화를 구매했어요. 바로 이어서 보세요!`
+          : '테스트 결제가 완료됐어요. 지금 시청해 보세요!',
+      );
     } catch (e) {
       notify((e as Error).message);
     } finally {
@@ -884,6 +897,11 @@ export default function App() {
                           icon: <Heart size={16} />,
                         },
                         {
+                          label: '구매 회차',
+                          value: lib.episodes.length + '화',
+                          icon: <Ticket size={16} />,
+                        },
+                        {
                           label: '시청 중',
                           value: lib.history.length + '편',
                           icon: <CirclePlay size={16} />,
@@ -926,6 +944,48 @@ export default function App() {
                       </div>
                       <ChevronRight size={20} />
                     </button>
+                    {lib.history.length > 0 && (
+                      <div className="my-continue">
+                        <div className="section-heading">
+                          <h3>이어보기</h3>
+                          <button onClick={() => navigate('explore')}>
+                            더 찾아보기 <ChevronRight size={14} />
+                          </button>
+                        </div>
+                        <div className="continue-row">
+                          {lib.history.slice(0, 3).map((h) => {
+                            const d = dramas.find((x) => x.id === h.drama_id);
+                            return d ? (
+                              <button
+                                key={d.id}
+                                className="continue-card"
+                                onClick={() => navigate('watch/' + d.id + '/' + h.episode)}
+                              >
+                                <img src={d.image} alt="" />
+                                <div>
+                                  <strong>{d.title}</strong>
+                                  <span>{h.episode}화 이어보기</span>
+                                </div>
+                                <CirclePlay size={25} />
+                              </button>
+                            ) : null;
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <div className="my-shortcuts">
+                      {[
+                        { label: '방송국', icon: <Radio size={18} />, to: 'channels' },
+                        { label: '숏핑 패스', icon: <Crown size={18} />, to: 'membership' },
+                        { label: '문의하기', icon: <MessageCircle size={18} />, to: 'support' },
+                        { label: '계정 설정', icon: <UserRound size={18} />, to: 'settings' },
+                      ].map((item) => (
+                        <button key={item.to} onClick={() => navigate(item.to)}>
+                          {item.icon}
+                          <span>{item.label}</span>
+                        </button>
+                      ))}
+                    </div>
                     {user.role !== 'viewer' && (
                       <button className="studio-entry" onClick={() => navigate('studio')}>
                         <Clapperboard size={22} />
@@ -982,10 +1042,22 @@ export default function App() {
                           <div className="order-row" key={o.id}>
                             <div>
                               <strong>
-                                {o.kind === 'subscription' ? '숏핑 패스 30일' : o.title}
+                                <span className={'order-kind ' + o.kind}>
+                                  {o.kind === 'subscription'
+                                    ? '패스'
+                                    : o.kind === 'episode'
+                                      ? '회차'
+                                      : '소장'}
+                                </span>
+                                {o.kind === 'subscription'
+                                  ? `숏핑 패스 ${config.subscriptionDays}일`
+                                  : o.kind === 'episode'
+                                    ? `${o.title} ${o.episode}화`
+                                    : o.title}
                               </strong>
                               <span>
-                                {new Date(o.created_at).toLocaleDateString('ko-KR')} · 테스트 결제
+                                {new Date(o.created_at).toLocaleString('ko-KR')} · 테스트 결제 ·
+                                주문번호 {o.id.slice(0, 8)}
                               </span>
                             </div>
                             <b>{won(o.amount)}</b>
@@ -994,6 +1066,10 @@ export default function App() {
                       ) : (
                         <p className="muted">아직 구매 내역이 없어요.</p>
                       )}
+                      <p className="order-note">
+                        결제 취소·환불이 필요하면 문의하기로 알려 주세요. 현재는 개발용 테스트
+                        결제라 실제 청구가 발생하지 않습니다.
+                      </p>
                       {lib.subscription && (
                         <button
                           className="secondary full"
@@ -1290,34 +1366,66 @@ export default function App() {
       )}
       {checkout && (
         <Modal
-          title={checkout === 'subscription' ? '숏핑 패스 시작하기' : '작품 전체 소장하기'}
+          title={
+            checkout === 'subscription'
+              ? '숏핑 패스 시작하기'
+              : isEpisodeBuy(checkout)
+                ? '이 회차만 보기'
+                : '작품 전체 소장하기'
+          }
           close={() => !busy && setCheckout(null)}
         >
           <div className="checkout-product">
             {checkout === 'subscription' ? (
               <Crown size={42} className="lime" />
             ) : (
-              <img src={checkout.image} alt="" />
+              <img src={isEpisodeBuy(checkout) ? checkout.drama.image : checkout.image} alt="" />
             )}
             <div>
               <h3>
                 {checkout === 'subscription'
                   ? `숏핑 패스 · ${config.subscriptionDays}일`
-                  : checkout.title}
+                  : isEpisodeBuy(checkout)
+                    ? `${checkout.drama.title} ${checkout.episode}화`
+                    : checkout.title}
               </h3>
               <p>
                 {checkout === 'subscription'
                   ? '모든 공개 작품 무제한 시청'
-                  : `전체 ${checkout.episode_count}회차 · 소장`}
+                  : isEpisodeBuy(checkout)
+                    ? '이 회차만 바로 시청'
+                    : `전체 ${checkout.episode_count}회차 · 소장`}
               </p>
             </div>
           </div>
           <div className="checkout-price">
             <span>결제 금액</span>
             <strong>
-              {won(checkout === 'subscription' ? config.subscriptionPrice : checkout.price)}
+              {won(
+                checkout === 'subscription'
+                  ? config.subscriptionPrice
+                  : isEpisodeBuy(checkout)
+                    ? checkout.drama.episode_price || config.defaultEpisodePrice
+                    : checkout.price,
+              )}
             </strong>
           </div>
+          {isEpisodeBuy(checkout) && (
+            <button
+              className="upsell"
+              onClick={() => setCheckout(checkout.drama)}
+              disabled={busy}
+            >
+              <Ticket size={17} />
+              <span>
+                <strong>전체 소장이 더 좋아요</strong>
+                <small>
+                  {won(checkout.drama.price)}에 {checkout.drama.episode_count}회차 전부 소장
+                </small>
+              </span>
+              <ChevronRight size={16} />
+            </button>
+          )}
           <div className="info-box">
             <ShieldCheck size={18} />
             {config.demo
@@ -1656,7 +1764,7 @@ function DramaPage({
   user: User | null;
   lib: Library;
   favorite: (d: Drama) => void;
-  buy: (d: Drama | 'subscription') => void;
+  buy: (d: Purchase) => void;
   notify: (s: string) => void;
   pass: number;
 }) {
@@ -1683,6 +1791,7 @@ function DramaPage({
       </div>
     );
   const history = lib.history.find((h) => h.drama_id === d.id);
+  const firstLocked = d.episodes.find((e) => e.locked)?.number || d.free_episodes + 1;
   return (
     <>
       <div className="detail-cover">
@@ -1740,7 +1849,7 @@ function DramaPage({
           {d.episodes.map((e) => (
             <button
               key={e.id}
-              className={e.locked ? 'locked' : ''}
+              className={e.locked ? 'locked' : e.owned ? 'owned' : ''}
               onClick={() => navigate('watch/' + d.id + '/' + e.number)}
             >
               <span>{e.number}</span>
@@ -1749,6 +1858,18 @@ function DramaPage({
           ))}
         </div>
         <div className="purchase-options">
+          {!d.entitled && d.price > 0 && (
+            <button onClick={() => buy({ drama: d, episode: firstLocked })}>
+              <Play size={20} />
+              <span>
+                <strong>회차별로 보기</strong>
+                <small>
+                  {won(d.episode_price)} · {firstLocked}화부터 한 편씩 결제
+                </small>
+              </span>
+              <ChevronRight size={18} />
+            </button>
+          )}
           <button onClick={() => buy(d)} disabled={d.entitled}>
             <Ticket size={21} />
             <span>
@@ -1803,7 +1924,7 @@ function WatchPage({
   number: number;
   user: User | null;
   lib: Library;
-  buy: (d: Drama | 'subscription') => void;
+  buy: (d: Purchase) => void;
   favorite: (d: Drama) => void;
   notify: (s: string) => void;
   reloadLibrary: () => Promise<void>;
@@ -1891,17 +2012,21 @@ function WatchPage({
               <LockKeyhole size={32} />
               <h2>이야기는 계속돼요</h2>
               <p>
-                {number}화부터는 작품 구매 또는
+                {number}화부터는 회차 구매, 작품 소장 또는
                 <br />
                 숏핑 패스로 시청할 수 있어요.
               </p>
-              <button className="primary full" onClick={() => buy(d)}>
+              <button className="primary full" onClick={() => buy({ drama: d, episode: number })}>
+                <Play size={16} fill="currentColor" />이 회차만 보기 · {won(d.episode_price)}
+              </button>
+              <button className="secondary full" onClick={() => buy(d)}>
+                <Ticket size={17} />
                 전체 소장 · {won(d.price)}
               </button>
               <button className="secondary full" onClick={() => buy('subscription')}>
                 <Crown size={18} /> 숏핑 패스 · {won(pass)}
               </button>
-              <small>구매한 작품은 마이페이지에서 확인하세요.</small>
+              <small>구매한 회차와 작품은 마이페이지에서 확인할 수 있어요.</small>
             </div>
           </>
         ) : (
@@ -2004,40 +2129,76 @@ function WatchPage({
 }
 function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
   const [tab, setTab] = useState('찜한 작품');
+  const owned = lib.episodes.reduce<Record<string, number[]>>((acc, e) => {
+    (acc[e.drama_id] = acc[e.drama_id] || []).push(e.episode);
+    return acc;
+  }, {});
   const ids =
     tab === '찜한 작품'
       ? lib.favorites
       : tab === '소장 작품'
         ? lib.purchases
-        : lib.history.map((h) => h.drama_id);
+        : tab === '구매한 회차'
+          ? Object.keys(owned)
+          : lib.history.map((h) => h.drama_id);
   return (
     <>
       <div className="library-tabs">
-        {['찜한 작품', '최근 시청', '소장 작품'].map((t) => (
+        {['찜한 작품', '최근 시청', '소장 작품', '구매한 회차'].map((t) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
             {t}
+            {t === '구매한 회차' && lib.episodes.length > 0 && <i>{lib.episodes.length}</i>}
           </button>
         ))}
       </div>
-      <div className="poster-grid library-grid">
-        {ids.map((id) => {
-          const d = dramas.find((x) => x.id === id);
-          return d ? (
-            <Poster
-              d={d}
-              key={id}
-              onClick={
-                tab === '최근 시청'
-                  ? () =>
-                      navigate(
-                        'watch/' + id + '/' + lib.history.find((h) => h.drama_id === id)?.episode,
-                      )
-                  : undefined
-              }
-            />
-          ) : null;
-        })}
-      </div>
+      {tab === '구매한 회차' ? (
+        <div className="owned-episodes">
+          {ids.map((id) => {
+            const d = dramas.find((x) => x.id === id);
+            if (!d) return null;
+            return (
+              <div className="owned-row" key={id}>
+                <img src={d.image} alt="" />
+                <div>
+                  <strong>{d.title}</strong>
+                  <small>
+                    {d.genre} · 구매한 회차 {owned[id].length}화
+                  </small>
+                  <div className="owned-chips">
+                    {[...owned[id]]
+                      .sort((a, b) => a - b)
+                      .map((n) => (
+                        <button key={n} onClick={() => navigate('watch/' + id + '/' + n)}>
+                          {n}화
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="poster-grid library-grid">
+          {ids.map((id) => {
+            const d = dramas.find((x) => x.id === id);
+            return d ? (
+              <Poster
+                d={d}
+                key={id}
+                onClick={
+                  tab === '최근 시청'
+                    ? () =>
+                        navigate(
+                          'watch/' + id + '/' + lib.history.find((h) => h.drama_id === id)?.episode,
+                        )
+                    : undefined
+                }
+              />
+            ) : null;
+          })}
+        </div>
+      )}
       {ids.length === 0 && (
         <Empty
           title={
@@ -2045,7 +2206,9 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
               ? '마음에 드는 이야기를 찜해보세요'
               : tab === '소장 작품'
                 ? '소장한 작품이 아직 없어요'
-                : '첫 번째 이야기를 시작해 보세요'
+                : tab === '구매한 회차'
+                  ? '구매한 회차가 아직 없어요'
+                  : '첫 번째 이야기를 시작해 보세요'
           }
           text="새로운 몰입이 당신을 기다려요."
           action={() => navigate('explore')}

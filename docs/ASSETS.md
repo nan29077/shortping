@@ -55,3 +55,9 @@ Use case stylized-concept. Original premium 3D brand mascot for a short drama ap
 내장 `image_gen`으로 시네마틱·밝은 발견·판타지·고전 시네마·중세 서사의 5종을 생성했습니다. 원본은 `assets/source/home-*-original.png`, 화면용 파일은 `public/images/home-*.webp`이며 `scripts/prepare-home-themes.mjs`로 1920×1080 WebP를 다시 만들 수 있습니다.
 
 공통 프롬프트는 중앙 44%를 앱 콘텐츠용 저밀도 영역으로 비우고 인물과 주요 장면을 좌우 끝에 배치하도록 지정했습니다. 각 변형에는 현대 서울의 밤, 햇살이 드는 도심 옥상, 달빛 판타지 궁전, 1930년대 고전 극장가, 중세 성채의 새벽 분위기를 각각 적용했으며 이미지 내부의 문자·로고·UI·워터마크는 모두 제외했습니다.
+
+## PD 방송국 선택형 배너 · 2026-09-19
+
+업로더가 `마이 방송국`에서 선택할 수 있는 3:1 생성형 배너 5종입니다. 네온 촬영장, 봄 로맨스 세트, 미스터리 누아르, 달빛 판타지, 크리에이터 작업실을 각각 표현했습니다. 원본은 `assets/source/channel-*-original.png`, 1800×600 WebP는 `public/images/channel-*.webp`이며 `scripts/prepare-channel-banners.mjs`로 다시 생성할 수 있습니다.
+
+공통 프롬프트에는 방송국 웹 헤더용 3:1 구도, 넉넉한 여백, 중앙 수평 안전 영역, 문자·로고·UI·워터마크 제외 조건을 사용했습니다. 최종 선택값은 방송국 배너 경로와 대표 색상·분위기·오버레이 설정으로 함께 저장됩니다.

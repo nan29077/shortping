@@ -870,6 +870,10 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
             기본 무료 회차
             <input type="number" min={1} max={50} value={form.default_free_episodes} onChange={number('default_free_episodes')} required />
           </label>
+          <label>
+            기본 회차 가격 (원)
+            <input type="number" min={0} max={100000} value={form.default_episode_price} onChange={number('default_episode_price')} required />
+          </label>
         </div>
         <h4 className="spaced-title">수수료 · 정산</h4>
         <div className="form-columns">
@@ -930,7 +934,13 @@ export function AdminPricingPanel({
   reload: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState<Drama | null>(null),
-    [form, setForm] = useState({ price: 0, free_episodes: 3, badge: 'NEW', status: 'published' }),
+    [form, setForm] = useState({
+      price: 0,
+      episode_price: 0,
+      free_episodes: 3,
+      badge: 'NEW',
+      status: 'published',
+    }),
     [busy, setBusy] = useState(false),
     [query, setQuery] = useState('');
   const sellable = dramas.filter(
@@ -965,6 +975,7 @@ export function AdminPricingPanel({
                   <th>작품</th>
                   <th>방송국</th>
                   <th>소장 가격</th>
+                  <th>회차 가격</th>
                   <th>무료 회차</th>
                   <th>뱃지</th>
                   <th>노출</th>
@@ -984,6 +995,9 @@ export function AdminPricingPanel({
                     <td className="nowrap">
                       <b>{d.price === 0 ? '무료' : won(d.price)}</b>
                     </td>
+                    <td className="nowrap">
+                      {d.price === 0 ? '-' : d.episode_price ? won(d.episode_price) : '기본값'}
+                    </td>
                     <td className="nowrap">{d.free_episodes}화</td>
                     <td>{d.badge}</td>
                     <td>
@@ -998,6 +1012,7 @@ export function AdminPricingPanel({
                           setEditing(d);
                           setForm({
                             price: d.price,
+                            episode_price: d.episode_price || 0,
                             free_episodes: d.free_episodes,
                             badge: ['NEW', 'HOT', '독점', '완결', '추천'].includes(d.badge)
                               ? d.badge
@@ -1032,6 +1047,16 @@ export function AdminPricingPanel({
               />
             </label>
             <label>
+              회차 구매 가격 (원)
+              <input
+                type="number"
+                min={0}
+                max={100000}
+                value={form.episode_price}
+                onChange={(e) => setForm({ ...form, episode_price: Number(e.target.value) })}
+              />
+            </label>
+            <label>
               무료 회차
               <input
                 type="number"
@@ -1060,8 +1085,8 @@ export function AdminPricingPanel({
             </label>
           </div>
           <div className="info-box">
-            가격을 0원으로 설정하면 모든 회차가 무료로 공개됩니다. 이미 구매한 시청자의 권한은
-            유지됩니다.
+            가격을 0원으로 설정하면 모든 회차가 무료로 공개됩니다. 회차 구매 가격을 0원으로 두면
+            요금 정책의 기본 회차 가격이 적용됩니다. 이미 구매한 시청자의 권한은 유지됩니다.
           </div>
           <button
             className="primary full"
