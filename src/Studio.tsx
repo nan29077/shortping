@@ -722,7 +722,7 @@ function DramaEditor({
             synopsis: drama.synopsis,
             genre: drama.genre,
             price: drama.price,
-            episode_price: drama.episode_price || 500,
+            episode_price: drama.episode_price ?? 0,
             free_episodes: drama.free_episodes,
             image: drama.image,
           },
@@ -828,7 +828,7 @@ function DramaEditor({
             />
           </label>
           <label>
-            회차 구매 가격 (원)
+            회차 구매 가격 (원 · 0이면 기본값)
             <input
               type="number"
               value={f.episode_price}

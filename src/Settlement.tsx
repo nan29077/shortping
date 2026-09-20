@@ -396,10 +396,10 @@ export default function Settlement({
                   <strong>
                     -
                     {won(
-                      Math.floor((data.balance.available * (data.settings.withholding_rate - 0.3)) / 100) +
+                      Math.floor((data.balance.available * data.settings.withholding_rate) / 110) +
                         Math.floor(
                           Math.floor(
-                            (data.balance.available * (data.settings.withholding_rate - 0.3)) / 100,
+                            (data.balance.available * data.settings.withholding_rate) / 110,
                           ) * 0.1,
                         ),
                     )}
@@ -411,11 +411,11 @@ export default function Settlement({
                     {won(
                       data.balance.available -
                         Math.floor(
-                          (data.balance.available * (data.settings.withholding_rate - 0.3)) / 100,
+                          (data.balance.available * data.settings.withholding_rate) / 110,
                         ) -
                         Math.floor(
                           Math.floor(
-                            (data.balance.available * (data.settings.withholding_rate - 0.3)) / 100,
+                            (data.balance.available * data.settings.withholding_rate) / 110,
                           ) * 0.1,
                         ),
                     )}

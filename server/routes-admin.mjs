@@ -188,6 +188,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         payout_notice: z.string().trim().max(300),
       })
       .parse(req.body);
+    if (b.platform_fee_rate + b.pg_fee_rate > 100)
+      fail(400, '플랫폼 수수료와 결제 수수료의 합은 100%를 넘을 수 없습니다.');
     const settings = await saveSettings(db, b, req.user.id);
     await audit(req.user.id, 'settings:updated', 'platform');
     res.json({ settings });

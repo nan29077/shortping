@@ -1729,3 +1729,191 @@ test('channel styling is stored and served to viewers', async () => {
     400,
   );
 });
+
+test('guard rails: free titles, hidden dramas, fee caps and custom withholding', async () => {
+  // 무료 공개 작품은 소장 결제 대상이 아니다.
+  const free = await request('/studio/dramas', {
+    method: 'POST',
+    cookie: pd,
+    body: { ...draftBody, title: '무료 결제 차단 검수', price: 0 },
+  });
+  const freeId = free.data.id;
+  assert.equal(
+    (
+      await request('/studio/dramas/' + freeId + '/episodes', {
+        method: 'POST',
+        cookie: pd,
+        body: { number: 1, title: '1화', duration: 12, video: '/demo/preview.mp4' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await request('/studio/dramas/' + freeId + '/submit', { method: 'POST', cookie: pd })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/admin/dramas/' + freeId + '/review', {
+        method: 'POST',
+        cookie: admin,
+        body: { status: 'published' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/checkout', {
+        method: 'POST',
+        cookie: viewer,
+        body: { kind: 'drama', dramaId: freeId, idempotencyKey: randomUUID() },
+      })
+    ).status,
+    400,
+  );
+
+  // 노출 중단 상태에서는 심사 없이 내용을 바꿀 수 없다.
+  assert.equal(
+    (
+      await request('/admin/dramas/' + freeId + '/pricing', {
+        method: 'PATCH',
+        cookie: admin,
+        body: { price: 0, episode_price: 0, free_episodes: 1, badge: 'NEW', status: 'hidden' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/studio/dramas/' + freeId, {
+        method: 'PATCH',
+        cookie: pd,
+        body: { ...draftBody, title: '무단 수정 시도' },
+      })
+    ).status,
+    409,
+  );
+
+  // 수수료 합계는 100%를 넘을 수 없다.
+  const settings = (await request('/admin/settings', { cookie: admin })).data.settings;
+  assert.equal(
+    (
+      await request('/admin/settings', {
+        method: 'PUT',
+        cookie: admin,
+        body: { ...settings, platform_fee_rate: 90, pg_fee_rate: 20 },
+      })
+    ).status,
+    400,
+  );
+
+  // 원천징수율을 바꾸면 총 공제액이 설정한 비율과 맞아야 한다 (지방소득세는 소득세의 10%).
+  assert.equal(
+    (
+      await request('/admin/settings', {
+        method: 'PUT',
+        cookie: admin,
+        body: { ...settings, withholding_rate: 5, settle_hold_days: 0, payout_min: 100 },
+      })
+    ).status,
+    200,
+  );
+  const seller = await request('/auth/register', {
+    method: 'POST',
+    body: { email: `rate-${runId}@example.test`, password: 'LocalTest!2026', name: '요율 검수' },
+  });
+  assert.equal(
+    (
+      await request('/admin/members/' + seller.data.user.id, {
+        method: 'PATCH',
+        cookie: admin,
+        body: { role: 'pd', status: 'active', name: '요율 검수', phone: '' },
+      })
+    ).status,
+    200,
+  );
+  const sellerCookie = (
+    await request('/auth/login', {
+      method: 'POST',
+      body: { email: `rate-${runId}@example.test`, password: 'LocalTest!2026' },
+    })
+  ).cookie;
+  const title = await request('/studio/dramas', {
+    method: 'POST',
+    cookie: sellerCookie,
+    body: { ...draftBody, title: '요율 검수 작품', price: 11000, free_episodes: 1 },
+  });
+  const rateId = title.data.id;
+  assert.equal(
+    (
+      await request('/studio/dramas/' + rateId + '/episodes', {
+        method: 'POST',
+        cookie: sellerCookie,
+        body: { number: 1, title: '1화', duration: 12, video: '/demo/preview.mp4' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await request('/studio/dramas/' + rateId + '/submit', { method: 'POST', cookie: sellerCookie }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/admin/dramas/' + rateId + '/review', {
+        method: 'POST',
+        cookie: admin,
+        body: { status: 'published' },
+      })
+    ).status,
+    200,
+  );
+  const shopper = await request('/auth/register', {
+    method: 'POST',
+    body: { email: `shopper-${runId}@example.test`, password: 'LocalTest!2026', name: '구매 검수' },
+  });
+  assert.equal(
+    (
+      await request('/checkout', {
+        method: 'POST',
+        cookie: shopper.cookie,
+        body: { kind: 'drama', dramaId: rateId, idempotencyKey: randomUUID() },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/studio/tax', {
+        method: 'PUT',
+        cookie: sellerCookie,
+        body: {
+          business_type: 'individual',
+          bank_name: '국민은행',
+          account_number: '111-222',
+          account_holder: '요율 검수',
+        },
+      })
+    ).status,
+    200,
+  );
+  const balance = (await request('/studio/settlement', { cookie: sellerCookie })).data.balance;
+  const payout = await request('/studio/payouts', { method: 'POST', cookie: sellerCookie, body: {} });
+  assert.equal(payout.status, 201);
+  const withheld = payout.data.incomeTax + payout.data.localTax;
+  // 5% 설정이면 실제 공제 합계도 5% 안쪽이어야 한다 (원 단위 절사 오차 허용).
+  assert.ok(Math.abs(withheld - Math.round(balance.available * 0.05)) <= 2, `공제 ${withheld}`);
+  assert.equal(payout.data.payable, balance.available - withheld);
+  assert.equal(
+    (
+      await request('/admin/settings', {
+        method: 'PUT',
+        cookie: admin,
+        body: { ...settings },
+      })
+    ).status,
+    200,
+  );
+});

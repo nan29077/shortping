@@ -236,6 +236,8 @@ export function ChannelPage({
     try {
       await api('/channels/' + channel.id + '/follow', 'POST', { active: !following });
       await reloadLibrary();
+      // 구독자 수·통계가 바로 반영되도록 방송국 정보를 다시 읽습니다.
+      setChannel(await api<ChannelDetail>('/channels/' + channel.id));
       notify(following ? '방송국 구독을 해제했어요.' : '방송국을 구독했어요.');
     } catch (e) {
       notify((e as Error).message);

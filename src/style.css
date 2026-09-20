@@ -5073,7 +5073,6 @@ details > p {
   padding: 24px 20px 20px;
   background: #151c1f;
   border: 1px solid #27322c;
-  border-top: 2px solid var(--channel-accent, #c4f562);
   border-radius: 20px;
   text-align: center;
   box-shadow: 0 20px 55px #00000066;

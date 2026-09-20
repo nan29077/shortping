@@ -123,6 +123,7 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
       .parse(req.body);
     if (b.banner) await checkMedia(req, b.banner);
     if (b.logo) await checkMedia(req, b.logo);
+    await db.transaction(async () => {
     const taken = await db.get('SELECT owner_id FROM channels WHERE slug=?', [b.slug]);
     if (taken && taken.owner_id !== req.user.id) fail(409, '이미 사용 중인 방송국 주소입니다.');
     const existing = await myChannel(req.user.id);
@@ -172,19 +173,22 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
         req.user.id,
       ]);
     }
+    });
     res.json({ ok: true });
   });
   app.post('/api/studio/channel/categories', roles('pd', 'admin'), async (req, res) => {
-    const channel = await myChannel(req.user.id);
-    if (!channel) fail(400, '방송국을 먼저 개설해 주세요.');
     const b = z.object({ name: z.string().trim().min(1).max(20) }).parse(req.body);
-    const list = await categoriesOf(channel.id);
-    if (list.length >= 12) fail(400, '카테고리는 최대 12개까지 만들 수 있어요.');
-    if (list.some((c) => c.name === b.name)) fail(409, '이미 있는 카테고리입니다.');
-    await db.run(
-      'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?)',
-      [randomUUID(), channel.id, b.name, list.length],
-    );
+    await db.transaction(async () => {
+      const channel = await myChannel(req.user.id);
+      if (!channel) fail(400, '방송국을 먼저 개설해 주세요.');
+      const list = await categoriesOf(channel.id);
+      if (list.length >= 12) fail(400, '카테고리는 최대 12개까지 만들 수 있어요.');
+      if (list.some((c) => c.name === b.name)) fail(409, '이미 있는 카테고리입니다.');
+      await db.run(
+        'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?)',
+        [randomUUID(), channel.id, b.name, list.length],
+      );
+    });
     res.status(201).json({ ok: true });
   });
   app.delete('/api/studio/channel/categories/:id', roles('pd', 'admin'), async (req, res) => {
@@ -205,20 +209,22 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     if (req.user.role !== 'admin' && drama.owner_id !== req.user.id)
       fail(403, '본인 작품만 수정할 수 있습니다.');
     const b = z.object({ category_id: z.string().nullable() }).parse(req.body);
-    const channel = await myChannel(drama.owner_id);
-    if (!channel) fail(400, '방송국을 먼저 개설해 주세요.');
-    if (b.category_id) {
-      const category = await db.get(
-        'SELECT id FROM channel_categories WHERE id=? AND channel_id=?',
-        [b.category_id, channel.id],
-      );
-      if (!category) fail(404, '카테고리를 찾을 수 없습니다.');
-    }
-    await db.run('UPDATE dramas SET channel_id=?,category_id=? WHERE id=?', [
-      channel.id,
-      b.category_id,
-      drama.id,
-    ]);
+    await db.transaction(async () => {
+      const channel = await myChannel(drama.owner_id);
+      if (!channel) fail(400, '방송국을 먼저 개설해 주세요.');
+      if (b.category_id) {
+        const category = await db.get(
+          'SELECT id FROM channel_categories WHERE id=? AND channel_id=?',
+          [b.category_id, channel.id],
+        );
+        if (!category) fail(404, '카테고리를 찾을 수 없습니다.');
+      }
+      await db.run('UPDATE dramas SET channel_id=?,category_id=? WHERE id=?', [
+        channel.id,
+        b.category_id,
+        drama.id,
+      ]);
+    });
     res.json({ ok: true });
   });
 

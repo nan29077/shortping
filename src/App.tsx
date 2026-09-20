@@ -1344,7 +1344,10 @@ export default function App() {
           {modal.title === '테스트 구독 종료' ? (
             <button
               className="primary full"
+              disabled={busy}
               onClick={async () => {
+                if (busy) return;
+                setBusy(true);
                 try {
                   await api('/subscription/cancel', 'POST');
                   await reloadLibrary();
@@ -1352,10 +1355,12 @@ export default function App() {
                   notify('테스트 구독을 종료했어요.');
                 } catch (e) {
                   notify((e as Error).message);
+                } finally {
+                  setBusy(false);
                 }
               }}
             >
-              테스트 구독 종료하기
+              {busy ? '처리 중…' : '테스트 구독 종료하기'}
             </button>
           ) : (
             <button className="primary full" onClick={() => setModal(null)}>
@@ -1715,7 +1720,7 @@ function LoginPage({
             required
           />
         </label>
-        <button className="primary full" disabled={submitting}>
+        <button className="primary full" disabled={submitting || busy}>
           {submitting
             ? '잠시만 기다려 주세요…'
             : register
@@ -1740,7 +1745,7 @@ function LoginPage({
                 { role: 'viewer', icon: UserRound, label: '시청자' },
               ] as const
             ).map(({ role, icon: Icon, label }) => (
-              <button key={role} disabled={busy} onClick={() => login(role)}>
+              <button key={role} disabled={busy || submitting} onClick={() => login(role)}>
                 <Icon size={21} />
                 <span>{label}</span>
               </button>

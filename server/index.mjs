@@ -198,14 +198,13 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   if (await db.get('SELECT id FROM users WHERE email=?', [c.email]))
     fail(409, '이미 가입된 이메일입니다.');
   const user = { id: randomUUID(), email: c.email, name: c.name, role: 'viewer', status: 'active' };
-  await db.run('INSERT INTO users (id,email,name,password,role,created_at) VALUES (?,?,?,?,?,?)', [
-    user.id,
-    c.email,
-    c.name,
-    hashPassword(c.password),
-    'viewer',
-    now(),
-  ]);
+  // 동시에 같은 이메일로 가입하면 UNIQUE 제약이 막아 주므로, 그 결과로 중복 여부를 판정합니다.
+  await db.run(
+    'INSERT INTO users (id,email,name,password,role,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(email) DO NOTHING',
+    [user.id, c.email, c.name, hashPassword(c.password), 'viewer', now()],
+  );
+  if (!(await db.get('SELECT id FROM users WHERE id=?', [user.id])))
+    fail(409, '이미 가입된 이메일입니다.');
   await session(req, res, user);
 });
 app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -497,6 +496,7 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
         b.dramaId || '',
       ]);
       if (!drama) fail(404, '작품을 찾을 수 없습니다.');
+      if (drama.price === 0) fail(400, '무료로 공개된 작품입니다.');
       if (
         await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [
           req.user.id,
@@ -704,7 +704,9 @@ app.get('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
 app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
   await db.transaction(async () => {
     const d = await owned(req, true);
-    if (d.status === 'published' || d.status === 'pending')
+    // 공개·심사 중은 물론 노출 중단 상태도 잠급니다. 재심사 없이 내용이 바뀐 채
+    // 관리자가 다시 공개로 돌리는 경로를 막기 위해서입니다.
+    if (!['draft', 'rejected'].includes(d.status))
       fail(409, '임시저장 또는 반려된 작품만 수정할 수 있어요.');
     const b = dramaSchema.parse(req.body);
     await checkMedia(req, b.image);
