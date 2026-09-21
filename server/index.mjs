@@ -17,7 +17,21 @@ import { openDb, migrate } from './db.mjs';
 import { seed, hashPassword } from './seed.mjs';
 import { inspectMedia } from './media.mjs';
 import { loadSettings } from './settings.mjs';
-import { backfillEntries, recordSale, refreshEntries } from './settlement.mjs';
+import {
+  backfillEntries,
+  platformRateFor,
+  recordPingSale,
+  refreshEntries,
+} from './settlement.mjs';
+import {
+  channelFeeRate,
+  creditPings,
+  debitPings,
+  episodePingsOf,
+  titlePingsOf,
+  unitMilliOf,
+  walletOf,
+} from './pings.mjs';
 import { studioRoutes } from './routes-studio.mjs';
 import { adminRoutes } from './routes-admin.mjs';
 import { appearanceFromSettings } from './home-appearance.mjs';
@@ -41,7 +55,7 @@ async function ensureProfile(id) {
     "UPDATE user_profiles SET avatar=? WHERE user_id=? AND avatar LIKE '/avatars/ping-%.svg'",
     [randomAvatar(), id],
   );
-  return db.get('SELECT avatar,bio,auto_next FROM user_profiles WHERE user_id=?', [id]);
+  return db.get('SELECT avatar,bio,auto_next,auto_unlock FROM user_profiles WHERE user_id=?', [id]);
 }
 for (const user of await db.all('SELECT id FROM users')) await ensureProfile(user.id);
 const startupSettings = await loadSettings(db);
@@ -111,6 +125,7 @@ const publicUser = (u) =>
         avatar: u.avatar,
         bio: u.bio || '',
         auto_next: u.auto_next !== 0,
+        auto_unlock: u.auto_unlock === 1 || u.auto_unlock === true,
       }
     : null;
 const cookieToken = (req) => {
@@ -126,7 +141,7 @@ app.use('/api', async (req, res, next) => {
     const token = cookieToken(req);
     req.user = token
       ? await db.get(
-          'SELECT u.*,p.avatar,p.bio,p.auto_next FROM users u JOIN sessions s ON s.user_id=u.id LEFT JOIN user_profiles p ON p.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?',
+          'SELECT u.*,p.avatar,p.bio,p.auto_next,p.auto_unlock FROM users u JOIN sessions s ON s.user_id=u.id LEFT JOIN user_profiles p ON p.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?',
           [token, now(), 'active'],
         )
       : null;
@@ -178,9 +193,10 @@ app.get('/api/config', async (req, res) => {
     iosUrl: process.env.IOS_STORE_URL || null,
     subscriptionPrice: settings.subscription_price,
     subscriptionDays: settings.subscription_days,
-    defaultPrice: settings.default_drama_price,
     defaultFreeEpisodes: settings.default_free_episodes,
-    defaultEpisodePrice: settings.default_episode_price,
+    pingUnitWon: settings.ping_unit_won,
+    defaultEpisodePings: settings.default_episode_pings,
+    titleUnlockDiscount: settings.title_unlock_discount,
     homeAppearance: appearanceFromSettings(settings),
   });
 });
@@ -228,6 +244,8 @@ app.patch('/api/account/profile', requireAuth, async (req, res) => {
       name: z.string().trim().min(2).max(30),
       bio: z.string().trim().max(160),
       auto_next: z.boolean(),
+      // 보내지 않으면 기존 값을 유지합니다(시청 화면에서 따로 켜고 끌 수 있음).
+      auto_unlock: z.boolean().optional(),
       avatar: z
         .string()
         .regex(
@@ -244,16 +262,32 @@ app.patch('/api/account/profile', requireAuth, async (req, res) => {
       fail(403, '본인이 업로드한 프로필 이미지만 사용할 수 있어요.');
   }
   await checkMedia(req, b.avatar);
+  const autoUnlock = b.auto_unlock ?? Number(profile.auto_unlock) === 1;
   await db.transaction(async () => {
     await db.run('UPDATE users SET name=? WHERE id=?', [b.name, req.user.id]);
-    await db.run('UPDATE user_profiles SET avatar=?,bio=?,auto_next=? WHERE user_id=?', [
-      b.avatar,
-      b.bio,
-      b.auto_next ? 1 : 0,
-      req.user.id,
-    ]);
+    await db.run(
+      'UPDATE user_profiles SET avatar=?,bio=?,auto_next=?,auto_unlock=? WHERE user_id=?',
+      [b.avatar, b.bio, b.auto_next ? 1 : 0, autoUnlock ? 1 : 0, req.user.id],
+    );
   });
-  res.json({ user: publicUser({ ...req.user, ...b, auto_next: b.auto_next ? 1 : 0 }) });
+  res.json({
+    user: publicUser({
+      ...req.user,
+      ...b,
+      auto_next: b.auto_next ? 1 : 0,
+      auto_unlock: autoUnlock ? 1 : 0,
+    }),
+  });
+});
+// 잠긴 회차를 보유 핑으로 자동으로 열지. 결제 화면에서 바로 켜고 끌 수 있게 따로 둡니다.
+app.put('/api/account/auto-unlock', requireAuth, async (req, res) => {
+  const b = z.object({ enabled: z.boolean() }).parse(req.body);
+  await ensureProfile(req.user.id);
+  await db.run('UPDATE user_profiles SET auto_unlock=? WHERE user_id=?', [
+    b.enabled ? 1 : 0,
+    req.user.id,
+  ]);
+  res.json({ auto_unlock: b.enabled });
 });
 app.get('/api/account/sessions', requireAuth, async (req, res) => {
   const sessions = await db.all(
@@ -316,20 +350,24 @@ app.get('/api/dramas/:id', async (req, res) => {
     "SELECT id,number,title,duration,CASE WHEN video='/demo/preview.mp4' THEN 1 ELSE 0 END AS is_demo FROM episodes WHERE drama_id=? ORDER BY number",
     [d.id],
   );
+  const isLocked = (number) => !entitled && number > d.free_episodes && !owned.includes(number);
+  const lockedCount = episodes.filter((e) => isLocked(e.number)).length;
+  const perEpisode = episodePingsOf(d, settings);
   res.json({
     ...d,
     entitled,
-    episode_price: episodePriceOf(d, settings),
+    episode_pings: perEpisode,
+    title_pings: titlePingsOf(lockedCount, perEpisode, settings),
+    title_discount: lockedCount > 1 ? settings.title_unlock_discount : 0,
+    locked_count: lockedCount,
     episodes: episodes.map((e) => ({
       ...e,
       owned: owned.includes(e.number),
-      locked: !entitled && e.number > d.free_episodes && !owned.includes(e.number),
+      locked: isLocked(e.number),
     })),
   });
 });
-// 회차 단건 구매는 작품 소장·구독과 별개로 그 회차만 열어 줍니다.
-const episodePriceOf = (d, settings) =>
-  d.price === 0 ? 0 : d.episode_price > 0 ? d.episode_price : settings.default_episode_price;
+// 핑으로 연 회차는 작품 전체 열기·구독과 별개로 그 회차만 열어 줍니다.
 async function ownedEpisodes(user, dramaId) {
   if (!user) return [];
   return (
@@ -350,7 +388,7 @@ async function canWatch(user, d, number) {
   );
 }
 async function hasAccess(user, d) {
-  if (d.price === 0) return true;
+  if (d.free) return true;
   if (!user) return false;
   if (user.role === 'admin' || user.id === d.owner_id) return true;
   return !!(
@@ -404,6 +442,7 @@ app.get('/api/library', requireAuth, async (req, res) => {
       'SELECT drama_id, episode FROM episode_entitlements WHERE user_id=? ORDER BY drama_id, episode',
       [u],
     ),
+    wallet: await walletOf(db, u),
     subscription:
       (await db.get('SELECT * FROM subscriptions WHERE user_id=? AND expires_at>?', [u, now()])) ||
       null,
@@ -442,16 +481,13 @@ app.post('/api/history', requireAuth, async (req, res) => {
   );
   res.json({ ok: true });
 });
+// 원화 결제는 숏핑 패스(구독)만 남았습니다. 회차·작품은 핑으로 엽니다(/api/pings/unlock).
+// 구독은 PG 빌키 연동 전까지 테스트 결제로 동작합니다.
 app.post('/api/checkout', requireAuth, async (req, res) => {
   if (!demo) fail(503, '결제 서비스 연동 준비 중입니다.');
   const settings = await loadSettings(db);
   const b = z
-    .object({
-      kind: z.enum(['drama', 'subscription', 'episode']),
-      dramaId: z.string().optional(),
-      episode: z.number().int().min(1).max(500).optional(),
-      idempotencyKey: z.string().uuid(),
-    })
+    .object({ kind: z.literal('subscription'), idempotencyKey: z.string().uuid() })
     .parse(req.body);
   const result = await db.transaction(async () => {
     if (db.engine === 'postgresql')
@@ -461,52 +497,9 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
     ]);
     if (existing) {
       if (existing.user_id !== req.user.id) fail(409, '중복 요청입니다.');
-      return existing;
+      return { id: existing.id, amount: existing.amount, status: existing.status, kind: existing.kind };
     }
-    let amount = settings.subscription_price,
-      dramaId = null,
-      drama = null,
-      episode = null;
-    if (b.kind === 'episode') {
-      drama = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
-        b.dramaId || '',
-      ]);
-      if (!drama) fail(404, '작품을 찾을 수 없습니다.');
-      if (!b.episode) fail(400, '구매할 회차를 선택해 주세요.');
-      if (drama.price === 0 || b.episode <= drama.free_episodes)
-        fail(400, '무료로 시청할 수 있는 회차입니다.');
-      if (!(await db.get('SELECT id FROM episodes WHERE drama_id=? AND number=?', [
-        drama.id,
-        b.episode,
-      ])))
-        fail(404, '회차를 찾을 수 없습니다.');
-      if (await hasAccess(req.user, drama)) fail(409, '이미 시청할 수 있는 작품입니다.');
-      if (
-        await db.get(
-          'SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? AND episode=?',
-          [req.user.id, drama.id, b.episode],
-        )
-      )
-        fail(409, '이미 구매한 회차입니다.');
-      amount = episodePriceOf(drama, settings);
-      dramaId = drama.id;
-      episode = b.episode;
-    } else if (b.kind === 'drama') {
-      drama = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
-        b.dramaId || '',
-      ]);
-      if (!drama) fail(404, '작품을 찾을 수 없습니다.');
-      if (drama.price === 0) fail(400, '무료로 공개된 작품입니다.');
-      if (
-        await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [
-          req.user.id,
-          drama.id,
-        ])
-      )
-        fail(409, '이미 구매한 작품입니다.');
-      amount = drama.price;
-      dramaId = drama.id;
-    } else if (
+    if (
       await db.get('SELECT user_id FROM subscriptions WHERE user_id=? AND expires_at>?', [
         req.user.id,
         now(),
@@ -514,42 +507,216 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
     )
       fail(409, '이미 구독 중입니다.');
     const id = randomUUID(),
+      createdAt = now(),
+      amount = settings.subscription_price;
+    await db.run(
+      'INSERT INTO orders (id,user_id,drama_id,kind,amount,status,idempotency_key,created_at,channel,channel_fee) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [
+        id,
+        req.user.id,
+        null,
+        'subscription',
+        amount,
+        'test_paid',
+        b.idempotencyKey,
+        createdAt,
+        'web',
+        Math.round((amount * settings.pg_fee_rate) / 100),
+      ],
+    );
+    await db.run(
+      'INSERT INTO subscriptions (user_id,order_id,expires_at,auto_renew) VALUES (?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET order_id=excluded.order_id,expires_at=excluded.expires_at,auto_renew=0',
+      [req.user.id, id, new Date(Date.now() + settings.subscription_days * 86400000).toISOString()],
+    );
+    return { id, amount, status: 'test_paid', kind: 'subscription' };
+  });
+  res.json(result);
+});
+
+// ── 핑(포인트) ─────────────────────────────────────────────────────────
+const orderShape = (o, extra = {}) => ({
+  id: o.id,
+  kind: o.kind,
+  amount: o.amount,
+  pings: o.pings,
+  bonus: o.bonus_pings,
+  status: o.status,
+  ...extra,
+});
+app.get('/api/pings', requireAuth, async (req, res) => {
+  const settings = await loadSettings(db);
+  res.json({
+    wallet: await walletOf(db, req.user.id),
+    products: await db.all(
+      "SELECT id,channel,name,price,pings,bonus_pings,badge FROM ping_products WHERE active=1 AND channel='web' ORDER BY sort_order, price",
+    ),
+    ledger: await db.all(
+      'SELECT l.id,l.type,l.paid_delta,l.bonus_delta,l.paid_after,l.bonus_after,l.drama_id,l.episode,l.memo,l.created_at,d.title FROM ping_ledger l LEFT JOIN dramas d ON d.id=l.drama_id WHERE l.user_id=? ORDER BY l.created_at DESC LIMIT 100',
+      [req.user.id],
+    ),
+    policy: {
+      unit_won: settings.ping_unit_won,
+      default_episode_pings: settings.default_episode_pings,
+      title_unlock_discount: settings.title_unlock_discount,
+    },
+  });
+});
+// 충전: 지금은 테스트 결제입니다. PG·인앱결제 연동 시 이 경로는 "결제 승인 확인 후 적립"으로 바뀌고,
+// 적립 로직(creditPings)은 그대로 씁니다. 테스트 환경에서는 인앱 채널 상품도 적립해 정산을 시뮬레이션합니다.
+app.post('/api/pings/charge', requireAuth, async (req, res) => {
+  if (!demo) fail(503, '결제 서비스 연동 준비 중입니다.');
+  const b = z
+    .object({ productId: z.string().min(1).max(80), idempotencyKey: z.string().uuid() })
+    .parse(req.body);
+  const settings = await loadSettings(db);
+  const result = await db.transaction(async () => {
+    const existing = await db.get('SELECT * FROM orders WHERE idempotency_key=?', [
+      b.idempotencyKey,
+    ]);
+    if (existing) {
+      if (existing.user_id !== req.user.id || existing.kind !== 'ping_charge')
+        fail(409, '중복 요청입니다.');
+      return orderShape(existing, { wallet: await walletOf(db, req.user.id) });
+    }
+    const product = await db.get('SELECT * FROM ping_products WHERE id=? AND active=1', [
+      b.productId,
+    ]);
+    if (!product) fail(404, '충전 상품을 찾을 수 없습니다.');
+    const feeRate = channelFeeRate(product.channel, settings);
+    const id = randomUUID(),
       createdAt = now();
     await db.run(
-      'INSERT INTO orders (id,user_id,drama_id,kind,amount,status,idempotency_key,created_at) VALUES (?,?,?,?,?,?,?,?)',
-      [id, req.user.id, dramaId, b.kind, amount, 'test_paid', b.idempotencyKey, createdAt],
+      'INSERT INTO orders (id,user_id,drama_id,kind,amount,status,idempotency_key,created_at,channel,channel_fee,pings,bonus_pings,product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [
+        id,
+        req.user.id,
+        null,
+        'ping_charge',
+        product.price,
+        'test_paid',
+        b.idempotencyKey,
+        createdAt,
+        product.channel,
+        Math.round((product.price * feeRate) / 100),
+        product.pings,
+        product.bonus_pings,
+        product.id,
+      ],
     );
-    if (b.kind === 'episode') {
-      await db.run(
-        'INSERT INTO episode_entitlements (user_id,drama_id,episode,order_id,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING',
-        [req.user.id, dramaId, episode, id, createdAt],
-      );
-      await recordSale(db, {
-        order: { id, kind: b.kind, amount, created_at: createdAt },
-        drama,
-        settings,
+    const credited = await creditPings(db, {
+      userId: req.user.id,
+      type: 'charge',
+      source: 'charge',
+      channel: product.channel,
+      orderId: id,
+      paid: product.pings,
+      bonus: product.bonus_pings,
+      unitMilli: unitMilliOf(product.price, product.pings, feeRate),
+      memo: product.name,
+    });
+    return {
+      id,
+      kind: 'ping_charge',
+      amount: product.price,
+      pings: product.pings,
+      bonus: product.bonus_pings,
+      status: 'test_paid',
+      wallet: credited.wallet,
+    };
+  });
+  res.json(result);
+});
+// 회차 한 편 또는 작품 전체(할인)를 핑으로 엽니다. 사용한 핑의 순매출이 PD 정산으로 넘어갑니다.
+app.post('/api/pings/unlock', requireAuth, async (req, res) => {
+  const b = z
+    .object({
+      dramaId: z.string().min(1).max(80),
+      episode: z.number().int().min(1).max(500).optional(),
+      all: z.boolean().default(false),
+      idempotencyKey: z.string().uuid(),
+    })
+    .parse(req.body);
+  const settings = await loadSettings(db);
+  const result = await db.transaction(async () => {
+    const existing = await db.get('SELECT * FROM orders WHERE idempotency_key=?', [
+      b.idempotencyKey,
+    ]);
+    if (existing) {
+      if (existing.user_id !== req.user.id || !['ping_episode', 'ping_title'].includes(existing.kind))
+        fail(409, '중복 요청입니다.');
+      const episode = await db.get('SELECT episode FROM episode_entitlements WHERE order_id=?', [
+        existing.id,
+      ]);
+      return orderShape(existing, {
+        episode: episode?.episode ?? null,
+        wallet: await walletOf(db, req.user.id),
       });
-    } else if (b.kind === 'drama') {
+    }
+    const drama = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [
+      b.dramaId,
+    ]);
+    if (!drama) fail(404, '작품을 찾을 수 없습니다.');
+    if (drama.free) fail(400, '무료로 공개된 작품입니다.');
+    if (await hasAccess(req.user, drama)) fail(409, '이미 모든 회차를 볼 수 있어요.');
+    const perEpisode = episodePingsOf(drama, settings);
+    const owned = await ownedEpisodes(req.user, drama.id);
+    const numbers = (
+      await db.all('SELECT number FROM episodes WHERE drama_id=? ORDER BY number', [drama.id])
+    ).map((e) => Number(e.number));
+    const locked = numbers.filter((n) => n > drama.free_episodes && !owned.includes(n));
+    let pings, kind;
+    if (b.all) {
+      if (!locked.length) fail(409, '열 수 있는 잠긴 회차가 없어요.');
+      pings = titlePingsOf(locked.length, perEpisode, settings);
+      kind = 'ping_title';
+    } else {
+      if (!b.episode) fail(400, '열 회차를 선택해 주세요.');
+      if (!numbers.includes(b.episode)) fail(404, '회차를 찾을 수 없습니다.');
+      if (b.episode <= drama.free_episodes) fail(400, '무료로 볼 수 있는 회차입니다.');
+      if (owned.includes(b.episode)) fail(409, '이미 연 회차입니다.');
+      pings = perEpisode;
+      kind = 'ping_episode';
+    }
+    const id = randomUUID(),
+      createdAt = now();
+    await db.run(
+      'INSERT INTO orders (id,user_id,drama_id,kind,amount,status,idempotency_key,created_at,channel,pings) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [id, req.user.id, drama.id, kind, 0, 'ping_paid', b.idempotencyKey, createdAt, 'ping', pings],
+    );
+    const spent = await debitPings(db, {
+      userId: req.user.id,
+      pings,
+      type: 'spend',
+      orderId: id,
+      dramaId: drama.id,
+      episode: b.all ? null : b.episode,
+      memo: b.all ? `전체 열기 ${locked.length}편` : `${b.episode}화`,
+    });
+    if (b.all)
       await db.run(
         'INSERT INTO entitlements (user_id,drama_id,order_id) VALUES (?,?,?) ON CONFLICT DO NOTHING',
-        [req.user.id, dramaId, id],
+        [req.user.id, drama.id, id],
       );
-      // The seller ledger is written with the order so settlement can never drift from sales.
-      await recordSale(db, {
-        order: { id, kind: b.kind, amount, created_at: createdAt },
-        drama,
-        settings,
-      });
-    } else
+    else
       await db.run(
-        'INSERT INTO subscriptions (user_id,order_id,expires_at,auto_renew) VALUES (?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET order_id=excluded.order_id,expires_at=excluded.expires_at,auto_renew=0',
-        [
-          req.user.id,
-          id,
-          new Date(Date.now() + settings.subscription_days * 86400000).toISOString(),
-        ],
+        'INSERT INTO episode_entitlements (user_id,drama_id,episode,order_id,created_at) VALUES (?,?,?,?,?)',
+        [req.user.id, drama.id, b.episode, id, createdAt],
       );
-    return { id, amount, status: 'test_paid', kind: b.kind, episode };
+    await recordPingSale(db, {
+      order: { id, created_at: createdAt },
+      drama,
+      gross: Math.floor(spent.valueMilli / 1000),
+      rate: await platformRateFor(db, drama.owner_id, settings),
+      settings,
+    });
+    return {
+      id,
+      kind,
+      pings,
+      episode: b.all ? null : b.episode,
+      unlocked: b.all ? locked.length : 1,
+      wallet: spent.wallet,
+    };
   });
   res.json(result);
 });
@@ -567,7 +734,7 @@ app.get('/api/studio', roles('pd', 'admin'), async (req, res) => {
     isAdmin ? [] : [req.user.id],
   );
   const orders = await db.all(
-    'SELECT o.*,d.title FROM orders o LEFT JOIN dramas d ON o.drama_id=d.id' +
+    'SELECT o.*,d.title,(SELECT se.gross FROM settlement_entries se WHERE se.order_id=o.id) AS sale_value FROM orders o LEFT JOIN dramas d ON o.drama_id=d.id' +
       (isAdmin ? '' : ' WHERE d.owner_id=?') +
       ' ORDER BY o.created_at DESC',
     isAdmin ? [] : [req.user.id],
@@ -606,9 +773,9 @@ const dramaSchema = z.object({
   tagline: z.string().trim().min(2).max(120),
   synopsis: z.string().trim().min(10).max(3000),
   genre: z.enum(['로맨스', '스릴러', '판타지', '코미디', '청춘']),
-  price: z.number().int().min(0).max(100000),
+  free: z.boolean().default(false),
+  episode_pings: z.number().int().min(0).max(1000).default(0),
   free_episodes: z.number().int().min(1).max(50),
-  episode_price: z.number().int().min(0).max(100000).default(0),
   image: z.string().regex(/^\/(images\/[a-z0-9-]+\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/),
 });
 async function checkMedia(req, url) {
@@ -656,7 +823,7 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
   await checkMedia(req, b.image);
   const channel = await db.get('SELECT id FROM channels WHERE owner_id=?', [req.user.id]);
   await db.run(
-    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,price,free_episodes,created_at,channel_id,episode_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,free,episode_pings,free_episodes,created_at,channel_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
     [
       id,
       req.user.id,
@@ -665,11 +832,11 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
       b.synopsis,
       b.genre,
       b.image,
-      b.price,
+      b.free ? 1 : 0,
+      b.episode_pings,
       b.free_episodes,
       now(),
       channel?.id || null,
-      b.episode_price,
     ],
   );
   res.json({ id });
@@ -711,16 +878,16 @@ app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
     const b = dramaSchema.parse(req.body);
     await checkMedia(req, b.image);
     await db.run(
-      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,price=?,free_episodes=?,episode_price=? WHERE id=?',
+      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,free=?,episode_pings=?,free_episodes=? WHERE id=?',
       [
         b.title,
         b.tagline,
         b.synopsis,
         b.genre,
         b.image,
-        b.price,
+        b.free ? 1 : 0,
+        b.episode_pings,
         b.free_episodes,
-        b.episode_price,
         d.id,
       ],
     );
@@ -957,6 +1124,8 @@ app.use((err, req, res, next) => {
   console.error(err.message);
   res.status(err.status || 500).json({
     error: err.status ? err.message : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    // 핑 부족처럼 화면이 다음 행동(충전하러 가기)을 정할 수 있는 오류는 코드와 수치를 함께 보냅니다.
+    ...(err.status && err.code ? { code: err.code, need: err.need, balance: err.balance } : {}),
   });
 });
 // Demo videos are intentionally served only by the access-controlled API.

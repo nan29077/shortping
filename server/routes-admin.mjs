@@ -9,12 +9,16 @@ import {
   periodOf,
 } from './settlement.mjs';
 import { channelSelect } from './routes-studio.mjs';
+import { channels as pingChannels, channelFeeRate, creditPings, debitPings, walletOf } from './pings.mjs';
 import { appearanceFromSettings, homeThemes } from './home-appearance.mjs';
 
 const memberSql = `SELECT u.id,u.email,u.name,u.role,u.status,u.created_at,u.last_login_at,u.phone,
   p.avatar,p.bio,
-  (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id) AS order_count,
+  (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.amount>0) AS order_count,
   (SELECT COALESCE(SUM(o.amount),0) FROM orders o WHERE o.user_id=u.id) AS spend,
+  (SELECT COALESCE(w.paid_balance,0) FROM ping_wallets w WHERE w.user_id=u.id) AS ping_paid,
+  (SELECT COALESCE(w.bonus_balance,0) FROM ping_wallets w WHERE w.user_id=u.id) AS ping_bonus,
+  (SELECT r.platform_fee_rate FROM pd_settlement_rates r WHERE r.user_id=u.id) AS custom_rate,
   (SELECT COUNT(*) FROM entitlements e WHERE e.user_id=u.id) AS owned,
   (SELECT COUNT(*) FROM favorites f WHERE f.user_id=u.id) AS favorites,
   (SELECT COUNT(*) FROM history h WHERE h.user_id=u.id) AS watched,
@@ -171,28 +175,178 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
   app.get('/api/admin/settings', roles('admin'), async (req, res) =>
     res.json({ settings: await loadSettings(db), defaults: settingDefaults }),
   );
+  // 부분 저장을 허용합니다. 화면마다 자기 항목만 보내도 나머지 값은 그대로 유지됩니다.
   app.put('/api/admin/settings', roles('admin'), async (req, res) => {
     const b = z
       .object({
         subscription_price: z.number().int().min(0).max(1000000),
         subscription_days: z.number().int().min(1).max(365),
-        default_drama_price: z.number().int().min(0).max(1000000),
         default_free_episodes: z.number().int().min(1).max(50),
-        default_episode_price: z.number().int().min(0).max(100000),
+        ping_unit_won: z.number().int().min(1).max(10000),
+        default_episode_pings: z.number().int().min(1).max(1000),
+        title_unlock_discount: z.number().min(0).max(90),
         platform_fee_rate: z.number().min(0).max(90),
         pg_fee_rate: z.number().min(0).max(20),
+        app_store_fee_rate: z.number().min(0).max(50),
+        google_play_fee_rate: z.number().min(0).max(50),
         settle_hold_days: z.number().int().min(0).max(90),
         payout_min: z.number().int().min(0).max(10000000),
         withholding_rate: z.number().min(0).max(30),
         vat_rate: z.number().min(0).max(30),
         payout_notice: z.string().trim().max(300),
       })
+      .partial()
       .parse(req.body);
-    if (b.platform_fee_rate + b.pg_fee_rate > 100)
+    if (!Object.keys(b).length) fail(400, '변경할 항목이 없습니다.');
+    const merged = { ...(await loadSettings(db)), ...b };
+    if (merged.platform_fee_rate + merged.pg_fee_rate > 100)
       fail(400, '플랫폼 수수료와 결제 수수료의 합은 100%를 넘을 수 없습니다.');
     const settings = await saveSettings(db, b, req.user.id);
-    await audit(req.user.id, 'settings:updated', 'platform');
+    await audit(req.user.id, 'settings:updated:' + Object.keys(b).join(','), 'platform');
     res.json({ settings });
+  });
+
+  // ── 포인트(핑) 관리 ────────────────────────────────────────────────
+  app.get('/api/admin/pings', roles('admin'), async (req, res) => {
+    const settings = await loadSettings(db);
+    const num = (row, key) => Number(row?.[key] || 0);
+    const issued = await db.get(
+      "SELECT COALESCE(SUM(CASE WHEN paid_delta>0 THEN paid_delta ELSE 0 END),0) AS paid, COALESCE(SUM(CASE WHEN bonus_delta>0 THEN bonus_delta ELSE 0 END),0) AS bonus, COALESCE(SUM(CASE WHEN type='spend' THEN -(paid_delta+bonus_delta) ELSE 0 END),0) AS spent, COALESCE(SUM(CASE WHEN type='revoke' THEN -(paid_delta+bonus_delta) ELSE 0 END),0) AS revoked FROM ping_ledger",
+    );
+    const outstanding = await db.get(
+      'SELECT COALESCE(SUM(paid_left),0) AS paid, COALESCE(SUM(bonus_left),0) AS bonus, COALESCE(SUM((paid_left+bonus_left)*unit_milli),0) AS value_milli FROM ping_lots',
+    );
+    res.json({
+      settings,
+      summary: {
+        issued_paid: num(issued, 'paid'),
+        issued_bonus: num(issued, 'bonus'),
+        spent: num(issued, 'spent'),
+        revoked: num(issued, 'revoked'),
+        outstanding_paid: num(outstanding, 'paid'),
+        outstanding_bonus: num(outstanding, 'bonus'),
+        // 아직 쓰이지 않은 핑이 앞으로 PD 정산으로 넘어갈 수 있는 최대 금액(원)
+        liability: Math.floor(num(outstanding, 'value_milli') / 1000),
+      },
+      charges: await db.all(
+        "SELECT channel, COUNT(*) AS count, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(channel_fee),0) AS channel_fee, COALESCE(SUM(pings),0) AS pings, COALESCE(SUM(bonus_pings),0) AS bonus FROM orders WHERE kind='ping_charge' GROUP BY channel",
+      ),
+      sales: await db.get(
+        "SELECT COUNT(*) AS count, COALESCE(SUM(gross),0) AS gross, COALESCE(SUM(platform_fee),0) AS platform_fee, COALESCE(SUM(net),0) AS net FROM settlement_entries WHERE kind='ping'",
+      ),
+      products: await db.all('SELECT p.*, (SELECT COUNT(*) FROM orders o WHERE o.product_id=p.id) AS sold FROM ping_products p ORDER BY p.channel, p.sort_order, p.price'),
+      rates: await db.all(
+        `SELECT u.id,u.name,u.email,u.role, r.platform_fee_rate, r.updated_at
+         FROM users u LEFT JOIN pd_settlement_rates r ON r.user_id=u.id
+         WHERE u.role IN ('pd','admin') ORDER BY (r.platform_fee_rate IS NULL), u.name`,
+      ),
+      ledger: await db.all(
+        `SELECT l.*, u.name AS user_name, u.email AS user_email, d.title, a.name AS actor_name
+         FROM ping_ledger l JOIN users u ON u.id=l.user_id LEFT JOIN dramas d ON d.id=l.drama_id
+         LEFT JOIN users a ON a.id=l.actor_id ORDER BY l.created_at DESC LIMIT 200`,
+      ),
+      channels: pingChannels.map((id) => ({ id, fee_rate: channelFeeRate(id, settings) })),
+    });
+  });
+  const productSchema = z.object({
+    channel: z.enum(pingChannels),
+    name: z.string().trim().min(1).max(40),
+    price: z.number().int().min(100).max(10000000),
+    pings: z.number().int().min(1).max(1000000),
+    bonus_pings: z.number().int().min(0).max(1000000).default(0),
+    badge: z.string().trim().max(12).default(''),
+    active: z.boolean().default(true),
+    sort_order: z.number().int().min(0).max(999).default(0),
+  });
+  app.post('/api/admin/pings/products', roles('admin'), async (req, res) => {
+    const b = productSchema.parse(req.body);
+    const id = randomUUID();
+    const stamp = now();
+    await db.run(
+      'INSERT INTO ping_products (id,channel,name,price,pings,bonus_pings,badge,active,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [id, b.channel, b.name, b.price, b.pings, b.bonus_pings, b.badge, b.active ? 1 : 0, b.sort_order, stamp, stamp],
+    );
+    await audit(req.user.id, `ping-product:created:${b.channel}`, id);
+    res.status(201).json({ id });
+  });
+  // 가격·핑 수를 바꿔도 이미 충전된 핑의 정산 단가는 충전 당시 값 그대로 유지됩니다.
+  app.patch('/api/admin/pings/products/:id', roles('admin'), async (req, res) => {
+    const b = productSchema.parse(req.body);
+    if (!(await db.get('SELECT id FROM ping_products WHERE id=?', [req.params.id])))
+      fail(404, '충전 상품을 찾을 수 없습니다.');
+    await db.run(
+      'UPDATE ping_products SET channel=?,name=?,price=?,pings=?,bonus_pings=?,badge=?,active=?,sort_order=?,updated_at=? WHERE id=?',
+      [b.channel, b.name, b.price, b.pings, b.bonus_pings, b.badge, b.active ? 1 : 0, b.sort_order, now(), req.params.id],
+    );
+    await audit(req.user.id, `ping-product:updated:${b.active ? 'active' : 'inactive'}`, req.params.id);
+    res.json({ ok: true });
+  });
+  // 판매 이력이 있는 상품은 주문 기록을 지키기 위해 삭제 대신 판매 중지합니다.
+  app.delete('/api/admin/pings/products/:id', roles('admin'), async (req, res) => {
+    if (!(await db.get('SELECT id FROM ping_products WHERE id=?', [req.params.id])))
+      fail(404, '충전 상품을 찾을 수 없습니다.');
+    const sold = await db.get('SELECT id FROM orders WHERE product_id=? LIMIT 1', [req.params.id]);
+    if (sold) {
+      await db.run('UPDATE ping_products SET active=0,updated_at=? WHERE id=?', [now(), req.params.id]);
+      await audit(req.user.id, 'ping-product:deactivated', req.params.id);
+      return res.json({ ok: true, deactivated: true });
+    }
+    await db.run('DELETE FROM ping_products WHERE id=?', [req.params.id]);
+    await audit(req.user.id, 'ping-product:deleted', req.params.id);
+    res.json({ ok: true, deleted: true });
+  });
+  // 관리자 지급(보상·이벤트)과 회수. 지급 핑은 무상(보너스) 핑으로 쌓이고, 사용되면 기준가로 PD에 정산됩니다.
+  app.post('/api/admin/pings/adjust', roles('admin'), async (req, res) => {
+    const b = z
+      .object({
+        userId: z.string().min(1).max(80),
+        action: z.enum(['grant', 'revoke']),
+        pings: z.number().int().min(1).max(100000),
+        memo: z.string().trim().min(2, '사유를 입력해 주세요.').max(200),
+      })
+      .parse(req.body);
+    if (!(await db.get('SELECT id FROM users WHERE id=?', [b.userId])))
+      fail(404, '회원을 찾을 수 없습니다.');
+    const settings = await loadSettings(db);
+    const result = await db.transaction(async () => {
+      const done =
+        b.action === 'grant'
+          ? await creditPings(db, {
+              userId: b.userId,
+              type: 'grant',
+              source: 'grant',
+              channel: 'admin',
+              bonus: b.pings,
+              unitMilli: settings.ping_unit_won * 1000,
+              memo: b.memo,
+              actorId: req.user.id,
+            })
+          : await debitPings(db, {
+              userId: b.userId,
+              pings: b.pings,
+              type: 'revoke',
+              memo: b.memo,
+              actorId: req.user.id,
+            });
+      await audit(req.user.id, `pings:${b.action}:${b.pings}`, b.userId);
+      return done;
+    });
+    res.json({ wallet: result.wallet });
+  });
+  // PD별 분배 비율. rate가 null이면 공통 비율로 되돌립니다. 이미 기록된 정산에는 소급하지 않습니다.
+  app.put('/api/admin/pings/rates/:id', roles('admin'), async (req, res) => {
+    const b = z.object({ platform_fee_rate: z.number().min(0).max(100).nullable() }).parse(req.body);
+    const user = await db.get('SELECT id,role FROM users WHERE id=?', [req.params.id]);
+    if (!user) fail(404, '회원을 찾을 수 없습니다.');
+    if (b.platform_fee_rate === null)
+      await db.run('DELETE FROM pd_settlement_rates WHERE user_id=?', [user.id]);
+    else
+      await db.run(
+        'INSERT INTO pd_settlement_rates (user_id,platform_fee_rate,updated_at,updated_by) VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET platform_fee_rate=excluded.platform_fee_rate,updated_at=excluded.updated_at,updated_by=excluded.updated_by',
+        [user.id, b.platform_fee_rate, now(), req.user.id],
+      );
+    await audit(req.user.id, `pd-rate:${b.platform_fee_rate ?? 'default'}`, user.id);
+    res.json({ ok: true });
   });
 
   app.get('/api/admin/home-appearance', roles('admin'), async (req, res) => {
@@ -302,6 +456,11 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         [id],
       ),
       tax: await db.get('SELECT * FROM pd_tax_profiles WHERE user_id=?', [id]),
+      wallet: await walletOf(db, id),
+      pingLedger: await db.all(
+        'SELECT l.*, d.title FROM ping_ledger l LEFT JOIN dramas d ON d.id=l.drama_id WHERE l.user_id=? ORDER BY l.created_at DESC LIMIT 50',
+        [id],
+      ),
     });
   });
   app.patch('/api/admin/members/:id', roles('admin'), async (req, res) => {
@@ -380,8 +539,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
   app.patch('/api/admin/dramas/:id/pricing', roles('admin'), async (req, res) => {
     const b = z
       .object({
-        price: z.number().int().min(0).max(1000000),
-        episode_price: z.number().int().min(0).max(100000).default(0),
+        free: z.boolean().default(false),
+        episode_pings: z.number().int().min(0).max(1000).default(0),
         free_episodes: z.number().int().min(1).max(50),
         badge: z.enum(['NEW', 'HOT', '독점', '완결', '추천']),
         status: z.enum(['published', 'hidden']),
@@ -392,8 +551,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     if (!['published', 'hidden'].includes(drama.status))
       fail(409, '공개된 작품의 판매 설정만 변경할 수 있어요.');
     await db.run(
-      'UPDATE dramas SET price=?,episode_price=?,free_episodes=?,badge=?,status=? WHERE id=?',
-      [b.price, b.episode_price, b.free_episodes, b.badge, b.status, drama.id],
+      'UPDATE dramas SET free=?,episode_pings=?,free_episodes=?,badge=?,status=? WHERE id=?',
+      [b.free ? 1 : 0, b.episode_pings, b.free_episodes, b.badge, b.status, drama.id],
     );
     await audit(req.user.id, `drama:pricing:${b.status}`, drama.id);
     res.json({ ok: true });

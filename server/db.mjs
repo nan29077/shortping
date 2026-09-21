@@ -100,6 +100,15 @@ export async function migrate(db) {
     `CREATE UNIQUE INDEX IF NOT EXISTS settlement_entry_order ON settlement_entries(order_id) WHERE order_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS settlement_entry_pd ON settlement_entries(pd_id,status)`,
     `CREATE TABLE IF NOT EXISTS settlement_watch_marks (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, drama_id TEXT NOT NULL REFERENCES dramas(id) ON DELETE CASCADE, episode INTEGER NOT NULL, period TEXT NOT NULL, PRIMARY KEY(user_id,drama_id))`,
+    // 핑(포인트) — 충전 상품, 지갑(잔액 캐시), 충전 단위(로트), 거래 장부, 사용 내역, PD별 분배율
+    `CREATE TABLE IF NOT EXISTS ping_products (id TEXT PRIMARY KEY, channel TEXT NOT NULL DEFAULT 'web', name TEXT NOT NULL, price INTEGER NOT NULL CHECK(price >= 0), pings INTEGER NOT NULL CHECK(pings > 0), bonus_pings INTEGER NOT NULL DEFAULT 0 CHECK(bonus_pings >= 0), badge TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ping_wallets (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, paid_balance INTEGER NOT NULL DEFAULT 0 CHECK(paid_balance >= 0), bonus_balance INTEGER NOT NULL DEFAULT 0 CHECK(bonus_balance >= 0), updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ping_lots (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, source TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'web', order_id TEXT REFERENCES orders(id), paid_total INTEGER NOT NULL DEFAULT 0, paid_left INTEGER NOT NULL DEFAULT 0 CHECK(paid_left >= 0), bonus_total INTEGER NOT NULL DEFAULT 0, bonus_left INTEGER NOT NULL DEFAULT 0 CHECK(bonus_left >= 0), unit_milli BIGINT NOT NULL, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ping_lots_user ON ping_lots(user_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS ping_ledger (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, paid_delta INTEGER NOT NULL DEFAULT 0, bonus_delta INTEGER NOT NULL DEFAULT 0, paid_after INTEGER NOT NULL, bonus_after INTEGER NOT NULL, value_milli BIGINT NOT NULL DEFAULT 0, order_id TEXT REFERENCES orders(id), drama_id TEXT, episode INTEGER, memo TEXT NOT NULL DEFAULT '', actor_id TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ping_ledger_user ON ping_ledger(user_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS ping_consumptions (ledger_id TEXT NOT NULL REFERENCES ping_ledger(id) ON DELETE CASCADE, lot_id TEXT NOT NULL REFERENCES ping_lots(id) ON DELETE CASCADE, paid INTEGER NOT NULL DEFAULT 0, bonus INTEGER NOT NULL DEFAULT 0, value_milli BIGINT NOT NULL, PRIMARY KEY(ledger_id, lot_id))`,
+    `CREATE TABLE IF NOT EXISTS pd_settlement_rates (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, platform_fee_rate REAL NOT NULL CHECK(platform_fee_rate >= 0 AND platform_fee_rate <= 100), updated_at TEXT NOT NULL, updated_by TEXT)`,
     `CREATE TABLE IF NOT EXISTS member_notes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, actor_id TEXT NOT NULL REFERENCES users(id), note TEXT NOT NULL, created_at TEXT NOT NULL)`,
   ];
   for (const sql of statements) await db.run(sql);
@@ -114,6 +123,33 @@ export async function migrate(db) {
   await ensureColumn(db, 'channels', 'banner_fit', "TEXT NOT NULL DEFAULT 'contain'");
   await ensureColumn(db, 'channels', 'overlay', 'INTEGER NOT NULL DEFAULT 45');
   await ensureColumn(db, 'channels', 'greeting', "TEXT NOT NULL DEFAULT ''");
+  // 편당 결제는 원화에서 핑으로 바뀌었습니다. 무료 여부는 가격 0원이 아니라 별도 표시로 관리합니다.
+  if (await ensureColumn(db, 'dramas', 'free', 'INTEGER NOT NULL DEFAULT 0'))
+    await db.run('UPDATE dramas SET free=1 WHERE price=0');
+  await ensureColumn(db, 'dramas', 'episode_pings', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'user_profiles', 'auto_unlock', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'orders', 'channel', "TEXT NOT NULL DEFAULT 'web'");
+  await ensureColumn(db, 'orders', 'channel_fee', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'orders', 'pings', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'orders', 'bonus_pings', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'orders', 'product_id', 'TEXT');
+  // 처음 한 번만 기본 충전 상품(웹)을 만들어 둡니다. 이후 구성은 관리자 포인트 관리에서 바꿉니다.
+  if (!(await db.get('SELECT id FROM ping_products LIMIT 1'))) {
+    const stamp = new Date().toISOString();
+    const defaults = [
+      ['ping-5k', '50핑', 5000, 50, 0, ''],
+      ['ping-10k', '100핑', 10000, 100, 0, '기본'],
+      ['ping-30k', '300핑', 30000, 300, 15, '보너스'],
+      ['ping-50k', '500핑', 50000, 500, 40, '인기'],
+      ['ping-100k', '1,000핑', 100000, 1000, 100, '최대 혜택'],
+    ];
+    let order = 0;
+    for (const [id, name, price, pings, bonus, badge] of defaults)
+      await db.run(
+        "INSERT INTO ping_products (id,channel,name,price,pings,bonus_pings,badge,active,sort_order,created_at,updated_at) VALUES (?,'web',?,?,?,?,?,1,?,?,?) ON CONFLICT DO NOTHING",
+        [id, name, price, pings, bonus, badge, order++, stamp, stamp],
+      );
+  }
   await db.run(
     "UPDATE dramas SET published_at=created_at WHERE published_at IS NULL AND status='published'",
   );
@@ -129,6 +165,7 @@ async function ensureColumn(db, table, column, type) {
           )
         ).map((r) => r.name)
       : (await db.all(`PRAGMA table_info(${table})`)).map((r) => r.name);
-  if (!existing.includes(column))
-    await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  if (existing.includes(column)) return false;
+  await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  return true;
 }

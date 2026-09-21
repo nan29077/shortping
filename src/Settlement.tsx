@@ -15,6 +15,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import {
+  settleKindLabel,
   api,
   day,
   localDay,
@@ -243,10 +244,16 @@ export default function Settlement({
       <>
         <BalanceCards balance={data.balance} rules={data.settings} />
         <div className="info-box">
-          판매액에서 플랫폼 수수료 {data.settings.platform_fee_rate}%
-          {data.settings.pg_fee_rate > 0 && ` · 결제 수수료 ${data.settings.pg_fee_rate}%`}를 차감한
-          금액이 정산됩니다. 구매 후 {data.settings.settle_hold_days}일이 지나면 출금 가능 금액으로
-          전환되고, 숏핑 패스(구독) 매출은 월 마감 시 시청 회차 비중으로 배분됩니다.
+          시청자가 내 작품에서 핑을 쓰면, 결제 채널 수수료(웹 PG · 앱 스토어)를 뺀 순매출을 PD{' '}
+          {100 - data.settings.platform_fee_rate} : 플랫폼 {data.settings.platform_fee_rate}로 나눠
+          정산합니다
+          {data.settings.default_platform_fee_rate !== undefined &&
+          data.settings.default_platform_fee_rate !== data.settings.platform_fee_rate
+            ? ' (내 계정 개별 비율 적용)'
+            : ''}
+          . 보너스·이벤트 핑으로 연 회차도 똑같이 정산돼요. 사용 후 {data.settings.settle_hold_days}일이
+          지나면 출금 가능 금액으로 전환되고, 숏핑 패스(구독) 매출은 월 마감 시 시청 회차 비중으로
+          배분됩니다.
         </div>
         <SettlementCalendar
           entries={monthEntries}
@@ -275,7 +282,7 @@ export default function Settlement({
                   ['정산일', '구분', '작품', '판매액', '수수료', '정산액', '상태', '확정일'],
                   ...listed.map((e) => [
                     moment(e.created_at),
-                    e.kind === 'drama' ? '개별 구매' : '구독 배분',
+                    settleKindLabel(e.kind),
                     e.drama_title || `${e.period} 구독 정산`,
                     e.gross,
                     e.platform_fee + e.pg_fee,
@@ -327,7 +334,7 @@ export default function Settlement({
                       <td className="nowrap">{day(e.created_at)}</td>
                       <td>
                         <strong>{e.drama_title || `${e.period} 숏핑 패스 배분`}</strong>
-                        <small>{e.kind === 'drama' ? '개별 구매' : '구독 배분'}</small>
+                        <small>{settleKindLabel(e.kind)}</small>
                       </td>
                       <td className="nowrap">{won(e.gross)}</td>
                       <td className="nowrap muted">-{won(e.platform_fee + e.pg_fee)}</td>

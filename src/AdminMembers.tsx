@@ -15,6 +15,9 @@ import {
   Wallet,
 } from 'lucide-react';
 import {
+  orderKindLabel,
+  pingTypeLabel,
+  pings,
   api,
   count,
   day,
@@ -380,6 +383,56 @@ export default function AdminMembers({
               </div>
             </div>
           )}
+          {detail.wallet && (
+            <div className="detail-block">
+              <h4>
+                <Ticket size={15} /> 보유 핑 {pings(detail.wallet.total)}
+              </h4>
+              <div className="detail-grid">
+                <div>
+                  <span>충전 핑</span>
+                  <strong>{pings(detail.wallet.paid)}</strong>
+                </div>
+                <div>
+                  <span>보너스 핑</span>
+                  <strong>{pings(detail.wallet.bonus)}</strong>
+                </div>
+                {detail.member.role !== 'viewer' && (
+                  <div>
+                    <span>분배 비율</span>
+                    <strong>
+                      {detail.member.custom_rate != null
+                        ? `개별 · 플랫폼 ${detail.member.custom_rate}%`
+                        : '공통 비율'}
+                    </strong>
+                  </div>
+                )}
+              </div>
+              {!!detail.pingLedger?.length && (
+                <ul className="detail-list">
+                  {detail.pingLedger.slice(0, 8).map((l) => {
+                    const delta = Number(l.paid_delta) + Number(l.bonus_delta);
+                    return (
+                      <li key={l.id}>
+                        <span>
+                          {pingTypeLabel[l.type] || l.type} ·{' '}
+                          {l.type === 'spend' && l.title
+                            ? `${l.title} ${l.episode ? l.episode + '화' : '전체'}`
+                            : l.memo}
+                        </span>
+                        <strong>
+                          {delta > 0 ? '+' : ''}
+                          {pings(delta)}
+                        </strong>
+                        <small>{day(l.created_at)}</small>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <p className="muted settings-note">핑 지급·회수는 포인트(핑) 관리에서 할 수 있어요.</p>
+            </div>
+          )}
           {detail.settlement && detail.member.role !== 'viewer' && (
             <div className="detail-block">
               <h4>
@@ -427,7 +480,7 @@ export default function AdminMembers({
                   <li key={d.id}>
                     <span>{d.title}</span>
                     <strong>{d.status === 'published' ? '공개 중' : d.status}</strong>
-                    <small>{won(d.price)}</small>
+                    <small>{d.free ? '무료' : `회차 ${d.episode_pings ? d.episode_pings + '핑' : '기본'}`}</small>
                   </li>
                 ))}
               </ul>
@@ -441,8 +494,14 @@ export default function AdminMembers({
               <ul className="detail-list">
                 {detail.orders.slice(0, 8).map((o) => (
                   <li key={o.id}>
-                    <span>{o.title || '숏핑 패스'}</span>
-                    <strong>{won(o.amount)}</strong>
+                    <span>
+                      {orderKindLabel(o.kind)} · {o.title || (o.kind === 'ping_charge' ? `${o.pings}핑` : '숏핑 패스')}
+                    </span>
+                    <strong>
+                      {o.kind === 'ping_episode' || o.kind === 'ping_title'
+                        ? `-${pings(o.pings || 0)}`
+                        : won(o.amount)}
+                    </strong>
                     <small>{day(o.created_at)}</small>
                   </li>
                 ))}

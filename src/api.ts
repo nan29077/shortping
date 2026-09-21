@@ -33,6 +33,7 @@ export type User = {
   avatar: string;
   bio: string;
   auto_next: boolean;
+  auto_unlock: boolean;
 };
 export type Drama = {
   id: string;
@@ -50,8 +51,8 @@ export type Drama = {
   accent: string;
   badge: string;
   status: string;
-  price: number;
-  episode_price: number;
+  free: number;
+  episode_pings: number;
   free_episodes: number;
   views: number;
   episode_count: number;
@@ -67,13 +68,99 @@ export type Episode = {
   locked: boolean;
   owned?: boolean;
 };
-export type Detail = Drama & { episodes: Episode[]; entitled: boolean };
+export type Detail = Drama & {
+  episodes: Episode[];
+  entitled: boolean;
+  title_pings: number;
+  title_discount: number;
+  locked_count: number;
+};
+export type Wallet = { paid: number; bonus: number; total: number };
+export const emptyWallet: Wallet = { paid: 0, bonus: 0, total: 0 };
+export type PingProduct = {
+  id: string;
+  channel: 'web' | 'app_store' | 'google_play';
+  name: string;
+  price: number;
+  pings: number;
+  bonus_pings: number;
+  badge: string;
+  active?: number;
+  sort_order?: number;
+  sold?: number;
+};
+export type PingLedgerRow = {
+  id: string;
+  type: 'charge' | 'spend' | 'grant' | 'revoke' | string;
+  paid_delta: number;
+  bonus_delta: number;
+  paid_after: number;
+  bonus_after: number;
+  drama_id: string | null;
+  episode: number | null;
+  memo: string;
+  created_at: string;
+  title?: string | null;
+  value_milli?: number;
+  user_id?: string;
+  user_name?: string;
+  user_email?: string;
+  actor_name?: string | null;
+};
+export type PingState = {
+  wallet: Wallet;
+  products: PingProduct[];
+  ledger: PingLedgerRow[];
+  policy: { unit_won: number; default_episode_pings: number; title_unlock_discount: number };
+};
+export const isPingSpend = (o: Pick<Order, 'kind'>) =>
+  o.kind === 'ping_episode' || o.kind === 'ping_title';
+// 관리자는 실제로 들어온 돈(충전·구독)을, PD는 자기 작품에서 쓰인 핑의 판매액을 매출로 봅니다.
+export const orderRevenue = (o: Order, admin: boolean) =>
+  admin ? Number(o.amount || 0) : isPingSpend(o) ? Number(o.sale_value || 0) : Number(o.amount || 0);
+export const settleKindLabel = (kind: string) =>
+  kind === 'ping'
+    ? '핑 사용'
+    : kind === 'subscription'
+      ? '구독 배분'
+      : kind === 'episode'
+        ? '회차 구매'
+        : '개별 구매';
+export const pingChannelLabel: Record<string, string> = {
+  web: '웹 결제',
+  app_store: 'App Store',
+  google_play: 'Google Play',
+  admin: '관리자 지급',
+  ping: '핑 사용',
+};
+export const pingTypeLabel: Record<string, string> = {
+  charge: '충전',
+  spend: '사용',
+  grant: '지급',
+  revoke: '회수',
+};
+export const orderKindLabel = (kind: string) =>
+  (
+    ({
+      subscription: '숏핑 패스',
+      ping_charge: '핑 충전',
+      ping_episode: '회차 열기',
+      ping_title: '작품 전체 열기',
+      drama: '작품 소장',
+      episode: '회차 구매',
+    }) as Record<string, string>
+  )[kind] || kind;
 export type Order = {
   id: string;
   title: string | null;
   kind: string;
   episode?: number | null;
   amount: number;
+  pings?: number;
+  bonus_pings?: number;
+  channel?: string;
+  channel_fee?: number;
+  sale_value?: number | null;
   status: string;
   created_at: string;
 };
@@ -84,6 +171,7 @@ export type Library = {
   episodes: { drama_id: string; episode: number }[];
   history: { drama_id: string; episode: number; progress: number; updated_at: string }[];
   orders: Order[];
+  wallet: Wallet;
   subscription: { expires_at: string; auto_renew: number } | null;
 };
 export const emptyLibrary: Library = {
@@ -93,6 +181,7 @@ export const emptyLibrary: Library = {
   episodes: [],
   history: [],
   orders: [],
+  wallet: emptyWallet,
   subscription: null,
 };
 export type Channel = {
@@ -185,7 +274,11 @@ export type TaxProfile = {
 };
 export type SettlementRules = {
   platform_fee_rate: number;
+  default_platform_fee_rate?: number;
   pg_fee_rate: number;
+  app_store_fee_rate?: number;
+  google_play_fee_rate?: number;
+  ping_unit_won?: number;
   settle_hold_days: number;
   payout_min: number;
   withholding_rate: number;
@@ -210,11 +303,14 @@ export type StudioSettlement = {
 export type PlatformSettings = {
   subscription_price: number;
   subscription_days: number;
-  default_drama_price: number;
   default_free_episodes: number;
-  default_episode_price: number;
+  ping_unit_won: number;
+  default_episode_pings: number;
+  title_unlock_discount: number;
   platform_fee_rate: number;
   pg_fee_rate: number;
+  app_store_fee_rate: number;
+  google_play_fee_rate: number;
   settle_hold_days: number;
   payout_min: number;
   withholding_rate: number;
@@ -275,6 +371,9 @@ export type Member = User & {
   subscription_expires: string | null;
   settle_available: number;
   settle_paid: number;
+  ping_paid?: number | null;
+  ping_bonus?: number | null;
+  custom_rate?: number | null;
 };
 export type MemberDetail = {
   member: Member;
@@ -289,7 +388,51 @@ export type MemberDetail = {
   settlement: Balance | null;
   payouts: Payout[];
   tax: TaxProfile | null;
+  wallet?: Wallet;
+  pingLedger?: PingLedgerRow[];
 };
+export type AdminPings = {
+  settings: PlatformSettings;
+  summary: {
+    issued_paid: number;
+    issued_bonus: number;
+    spent: number;
+    revoked: number;
+    outstanding_paid: number;
+    outstanding_bonus: number;
+    liability: number;
+  };
+  charges: {
+    channel: string;
+    count: number;
+    amount: number;
+    channel_fee: number;
+    pings: number;
+    bonus: number;
+  }[];
+  sales: { count: number; gross: number; platform_fee: number; net: number };
+  products: PingProduct[];
+  rates: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    platform_fee_rate: number | null;
+    updated_at: string | null;
+  }[];
+  ledger: PingLedgerRow[];
+  channels: { id: string; fee_rate: number }[];
+};
+// 서버 오류 중 화면이 다음 행동을 고를 수 있는 것(예: 핑 부족 → 충전)은 코드와 수치를 함께 받습니다.
+export class ApiError extends Error {
+  code?: string;
+  need?: number;
+  balance?: number;
+  constructor(message: string, extra: { code?: string; need?: number; balance?: number } = {}) {
+    super(message);
+    Object.assign(this, extra);
+  }
+}
 export async function api<T = unknown>(url: string, method = 'GET', body?: unknown): Promise<T> {
   const res = await fetch('/api' + url, {
     method,
@@ -298,10 +441,16 @@ export async function api<T = unknown>(url: string, method = 'GET', body?: unkno
     body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({ error: '서버에 연결할 수 없습니다.' }));
-  if (!res.ok) throw new Error(data.error || '요청을 처리하지 못했습니다.');
+  if (!res.ok)
+    throw new ApiError(data.error || '요청을 처리하지 못했습니다.', {
+      code: data.code,
+      need: data.need,
+      balance: data.balance,
+    });
   return data;
 }
 export const won = (n: number) => new Intl.NumberFormat('ko-KR').format(n) + '원';
+export const pings = (n: number) => new Intl.NumberFormat('ko-KR').format(Number(n) || 0) + '핑';
 export const day = (value?: string | null) =>
   value ? new Date(value).toLocaleDateString('ko-KR') : '-';
 export const moment = (value?: string | null) =>

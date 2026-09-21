@@ -80,6 +80,22 @@ before(async () => {
   admin = await login('admin');
 });
 after(() => child?.kill());
+// 핑 충전(테스트 결제)과 핑으로 회차·작품 열기
+const chargePings = (cookie, productId = 'ping-10k', idempotencyKey = randomUUID()) =>
+  request('/pings/charge', { method: 'POST', cookie, body: { productId, idempotencyKey } });
+const unlock = (cookie, body) =>
+  request('/pings/unlock', {
+    method: 'POST',
+    cookie,
+    body: { idempotencyKey: randomUUID(), ...body },
+  });
+const registerBuyer = async (prefix, name = '핑 검수') =>
+  (
+    await request('/auth/register', {
+      method: 'POST',
+      body: { email: `${prefix}-${runId}@example.test`, password: 'LocalTest!2026', name },
+    })
+  ).cookie;
 test('catalog contains original drama metadata and excludes private video URLs', async () => {
   const r = await request('/dramas');
   assert.equal(r.status, 200);
@@ -196,31 +212,8 @@ test('watch progress validates episode and access before persisting', async () =
   assert.equal(h.episode, 1);
   assert.equal(h.progress, 5);
 });
-test('checkout ignores client price, is atomic and idempotent for concurrent requests', async () => {
-  const key = randomUUID();
-  const results = await Promise.all(
-    [1, 2, 3].map(() =>
-      request('/checkout', {
-        method: 'POST',
-        cookie: viewer,
-        body: { kind: 'drama', dramaId: 'midnight', amount: 1, idempotencyKey: key },
-      }),
-    ),
-  );
-  results.forEach((r) => assert.equal(r.status, 200));
-  assert.equal(new Set(results.map((r) => r.data.id)).size, 1);
-  assert.equal(results[0].data.amount, 3900);
-  const library = (await request('/library', { cookie: viewer })).data;
-  assert.equal(library.orders.length, 1);
-  assert.deepEqual(library.purchases, ['midnight']);
-  assert.equal(
-    (await request('/dramas/midnight', { cookie: viewer })).data.episodes[3].locked,
-    false,
-  );
-  const play = await fetch(base + '/api/play/midnight/4', {
-    headers: { cookie: viewer, Range: 'bytes=0-63' },
-  });
-  assert.equal(play.status, 206);
+test('ping unlocks ignore client prices, are atomic and idempotent for concurrent requests', async () => {
+  // 원화 회차·작품 결제는 없어졌다. 원화 결제는 구독만 받는다.
   assert.equal(
     (
       await request('/checkout', {
@@ -229,9 +222,49 @@ test('checkout ignores client price, is atomic and idempotent for concurrent req
         body: { kind: 'drama', dramaId: 'midnight', idempotencyKey: randomUUID() },
       })
     ).status,
-    409,
+    400,
   );
+  const chargeKey = randomUUID();
+  const charges = await Promise.all([1, 2].map(() => chargePings(viewer, 'ping-10k', chargeKey)));
+  charges.forEach((r) => assert.equal(r.status, 200));
+  assert.equal(new Set(charges.map((r) => r.data.id)).size, 1);
+  assert.equal(charges[0].data.amount, 10000);
+  assert.equal((await request('/pings', { cookie: viewer })).data.wallet.total, 100);
+  const detail = (await request('/dramas/midnight', { cookie: viewer })).data;
+  assert.equal(detail.episode_pings, 5);
+  assert.equal(detail.locked_count, 9);
+  // 9편 × 5핑 = 45핑, 전체 열기 20% 할인 → 36핑
+  assert.equal(detail.title_pings, 36);
+  const key = randomUUID();
+  const results = await Promise.all(
+    [1, 2, 3].map(() =>
+      request('/pings/unlock', {
+        method: 'POST',
+        cookie: viewer,
+        body: { dramaId: 'midnight', all: true, pings: 1, idempotencyKey: key },
+      }),
+    ),
+  );
+  results.forEach((r) => assert.equal(r.status, 200));
+  assert.equal(new Set(results.map((r) => r.data.id)).size, 1);
+  assert.equal(results[0].data.pings, 36);
+  const library = (await request('/library', { cookie: viewer })).data;
+  assert.equal(library.orders.filter((o) => o.kind === 'ping_title').length, 1);
+  assert.equal(library.orders.filter((o) => o.kind === 'ping_charge').length, 1);
+  assert.deepEqual(library.purchases, ['midnight']);
+  assert.equal(library.wallet.total, 64);
+  assert.equal(
+    (await request('/dramas/midnight', { cookie: viewer })).data.episodes[3].locked,
+    false,
+  );
+  const play = await fetch(base + '/api/play/midnight/4', {
+    headers: { cookie: viewer, Range: 'bytes=0-63' },
+  });
+  assert.equal(play.status, 206);
+  assert.equal((await unlock(viewer, { dramaId: 'midnight', all: true })).status, 409);
+  assert.equal((await unlock(viewer, { dramaId: 'midnight', episode: 5 })).status, 409);
 });
+
 test('subscription unlocks other titles and cancellation preserves purchased titles', async () => {
   assert.equal(
     (
@@ -267,7 +300,6 @@ test('PD creates private draft; empty draft cannot be submitted', async () => {
       tagline: '진실이 시작되는 순간',
       synopsis: '테스트를 위한 충분한 길이의 작품 줄거리입니다.',
       genre: '스릴러',
-      price: 2900,
       free_episodes: 1,
       image: '/images/shadow.webp',
     },
@@ -489,7 +521,6 @@ const draftBody = {
   tagline: '업로드와 심사를 확인합니다',
   synopsis: '파일 등록부터 관리자 심사까지 점검하는 테스트 작품입니다.',
   genre: '로맨스',
-  price: 3900,
   free_episodes: 1,
   image: '/images/hero.webp',
 };
@@ -830,13 +861,13 @@ test('clearing history is scoped to the current user and preserves favorites and
   assert.deepEqual(after.purchases, before.purchases);
 });
 
-test('zero-price published dramas unlock every episode without checkout', async () => {
+test('free published dramas unlock every episode without pings', async () => {
   const cookie = await login('pd');
   const a = await login('admin');
   const created = await request('/studio/dramas', {
     method: 'POST',
     cookie,
-    body: { ...draftBody, title: '무료 공개 검수', price: 0 },
+    body: { ...draftBody, title: '무료 공개 검수', free: true },
   });
   const id = created.data.id;
   for (const number of [1, 2])
@@ -1135,35 +1166,23 @@ test('platform settings drive subscription price and are administrator only', as
   assert.ok(remaining > 44 && remaining <= 45);
 });
 
-test('purchases build a settlement ledger with the configured platform fee', async () => {
-  const id = await publishDrama({ title: '정산 검수 작품', price: 10000 });
-  const buyer = (
-    await request('/auth/register', {
-      method: 'POST',
-      body: {
-        email: `settle-${runId}@example.test`,
-        password: 'LocalTest!2026',
-        name: '정산 검수',
-      },
-    })
-  ).cookie;
-  assert.equal(
-    (
-      await request('/checkout', {
-        method: 'POST',
-        cookie: buyer,
-        body: { kind: 'drama', dramaId: id, idempotencyKey: randomUUID() },
-      })
-    ).status,
-    200,
-  );
+test('ping spends build a settlement ledger with the configured platform share', async () => {
+  const id = await publishWithEpisodes(3, { title: '정산 검수 작품', episode_pings: 20 });
+  const buyer = await registerBuyer('settle', '정산 검수');
+  assert.equal((await chargePings(buyer)).status, 200);
+  const spent = await unlock(buyer, { dramaId: id, episode: 2 });
+  assert.equal(spent.status, 200);
+  assert.equal(spent.data.wallet.total, 80);
   const settlement = await request('/studio/settlement', { cookie: pd });
   assert.equal(settlement.status, 200);
+  assert.equal(settlement.data.settings.platform_fee_rate, 30);
   const entry = settlement.data.entries.find((e) => e.drama_id === id);
   assert.ok(entry);
-  assert.equal(entry.gross, 10000);
-  assert.equal(entry.platform_fee, 3000);
-  assert.equal(entry.net, 7000);
+  assert.equal(entry.kind, 'ping');
+  // 웹 결제(수수료 0%) 20핑 = 2,000원 → PD 70% / 플랫폼 30%
+  assert.equal(entry.gross, 2000);
+  assert.equal(entry.platform_fee, 600);
+  assert.equal(entry.net, 1400);
   // settle_hold_days 를 0 으로 바꿔 두었으므로 즉시 출금 가능 상태가 된다.
   assert.equal(entry.status, 'available');
   assert.equal((await request('/studio/settlement', { cookie: viewer })).status, 403);
@@ -1412,13 +1431,13 @@ test('administrators manage member records, notes and forced logout', async () =
 });
 
 test('administrators reprice published dramas and hide them from the public catalog', async () => {
-  const id = await publishDrama({ title: '가격 변경 검수', price: 4900 });
+  const id = await publishDrama({ title: '가격 변경 검수' });
   assert.equal(
     (
       await request('/admin/dramas/' + id + '/pricing', {
         method: 'PATCH',
         cookie: pd,
-        body: { price: 1000, free_episodes: 1, badge: 'NEW', status: 'published' },
+        body: { episode_pings: 1, free_episodes: 1, badge: 'NEW', status: 'published' },
       })
     ).status,
     403,
@@ -1428,20 +1447,21 @@ test('administrators reprice published dramas and hide them from the public cata
       await request('/admin/dramas/' + id + '/pricing', {
         method: 'PATCH',
         cookie: admin,
-        body: { price: 1900, free_episodes: 2, badge: 'HOT', status: 'published' },
+        body: { episode_pings: 7, free_episodes: 2, badge: 'HOT', status: 'published' },
       })
     ).status,
     200,
   );
   const repriced = (await request('/dramas/' + id)).data;
-  assert.equal(repriced.price, 1900);
+  assert.equal(repriced.episode_pings, 7);
+  assert.equal(repriced.free_episodes, 2);
   assert.equal(repriced.badge, 'HOT');
   assert.equal(
     (
       await request('/admin/dramas/' + id + '/pricing', {
         method: 'PATCH',
         cookie: admin,
-        body: { price: 1900, free_episodes: 2, badge: 'HOT', status: 'hidden' },
+        body: { episode_pings: 7, free_episodes: 2, badge: 'HOT', status: 'hidden' },
       })
     ).status,
     200,
@@ -1539,44 +1559,34 @@ const publishWithEpisodes = async (count, overrides = {}) => {
   return id;
 };
 
-test('single episode purchase unlocks only that episode and is settled like a sale', async () => {
-  const id = await publishWithEpisodes(3, {
-    title: '회차 결제 검수',
-    price: 9000,
-    episode_price: 700,
-  });
-  const buyer = await request('/auth/register', {
-    method: 'POST',
-    body: { email: `ep-${runId}@example.test`, password: 'LocalTest!2026', name: '회차 검수' },
-  });
-  const cookie = buyer.cookie;
+test('single episode unlock with pings opens only that episode and is settled like a sale', async () => {
+  const id = await publishWithEpisodes(3, { title: '회차 결제 검수', episode_pings: 7 });
+  const cookie = await registerBuyer('ep', '회차 검수');
   const detail = await request('/dramas/' + id, { cookie });
-  assert.equal(detail.data.episode_price, 700);
+  assert.equal(detail.data.episode_pings, 7);
   assert.equal(detail.data.episodes[0].locked, false);
   assert.equal(detail.data.episodes[1].locked, true);
   assert.equal((await request('/play/' + id + '/2', { cookie })).status, 403);
 
-  // 무료 회차는 결제 대상이 아니다.
-  assert.equal(
-    (
-      await request('/checkout', {
-        method: 'POST',
-        cookie,
-        body: { kind: 'episode', dramaId: id, episode: 1, idempotencyKey: randomUUID() },
-      })
-    ).status,
-    400,
-  );
-  const order = await request('/checkout', {
-    method: 'POST',
-    cookie,
-    body: { kind: 'episode', dramaId: id, episode: 2, idempotencyKey: randomUUID() },
-  });
-  assert.equal(order.status, 200);
-  assert.equal(order.data.amount, 700);
-  assert.equal(order.data.kind, 'episode');
+  // 핑이 없으면 열 수 없고, 화면이 충전으로 안내할 수 있게 부족 수치를 돌려준다.
+  const poor = await unlock(cookie, { dramaId: id, episode: 2 });
+  assert.equal(poor.status, 400);
+  assert.equal(poor.data.code, 'insufficient_pings');
+  assert.equal(poor.data.need, 7);
+  assert.equal(poor.data.balance, 0);
+  assert.equal((await request('/library', { cookie })).data.orders.length, 0);
 
-  // 산 회차만 열리고 다음 회차는 그대로 잠겨 있다.
+  assert.equal((await chargePings(cookie, 'ping-5k')).status, 200);
+  // 무료 회차는 핑 대상이 아니다.
+  assert.equal((await unlock(cookie, { dramaId: id, episode: 1 })).status, 400);
+  assert.equal((await unlock(cookie, { dramaId: id, episode: 9 })).status, 404);
+  const order = await unlock(cookie, { dramaId: id, episode: 2 });
+  assert.equal(order.status, 200);
+  assert.equal(order.data.pings, 7);
+  assert.equal(order.data.kind, 'ping_episode');
+  assert.equal(order.data.wallet.total, 43);
+
+  // 연 회차만 열리고 다음 회차는 그대로 잠겨 있다.
   assert.equal(
     (await fetch(base + '/api/play/' + id + '/2', { headers: { cookie, Range: 'bytes=0-10' } }))
       .status,
@@ -1588,24 +1598,25 @@ test('single episode purchase unlocks only that episode and is settled like a sa
   assert.equal(after.data.episodes[1].owned, true);
   assert.equal(after.data.episodes[2].locked, true);
   assert.equal(after.data.entitled, false);
+  // 남은 잠긴 회차가 1편이면 전체 열기는 할인 없이 1편 가격이다.
+  assert.equal(after.data.locked_count, 1);
+  assert.equal(after.data.title_pings, 7);
 
   const library = await request('/library', { cookie });
   assert.deepEqual(library.data.episodes, [{ drama_id: id, episode: 2 }]);
-  assert.equal(library.data.orders[0].kind, 'episode');
-  assert.equal(library.data.orders[0].episode, 2);
+  const episodeOrder = library.data.orders.find((o) => o.kind === 'ping_episode');
+  assert.equal(episodeOrder.episode, 2);
+  assert.equal(episodeOrder.pings, 7);
+  assert.equal(episodeOrder.amount, 0);
   assert.equal(library.data.purchases.includes(id), false);
-
-  // 같은 회차를 다시 살 수 없고, 시청 기록도 구매한 회차까지만 저장된다.
-  assert.equal(
-    (
-      await request('/checkout', {
-        method: 'POST',
-        cookie,
-        body: { kind: 'episode', dramaId: id, episode: 2, idempotencyKey: randomUUID() },
-      })
-    ).status,
-    409,
+  const ledger = (await request('/pings', { cookie })).data.ledger;
+  assert.deepEqual(
+    ledger.map((l) => l.type).sort(),
+    ['charge', 'spend'],
   );
+
+  // 같은 회차를 다시 열 수 없고, 시청 기록도 연 회차까지만 저장된다.
+  assert.equal((await unlock(cookie, { dramaId: id, episode: 2 })).status, 409);
   assert.equal(
     (
       await request('/history', {
@@ -1627,65 +1638,52 @@ test('single episode purchase unlocks only that episode and is settled like a sa
     403,
   );
 
-  // 회차 매출도 PD 정산 원장에 남는다.
+  // 회차 매출도 PD 정산 원장에 남는다. 7핑 × 100원 = 700원
   const settlement = await request('/studio/settlement', { cookie: pd });
-  const entry = settlement.data.entries.find((e) => e.drama_id === id && e.kind === 'episode');
+  const entry = settlement.data.entries.find((e) => e.drama_id === id && e.kind === 'ping');
   assert.ok(entry);
   assert.equal(entry.gross, 700);
   assert.equal(entry.net, 700 - Math.round(700 * 0.3));
 });
 
-test('owning a title or a pass makes episode checkout unnecessary', async () => {
-  const id = await publishWithEpisodes(2, { title: '회차 중복 결제 검수', price: 5000 });
-  const owner = await request('/auth/register', {
-    method: 'POST',
-    body: { email: `own-${runId}@example.test`, password: 'LocalTest!2026', name: '소장 검수' },
-  });
-  const cookie = owner.cookie;
+test('owning a title or a pass makes ping unlocks unnecessary; default episode pings apply', async () => {
+  const id = await publishWithEpisodes(2, { title: '회차 중복 결제 검수' });
+  const cookie = await registerBuyer('own', '소장 검수');
+  assert.equal((await chargePings(cookie)).status, 200);
+  assert.equal((await unlock(cookie, { dramaId: id, all: true })).status, 200);
+  assert.equal((await unlock(cookie, { dramaId: id, episode: 2 })).status, 409);
+  // 구독 중이면 핑을 쓸 필요가 없다.
+  const passId = await publishWithEpisodes(2, { title: '구독 회차 검수' });
+  const subscriber = await registerBuyer('passer', '구독 검수');
   assert.equal(
     (
       await request('/checkout', {
         method: 'POST',
-        cookie,
-        body: { kind: 'drama', dramaId: id, idempotencyKey: randomUUID() },
+        cookie: subscriber,
+        body: { kind: 'subscription', idempotencyKey: randomUUID() },
       })
     ).status,
     200,
   );
-  assert.equal(
-    (
-      await request('/checkout', {
-        method: 'POST',
-        cookie,
-        body: { kind: 'episode', dramaId: id, episode: 2, idempotencyKey: randomUUID() },
-      })
-    ).status,
-    409,
-  );
-  // 회차 가격을 지정하지 않으면 요금 정책의 기본값을 사용한다.
-  const fallback = await publishWithEpisodes(2, { title: '기본 회차가 검수', price: 4000 });
+  assert.equal((await unlock(subscriber, { dramaId: passId, episode: 2 })).status, 409);
+  // 회차 핑을 지정하지 않으면 요금 정책의 기본값을 사용한다.
+  const fallback = await publishWithEpisodes(2, { title: '기본 회차가 검수' });
   const settings = (await request('/admin/settings', { cookie: admin })).data.settings;
   assert.equal(
-    (await request('/dramas/' + fallback)).data.episode_price,
-    settings.default_episode_price,
+    (await request('/dramas/' + fallback)).data.episode_pings,
+    settings.default_episode_pings,
   );
   assert.equal(
     (
       await request('/admin/dramas/' + fallback + '/pricing', {
         method: 'PATCH',
         cookie: admin,
-        body: {
-          price: 4000,
-          episode_price: 1200,
-          free_episodes: 1,
-          badge: 'NEW',
-          status: 'published',
-        },
+        body: { episode_pings: 12, free_episodes: 1, badge: 'NEW', status: 'published' },
       })
     ).status,
     200,
   );
-  assert.equal((await request('/dramas/' + fallback)).data.episode_price, 1200);
+  assert.equal((await request('/dramas/' + fallback)).data.episode_pings, 12);
 });
 
 test('channel styling is stored and served to viewers', async () => {
@@ -1735,7 +1733,7 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
   const free = await request('/studio/dramas', {
     method: 'POST',
     cookie: pd,
-    body: { ...draftBody, title: '무료 결제 차단 검수', price: 0 },
+    body: { ...draftBody, title: '무료 결제 차단 검수', free: true },
   });
   const freeId = free.data.id;
   assert.equal(
@@ -1762,16 +1760,7 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
     ).status,
     200,
   );
-  assert.equal(
-    (
-      await request('/checkout', {
-        method: 'POST',
-        cookie: viewer,
-        body: { kind: 'drama', dramaId: freeId, idempotencyKey: randomUUID() },
-      })
-    ).status,
-    400,
-  );
+  assert.equal((await unlock(viewer, { dramaId: freeId, all: true })).status, 400);
 
   // 노출 중단 상태에서는 심사 없이 내용을 바꿀 수 없다.
   assert.equal(
@@ -1779,7 +1768,7 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
       await request('/admin/dramas/' + freeId + '/pricing', {
         method: 'PATCH',
         cookie: admin,
-        body: { price: 0, episode_price: 0, free_episodes: 1, badge: 'NEW', status: 'hidden' },
+        body: { free: true, free_episodes: 1, badge: 'NEW', status: 'hidden' },
       })
     ).status,
     200,
@@ -1805,6 +1794,21 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
         body: { ...settings, platform_fee_rate: 90, pg_fee_rate: 20 },
       })
     ).status,
+    400,
+  );
+  // 부분 저장도 저장된 값과 합쳐서 같은 규칙으로 검사한다.
+  assert.equal(
+    (
+      await request('/admin/settings', {
+        method: 'PUT',
+        cookie: admin,
+        body: { platform_fee_rate: 85, pg_fee_rate: 20 },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await request('/admin/settings', { method: 'PUT', cookie: admin, body: {} })).status,
     400,
   );
 
@@ -1842,7 +1846,7 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
   const title = await request('/studio/dramas', {
     method: 'POST',
     cookie: sellerCookie,
-    body: { ...draftBody, title: '요율 검수 작품', price: 11000, free_episodes: 1 },
+    body: { ...draftBody, title: '요율 검수 작품', episode_pings: 110, free_episodes: 1 },
   });
   const rateId = title.data.id;
   assert.equal(
@@ -1851,6 +1855,16 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
         method: 'POST',
         cookie: sellerCookie,
         body: { number: 1, title: '1화', duration: 12, video: '/demo/preview.mp4' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request('/studio/dramas/' + rateId + '/episodes', {
+        method: 'POST',
+        cookie: sellerCookie,
+        body: { number: 2, title: '2화', duration: 12, video: '/demo/preview.mp4' },
       })
     ).status,
     200,
@@ -1874,16 +1888,8 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
     method: 'POST',
     body: { email: `shopper-${runId}@example.test`, password: 'LocalTest!2026', name: '구매 검수' },
   });
-  assert.equal(
-    (
-      await request('/checkout', {
-        method: 'POST',
-        cookie: shopper.cookie,
-        body: { kind: 'drama', dramaId: rateId, idempotencyKey: randomUUID() },
-      })
-    ).status,
-    200,
-  );
+  assert.equal((await chargePings(shopper.cookie, 'ping-30k')).status, 200);
+  assert.equal((await unlock(shopper.cookie, { dramaId: rateId, episode: 2 })).status, 200);
   assert.equal(
     (
       await request('/studio/tax', {
@@ -1916,4 +1922,180 @@ test('guard rails: free titles, hidden dramas, fee caps and custom withholding',
     ).status,
     200,
   );
+});
+
+test('ping economics: in-app channel fees, per-PD share, bonus-first spending, grants and revokes', async () => {
+  // 권한: PD·시청자는 포인트 관리에 접근할 수 없다.
+  assert.equal((await request('/admin/pings', { cookie: pd })).status, 403);
+  assert.equal(
+    (
+      await request('/admin/pings/adjust', {
+        method: 'POST',
+        cookie: pd,
+        body: { userId: 'demo-viewer', action: 'grant', pings: 5, memo: '권한 확인' },
+      })
+    ).status,
+    403,
+  );
+  const id = await publishWithEpisodes(4, { title: '핑 경제 검수', episode_pings: 10 });
+
+  // App Store 상품(수수료 30%): 14,000원 → 100핑. 1핑의 순매출은 14,000×70%÷100 = 98원.
+  const product = await request('/admin/pings/products', {
+    method: 'POST',
+    cookie: admin,
+    body: { channel: 'app_store', name: '100핑', price: 14000, pings: 100 },
+  });
+  assert.equal(product.status, 201);
+  const iapBuyer = await registerBuyer('iap', '인앱 검수');
+  // 시청자용 충전 목록에는 웹 상품만 보인다.
+  const shelf = (await request('/pings', { cookie: iapBuyer })).data.products;
+  assert.ok(shelf.every((p) => p.channel === 'web'));
+  assert.ok(shelf.some((p) => p.id === 'ping-10k'));
+  const iap = await chargePings(iapBuyer, product.data.id);
+  assert.equal(iap.status, 200);
+  assert.equal(iap.data.wallet.total, 100);
+
+  // PD별 분배 비율: 플랫폼 20% (PD 80%)
+  assert.equal(
+    (
+      await request('/admin/pings/rates/demo-pd', {
+        method: 'PUT',
+        cookie: admin,
+        body: { platform_fee_rate: 20 },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await request('/studio/settlement', { cookie: pd })).data.settings.platform_fee_rate,
+    20,
+  );
+  const iapSpend = await unlock(iapBuyer, { dramaId: id, episode: 2 });
+  assert.equal(iapSpend.status, 200);
+  let entries = (await request('/studio/settlement', { cookie: pd })).data.entries.filter(
+    (e) => e.drama_id === id,
+  );
+  // 10핑 × 98원 = 980원 → 플랫폼 20% 196원, PD 784원. 인앱 수수료를 뺀 순매출을 나누므로 비율이 지켜진다.
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].gross, 980);
+  assert.equal(entries[0].platform_fee, 196);
+  assert.equal(entries[0].net, 784);
+  assert.equal(entries[0].fee_rate, 20);
+  // 공통 비율로 되돌리면 이후 매출부터 다시 30%가 적용된다(이미 기록된 정산은 그대로).
+  assert.equal(
+    (
+      await request('/admin/pings/rates/demo-pd', {
+        method: 'PUT',
+        cookie: admin,
+        body: { platform_fee_rate: null },
+      })
+    ).status,
+    200,
+  );
+
+  // 웹 30,000원 상품: 300핑 + 보너스 15핑. 관리자 지급 5핑까지 보너스 20핑.
+  const webBuyer = await registerBuyer('bonus', '보너스 검수');
+  const webBuyerId = (await request('/auth/me', { cookie: webBuyer })).data.user?.id;
+  assert.ok(webBuyerId);
+  assert.equal((await chargePings(webBuyer, 'ping-30k')).status, 200);
+  assert.equal(
+    (
+      await request('/admin/pings/adjust', {
+        method: 'POST',
+        cookie: admin,
+        body: { userId: webBuyerId, action: 'grant', pings: 5, memo: '' },
+      })
+    ).status,
+    400,
+  );
+  const granted = await request('/admin/pings/adjust', {
+    method: 'POST',
+    cookie: admin,
+    body: { userId: webBuyerId, action: 'grant', pings: 5, memo: '오류 보상' },
+  });
+  assert.equal(granted.status, 200);
+  assert.deepEqual(granted.data.wallet, { paid: 300, bonus: 20, total: 320 });
+  // 보너스 핑을 먼저 쓴다. 보너스도 충전 단가(100원)로 PD에게 정산된다(플랫폼 마케팅 부담).
+  const bonusSpend = await unlock(webBuyer, { dramaId: id, episode: 3 });
+  assert.equal(bonusSpend.status, 200);
+  assert.deepEqual(bonusSpend.data.wallet, { paid: 300, bonus: 10, total: 310 });
+  entries = (await request('/studio/settlement', { cookie: pd })).data.entries.filter(
+    (e) => e.drama_id === id,
+  );
+  const bonusEntry = entries.find((e) => e.gross === 1000);
+  assert.ok(bonusEntry, JSON.stringify(entries));
+  assert.equal(bonusEntry.platform_fee, 300);
+  assert.equal(bonusEntry.net, 700);
+  const detail = (await request('/dramas/' + id, { cookie: webBuyer })).data;
+  assert.equal(detail.locked_count, 2);
+  // 2편 × 10핑 = 20핑 → 20% 할인 16핑
+  assert.equal(detail.title_pings, 16);
+
+  // 회수는 보너스부터 빼고, 잔액보다 많이 회수할 수 없다.
+  const revoke = (pings) =>
+    request('/admin/pings/adjust', {
+      method: 'POST',
+      cookie: admin,
+      body: { userId: webBuyerId, action: 'revoke', pings, memo: '중복 지급 회수' },
+    });
+  assert.equal((await revoke(1000)).status, 400);
+  const revoked = await revoke(15);
+  assert.equal(revoked.status, 200);
+  assert.deepEqual(revoked.data.wallet, { paid: 295, bonus: 0, total: 295 });
+  const ledger = (await request('/pings', { cookie: webBuyer })).data.ledger;
+  assert.deepEqual(ledger.map((l) => l.type).sort(), ['charge', 'grant', 'revoke', 'spend']);
+
+  // 포인트 관리 현황
+  const overview = await request('/admin/pings', { cookie: admin });
+  assert.equal(overview.status, 200);
+  const appStore = overview.data.charges.find((c) => c.channel === 'app_store');
+  assert.ok(Number(appStore.channel_fee) >= 4200);
+  assert.ok(overview.data.summary.liability > 0);
+  assert.ok(overview.data.ledger.some((l) => l.type === 'grant' && l.actor_name));
+  assert.ok(overview.data.rates.some((r) => r.id === 'demo-pd'));
+
+  // 판매된 상품은 삭제 대신 판매 중지, 판매 이력이 없으면 삭제
+  const removed = await request('/admin/pings/products/' + product.data.id, {
+    method: 'DELETE',
+    cookie: admin,
+  });
+  assert.equal(removed.data.deactivated, true);
+  assert.equal((await chargePings(iapBuyer, product.data.id)).status, 404);
+  const spare = await request('/admin/pings/products', {
+    method: 'POST',
+    cookie: admin,
+    body: { channel: 'web', name: '임시', price: 1000, pings: 10 },
+  });
+  const dropped = await request('/admin/pings/products/' + spare.data.id, {
+    method: 'DELETE',
+    cookie: admin,
+  });
+  assert.equal(dropped.data.deleted, true);
+
+  // 회원 상세에 지갑과 핑 내역이 보인다.
+  const member = await request('/admin/members/' + webBuyerId, { cookie: admin });
+  assert.equal(member.data.wallet.total, 295);
+  assert.ok(member.data.pingLedger.length >= 4);
+});
+
+test('auto unlock preference is kept by profile saves and toggled on its own', async () => {
+  const cookie = await registerBuyer('auto', '자동 열기 검수');
+  const me = async () => (await request('/auth/me', { cookie })).data.user;
+  assert.equal((await me()).auto_unlock, false);
+  assert.equal(
+    (await request('/account/auto-unlock', { method: 'PUT', cookie, body: { enabled: true } }))
+      .status,
+    200,
+  );
+  assert.equal((await me()).auto_unlock, true);
+  const user = await me();
+  // 자동 열기 값을 보내지 않는 기존 프로필 저장은 설정을 지우지 않는다.
+  const saved = await request('/account/profile', {
+    method: 'PATCH',
+    cookie,
+    body: { name: user.name, bio: '', auto_next: true, avatar: user.avatar },
+  });
+  assert.equal(saved.status, 200);
+  assert.equal((await me()).auto_unlock, true);
+  assert.equal((await request('/account/auto-unlock', { method: 'PUT', body: { enabled: true } })).status, 401);
 });

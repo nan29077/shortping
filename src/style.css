@@ -6126,3 +6126,300 @@ details > p {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 핑(포인트) ───────────────────────────────────────────── */
+.wallet-chip {
+  gap: 5px;
+  padding: 0 11px;
+  min-height: 30px !important;
+  border-radius: 999px;
+  border: 1px solid #c4f56238;
+  background: #c4f56212;
+  color: #d9f7a6;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.wallet-chip svg {
+  color: var(--lime);
+}
+.my-wallet {
+  width: 100%;
+  background: linear-gradient(110deg, #22302c, #1b2427);
+  padding: 19px;
+  border: 1px solid #3a4a40;
+  border-radius: 12px;
+  gap: 15px;
+  text-align: left;
+  margin-bottom: 12px;
+}
+.my-wallet > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.my-wallet strong {
+  font-size: 14px;
+}
+.my-wallet span {
+  font-size: 10px;
+  color: #97aa9d;
+}
+.pings-page .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+.wallet-card {
+  margin: 18px 0 30px;
+  padding: 22px;
+  border-radius: 16px;
+  border: 1px solid #c4f56233;
+  background: radial-gradient(circle at 90% 0%, #c4f56226, transparent 55%), #1a2320;
+}
+.wallet-card > div span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #a8b8ac;
+}
+.wallet-card > div strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 34px;
+  letter-spacing: -1px;
+  color: var(--lime);
+}
+.wallet-card dl {
+  display: flex;
+  gap: 28px;
+  margin: 16px 0 12px;
+}
+.wallet-card dt {
+  font-size: 10px;
+  color: #8a9a90;
+}
+.wallet-card dd {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.wallet-card p {
+  font-size: 11px;
+  color: #8fa195;
+}
+.ping-products {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.ping-product {
+  position: relative;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 18px 15px 15px;
+  border-radius: 13px;
+  border: 1px solid #2d3a33;
+  background: #1a2023;
+  text-align: left;
+  transition:
+    border-color 0.2s,
+    transform 0.2s;
+}
+.ping-product:hover {
+  border-color: #c4f56266;
+  transform: translateY(-2px);
+}
+.ping-product strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 18px;
+}
+.ping-product strong svg {
+  color: var(--lime);
+}
+.ping-product small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #8a9a90;
+}
+.ping-product b {
+  margin-top: 4px;
+  font-size: 14px;
+}
+.ping-badge {
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--lime);
+  color: #111519;
+  font-size: 9px;
+  font-weight: 800;
+}
+.ping-ledger {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 30px;
+}
+.ping-ledger-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 11px;
+  border: 1px solid #27322c;
+}
+.ping-ledger-row > div {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ping-ledger-row strong {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ping-ledger-row small {
+  font-size: 10px;
+  color: #7f9589;
+}
+.ping-ledger-row b {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.ledger-type {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #ffffff0d;
+  color: #a4b4a9;
+}
+.ledger-type.charge,
+.ledger-type.grant {
+  background: #c4f5621c;
+  color: #d1f59b;
+}
+.ledger-type.revoke {
+  background: #f5626218;
+  color: #f0a3a3;
+}
+.checkout-balance {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  padding: 14px 0 4px;
+  font-size: 12px;
+  color: #9ba8a1;
+}
+.checkout-balance b {
+  text-align: right;
+  color: #e6ece8;
+}
+.checkout-balance b.danger,
+.danger {
+  color: #ff8a8a;
+}
+.checkout-price s {
+  margin-left: 6px;
+  font-size: 11px;
+}
+.auto-unlock-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 12px;
+  font-size: 11px;
+  color: #b8c6bd;
+  cursor: pointer;
+}
+.paywall .auto-unlock-toggle,
+.auto-unlock-toggle {
+  display: flex !important;
+  flex-direction: row !important;
+  width: 100%;
+  text-align: left;
+}
+.auto-unlock-toggle input {
+  width: 16px !important;
+  height: 16px;
+  min-height: 0 !important;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--lime);
+}
+.order-kind.ping_charge {
+  background: #62c4f518;
+  color: #9bd4f5;
+}
+.order-kind.ping_episode,
+.order-kind.ping_title {
+  background: #c4f56218;
+  color: #d1f59b;
+}
+.inline-check {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  min-height: 44px;
+}
+.inline-check input {
+  width: auto !important;
+  accent-color: var(--lime);
+}
+.rate-input {
+  width: 90px;
+}
+.point-members {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+.point-members button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid #27322c;
+  text-align: left;
+}
+.point-members button.active {
+  border-color: #c4f56288;
+  background: #c4f56212;
+}
+.point-members small {
+  font-size: 10px;
+  color: #7f9589;
+}
+.point-members span {
+  font-size: 11px;
+  color: var(--lime);
+}
+.admin-points .management-table small {
+  display: block;
+  margin-top: 3px;
+}
+small.sale-value {
+  display: block;
+  margin-top: 3px;
+  color: #7f9589;
+}

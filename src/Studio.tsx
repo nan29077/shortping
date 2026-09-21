@@ -33,10 +33,12 @@ import {
   Receipt,
   SlidersHorizontal,
   UserCog,
+  Coins,
 } from 'lucide-react';
 import {
   api,
   count,
+  orderRevenue,
   won,
   type Drama,
   type HomeAppearance as Appearance,
@@ -59,6 +61,7 @@ import HomeAppearance from './HomeAppearance';
 import ChannelStudio from './ChannelStudio';
 import Settlement from './Settlement';
 import AdminMembers from './AdminMembers';
+import AdminPoints from './AdminPoints';
 import {
   AdminChannelsPanel,
   AdminPricingPanel,
@@ -98,8 +101,8 @@ const initialForm = {
   tagline: '',
   synopsis: '',
   genre: '로맨스',
-  price: 3900,
-  episode_price: 500,
+  free: false,
+  episode_pings: 0,
   free_episodes: 3,
   image: '/images/hero.webp',
 };
@@ -169,6 +172,7 @@ export default function Studio({
           id: 'money',
           name: '정산 · 세무',
           items: [
+            { id: 'points', name: '포인트(핑) 관리', icon: Coins },
             { id: 'settlement', name: '정산 관리', icon: Wallet },
             { id: 'payouts', name: '출금 승인', icon: Banknote },
             { id: 'tax', name: '세무 관리', icon: Receipt },
@@ -179,7 +183,7 @@ export default function Studio({
           id: 'ops',
           name: '설정 · 기록',
           items: [
-            { id: 'policy', name: '요금 · 정책 설정', icon: SlidersHorizontal },
+            { id: 'policy', name: '요금 · 정산 정책', icon: SlidersHorizontal },
             { id: 'audit', name: '운영 기록', icon: ScrollText },
             { id: 'guide', name: '운영 가이드', icon: BookOpen },
             { id: 'settings', name: '내 계정', icon: UserCog },
@@ -267,7 +271,7 @@ export default function Studio({
       </div>
     );
   const pending = data.dramas.filter((d) => d.status === 'pending'),
-    revenue = data.orders.reduce((sum, o) => sum + o.amount, 0);
+    revenue = data.orders.reduce((sum, o) => sum + orderRevenue(o, admin), 0);
   return (
     <>
       <header className="management-topbar">
@@ -393,7 +397,7 @@ export default function Studio({
               />
               <Stat
                 icon={<Wallet size={18} />}
-                label="테스트 매출"
+                label={admin ? '테스트 결제액' : '테스트 판매액'}
                 value={won(revenue)}
                 detail="실제 청구 금액 아님"
               />
@@ -404,7 +408,7 @@ export default function Studio({
                 detail="새로운 이야기를 기다려요"
               />
             </div>
-            <StudioInsights data={data} />
+            <StudioInsights data={data} admin={admin} />
             <div className="studio-callout">
               <Clapperboard size={30} />
               <div>
@@ -606,7 +610,8 @@ export default function Studio({
           />
         )}
         {tab === 'policy' && admin && <AdminSettingsPanel notify={notify} />}
-        {tab === 'orders' && <StudioOrders orders={data.orders} />}
+        {tab === 'points' && admin && <AdminPoints notify={notify} />}
+        {tab === 'orders' && <StudioOrders orders={data.orders} admin={admin} />}
         {tab === 'support' && admin && <Support user={user} managing notify={notify} />}
         {tab === 'subscriptions' && admin && (
           <StudioSubscriptions subscriptions={data.subscriptions} />
@@ -721,8 +726,8 @@ function DramaEditor({
             tagline: drama.tagline,
             synopsis: drama.synopsis,
             genre: drama.genre,
-            price: drama.price,
-            episode_price: drama.episode_price ?? 0,
+            free: !!drama.free,
+            episode_pings: drama.episode_pings ?? 0,
             free_episodes: drama.free_episodes,
             image: drama.image,
           },
@@ -817,26 +822,24 @@ function DramaEditor({
             </select>
           </label>
           <label>
-            전체 소장 가격 (원)
+            회차 가격 (핑 · 0이면 기본값)
             <input
               type="number"
-              value={f.price}
+              value={f.episode_pings}
               min={0}
-              max={100000}
-              onChange={(e) => setF({ ...f, price: Number(e.target.value) })}
+              max={1000}
+              disabled={f.free}
+              onChange={(e) => setF({ ...f, episode_pings: Number(e.target.value) })}
               required
             />
           </label>
-          <label>
-            회차 구매 가격 (원 · 0이면 기본값)
+          <label className="inline-check">
             <input
-              type="number"
-              value={f.episode_price}
-              min={0}
-              max={100000}
-              onChange={(e) => setF({ ...f, episode_price: Number(e.target.value) })}
-              required
+              type="checkbox"
+              checked={f.free}
+              onChange={(e) => setF({ ...f, free: e.target.checked })}
             />
+            전 회차 무료 공개
           </label>
           <label>
             무료 회차 수

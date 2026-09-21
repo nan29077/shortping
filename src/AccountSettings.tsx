@@ -190,6 +190,7 @@ export default function AccountSettings({
     bio: user.bio || '',
     avatar: user.avatar,
     auto_next: user.auto_next !== false,
+    auto_unlock: !!user.auto_unlock,
   });
   const [busy, setBusy] = useState(false),
     [uploading, setUploading] = useState(false);
@@ -310,6 +311,17 @@ export default function AccountSettings({
             type="checkbox"
             checked={form.auto_next}
             onChange={(e) => setForm({ ...form, auto_next: e.target.checked })}
+          />
+        </label>
+        <label className="settings-toggle">
+          <span>
+            <strong>잠긴 회차 자동 열기</strong>
+            <small>잠긴 회차에 들어가면 확인 없이 보유 핑으로 바로 엽니다. 핑이 부족하면 열지 않아요.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={form.auto_unlock}
+            onChange={(e) => setForm({ ...form, auto_unlock: e.target.checked })}
           />
         </label>
         <button className="primary full" disabled={busy || uploading}>

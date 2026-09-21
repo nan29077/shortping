@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowRight, CheckCircle2, Download, Search } from 'lucide-react';
-import { localDay, won, type Order, type Drama, type User } from './api';
+import { isPingSpend, orderKindLabel, orderRevenue, localDay, won, type Order, type Drama, type User } from './api';
 import { Empty } from './App';
 import type { StudioData } from './Studio';
 
@@ -24,7 +24,7 @@ export function downloadCsv(name: string, rows: (string | number)[][]) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function StudioInsights({ data }: { data: StudioData }) {
+export function StudioInsights({ data, admin = false }: { data: StudioData; admin?: boolean }) {
   const days = Array.from({ length: 7 }, (_, i) => {
     const day = new Date();
     day.setDate(day.getDate() - 6 + i);
@@ -33,7 +33,7 @@ export function StudioInsights({ data }: { data: StudioData }) {
       label: `${day.getMonth() + 1}/${day.getDate()}`,
       amount: data.orders
         .filter((o) => localDay(new Date(o.created_at)) === key)
-        .reduce((n, o) => n + o.amount, 0),
+        .reduce((n, o) => n + orderRevenue(o, admin), 0),
     };
   });
   const max = Math.max(...days.map((d) => d.amount), 1);
@@ -101,7 +101,7 @@ export function StudioInsights({ data }: { data: StudioData }) {
   );
 }
 
-export function StudioOrders({ orders }: { orders: Order[] }) {
+export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin?: boolean }) {
   const [query, setQuery] = useState(''),
     [kind, setKind] = useState('all'),
     [from, setFrom] = useState(''),
@@ -122,7 +122,8 @@ export function StudioOrders({ orders }: { orders: Order[] }) {
         <div>
           <h3>주문 내역 조회</h3>
           <p>
-            {filtered.length}건 · 합계 {won(filtered.reduce((n, o) => n + o.amount, 0))}
+            {filtered.length}건 · {admin ? '결제 합계' : '판매 합계'}{' '}
+            {won(filtered.reduce((n, o) => n + orderRevenue(o, admin), 0))}
           </p>
         </div>
         <button
@@ -130,13 +131,14 @@ export function StudioOrders({ orders }: { orders: Order[] }) {
           disabled={!filtered.length}
           onClick={() =>
             downloadCsv('숏핑-주문.csv', [
-              ['주문번호', '작품', '유형', '금액(원)', '상태', '주문일'],
+              ['주문번호', '작품', '유형', '결제액(원)', '사용 핑', '판매액(원)', '주문일'],
               ...filtered.map((o) => [
                 o.id,
                 o.title || '숏핑 패스',
-                o.kind === 'drama' ? '개별 구매' : '구독',
+                orderKindLabel(o.kind),
                 o.amount,
-                o.status,
+                isPingSpend(o) ? o.pings || 0 : '',
+                orderRevenue(o, false),
                 date(o.created_at),
               ]),
             ])
@@ -168,7 +170,9 @@ export function StudioOrders({ orders }: { orders: Order[] }) {
           }}
         >
           <option value="all">전체 유형</option>
-          <option value="drama">개별 구매</option>
+          <option value="ping_episode">회차 열기</option>
+          <option value="ping_title">작품 전체 열기</option>
+          {admin && <option value="ping_charge">핑 충전</option>}
           <option value="subscription">구독</option>
         </select>
       </div>
@@ -227,12 +231,20 @@ export function StudioOrders({ orders }: { orders: Order[] }) {
                 {filtered.slice(current * 15, current * 15 + 15).map((o) => (
                   <tr key={o.id}>
                     <td>
-                      <strong>{o.title || '숏핑 패스 30일'}</strong>
+                      <strong>{o.title || (o.kind === 'ping_charge' ? `${o.pings || 0}핑 충전` : '숏핑 패스')}</strong>
                       <small>{o.id}</small>
                     </td>
-                    <td>{o.kind === 'drama' ? '개별 구매' : '구독'}</td>
+                    <td>{orderKindLabel(o.kind)}</td>
                     <td>{date(o.created_at)}</td>
-                    <td className="nowrap">{won(o.amount)}</td>
+                    <td className="nowrap">
+                      {isPingSpend(o) ? (
+                        <>
+                          {o.pings}핑<small className="sale-value">{won(Number(o.sale_value || 0))}</small>
+                        </>
+                      ) : (
+                        won(o.amount)
+                      )}
+                    </td>
                     <td>
                       <span className="status-chip">테스트 완료</span>
                     </td>

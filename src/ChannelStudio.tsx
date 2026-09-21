@@ -563,7 +563,7 @@ export default function ChannelStudio({
                       <strong>{d.title}</strong>
                       <small>
                         {d.genre} · {d.episode_count}회차 ·{' '}
-                        {d.price === 0 ? '무료' : d.price.toLocaleString('ko-KR') + '원'}
+                        {d.free ? '무료' : d.episode_pings ? `회차 ${d.episode_pings}핑` : '회차 기본 핑'}
                       </small>
                       <label className="shelf-select">
                         진열 카테고리

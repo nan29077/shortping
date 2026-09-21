@@ -11,6 +11,7 @@ import {
   ChevronRight,
   CirclePlay,
   Clapperboard,
+  Coins,
   Clock3,
   Crown,
   Flame,
@@ -33,9 +34,12 @@ import {
 } from 'lucide-react';
 import {
   api,
+  ApiError,
   count,
   defaultHomeAppearance,
   emptyLibrary,
+  orderKindLabel,
+  pings,
   won,
   type Detail,
   type Drama,
@@ -54,12 +58,15 @@ import {
 } from './Channels';
 import Support from './Support';
 import AccountSettings, { Avatar } from './AccountSettings';
+import PingsPage from './Pings';
 
 type Route = { page: string; id?: string; episode?: number };
-// 구매 대상: 작품 전체 소장, 숏핑 패스, 회차 단건.
-export type Purchase = Drama | 'subscription' | { drama: Drama; episode: number };
-const isEpisodeBuy = (p: Purchase): p is { drama: Drama; episode: number } =>
-  typeof p === 'object' && 'episode' in p;
+// 결제 대상: 숏핑 패스(원화 구독) 또는 핑으로 열기(회차 한 편 / episode 없으면 작품 전체).
+export type Purchase = 'subscription' | { drama: Detail; episode?: number };
+const isEpisodeBuy = (p: Purchase): p is { drama: Detail; episode: number } =>
+  typeof p === 'object' && !!p.episode;
+const unlockPings = (p: Exclude<Purchase, 'subscription'>) =>
+  p.episode ? p.drama.episode_pings : p.drama.title_pings;
 const readRoute = (): Route => {
   const p = location.hash.replace('#', '').split('/').filter(Boolean);
   return { page: p[0] || 'home', id: p[1], episode: Number(p[2]) || 1 };
@@ -115,9 +122,10 @@ export default function App() {
       homeAppearance: defaultHomeAppearance,
       subscriptionPrice: 7900,
       subscriptionDays: 30,
-      defaultPrice: 3900,
       defaultFreeEpisodes: 3,
-      defaultEpisodePrice: 500,
+      pingUnitWon: 100,
+      defaultEpisodePings: 5,
+      titleUnlockDiscount: 20,
     }),
     [channels, setChannels] = useState<Channel[]>([]),
     [ready, setReady] = useState(false),
@@ -238,28 +246,54 @@ export default function App() {
     }
     setCheckout(d);
   };
+  // 충전 화면에서 돌아올 곳(지금 보던 작품·회차)을 주소에 담아 보냅니다.
+  const goCharge = (target?: Purchase | null) => {
+    setCheckout(null);
+    const back =
+      target && target !== 'subscription'
+        ? target.episode
+          ? `watch/${target.drama.id}/${target.episode}`
+          : `drama/${target.drama.id}`
+        : '';
+    navigate('pings' + (back ? '/' + back : ''));
+  };
   const pay = async () => {
     if (!checkout || busy) return;
     setBusy(true);
     try {
-      const episodeBuy = isEpisodeBuy(checkout);
-      await api('/checkout', 'POST', {
-        kind:
-          checkout === 'subscription' ? 'subscription' : episodeBuy ? 'episode' : 'drama',
-        dramaId:
-          checkout === 'subscription' ? undefined : episodeBuy ? checkout.drama.id : checkout.id,
-        episode: episodeBuy ? checkout.episode : undefined,
-        idempotencyKey: crypto.randomUUID(),
-      });
-      await reloadLibrary();
-      setCheckout(null);
-      notify(
-        episodeBuy
-          ? `${(checkout as { episode: number }).episode}화를 구매했어요. 바로 이어서 보세요!`
-          : '테스트 결제가 완료됐어요. 지금 시청해 보세요!',
-      );
+      if (checkout === 'subscription') {
+        await api('/checkout', 'POST', {
+          kind: 'subscription',
+          idempotencyKey: crypto.randomUUID(),
+        });
+        await reloadLibrary();
+        setCheckout(null);
+        notify('테스트 결제가 완료됐어요. 모든 작품을 마음껏 보세요!');
+      } else {
+        const r = await api<{ pings: number; unlocked: number; wallet: { total: number } }>(
+          '/pings/unlock',
+          'POST',
+          {
+            dramaId: checkout.drama.id,
+            episode: checkout.episode,
+            all: !checkout.episode,
+            idempotencyKey: crypto.randomUUID(),
+          },
+        );
+        await reloadLibrary();
+        setCheckout(null);
+        notify(
+          (checkout.episode
+            ? `${checkout.episode}화를 열었어요.`
+            : `남은 ${r.unlocked}개 회차를 모두 열었어요.`) +
+            ` ${pings(r.pings)} 사용 · 남은 핑 ${pings(r.wallet.total)}`,
+        );
+      }
     } catch (e) {
-      notify((e as Error).message);
+      if (e instanceof ApiError && e.code === 'insufficient_pings') {
+        await reloadLibrary();
+        notify(e.message);
+      } else notify((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -291,11 +325,11 @@ export default function App() {
       new Date(b.published_at || b.created_at).getTime() -
       new Date(a.published_at || a.created_at).getTime(),
   );
-  const freePicks = dramas.filter((d) => d.price === 0 || d.free_episodes >= 5);
+  const freePicks = dramas.filter((d) => !!d.free || d.free_episodes >= 5);
   const featuredChannels = channels.filter((c) => c.featured);
   const followedChannels = channels.filter((c) => lib.channels.includes(c.id));
   const activeNav =
-    route.page === 'settings'
+    route.page === 'settings' || route.page === 'pings'
       ? 'my'
       : ['drama', 'watch'].includes(route.page)
         ? 'home'
@@ -376,6 +410,16 @@ export default function App() {
                 <Bell size={20} />
                 <i />
               </button>
+              {user && (
+                <button
+                  className="wallet-chip"
+                  onClick={() => navigate('pings')}
+                  aria-label={'보유 핑 ' + lib.wallet.total + '핑 · 충전하기'}
+                >
+                  <Coins size={15} />
+                  {new Intl.NumberFormat('ko-KR').format(lib.wallet.total)}
+                </button>
+              )}
               {user ? (
                 <button className="avatar" onClick={() => navigate('my')} aria-label="내 계정">
                   <Avatar user={user} />
@@ -718,6 +762,15 @@ export default function App() {
                 )}
               </div>
             )}
+            {route.page === 'pings' && (
+              <PingsPage
+                user={user}
+                demo={config.demo}
+                returnTo={location.hash.replace(/^#\/?pings\/?/, '')}
+                notify={notify}
+                onCharged={reloadLibrary}
+              />
+            )}
             {route.page === 'drama' && (
               <DramaPage
                 key={route.id + String(lib.orders.length)}
@@ -742,6 +795,7 @@ export default function App() {
                 notify={notify}
                 reloadLibrary={reloadLibrary}
                 pass={config.subscriptionPrice}
+                setUser={setUser}
               />
             )}
             {route.page === 'membership' && (
@@ -897,7 +951,7 @@ export default function App() {
                           icon: <Heart size={16} />,
                         },
                         {
-                          label: '구매 회차',
+                          label: '연 회차',
                           value: lib.episodes.length + '화',
                           icon: <Ticket size={16} />,
                         },
@@ -929,6 +983,16 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                    <button className="my-wallet" onClick={() => navigate('pings')}>
+                      <Coins className="lime" />
+                      <div>
+                        <strong>보유 핑 {pings(lib.wallet.total)}</strong>
+                        <span>
+                          충전 {pings(lib.wallet.paid)} · 보너스 {pings(lib.wallet.bonus)} · 충전하기
+                        </span>
+                      </div>
+                      <ChevronRight size={20} />
+                    </button>
                     <button className="my-pass" onClick={() => navigate('membership')}>
                       <Crown className="lime" />
                       <div>
@@ -975,6 +1039,7 @@ export default function App() {
                     )}
                     <div className="my-shortcuts">
                       {[
+                        { label: '핑 충전', icon: <Coins size={18} />, to: 'pings' },
                         { label: '방송국', icon: <Radio size={18} />, to: 'channels' },
                         { label: '숏핑 패스', icon: <Crown size={18} />, to: 'membership' },
                         { label: '문의하기', icon: <MessageCircle size={18} />, to: 'support' },
@@ -1035,7 +1100,7 @@ export default function App() {
                     </button>
                     <details className="order-details">
                       <summary>
-                        구매 · 구독 관리 <ChevronDown size={17} />
+                        결제 · 핑 사용 내역 <ChevronDown size={17} />
                       </summary>
                       {lib.orders.length ? (
                         lib.orders.map((o) => (
@@ -1043,32 +1108,39 @@ export default function App() {
                             <div>
                               <strong>
                                 <span className={'order-kind ' + o.kind}>
-                                  {o.kind === 'subscription'
-                                    ? '패스'
-                                    : o.kind === 'episode'
-                                      ? '회차'
-                                      : '소장'}
+                                  {orderKindLabel(o.kind)}
                                 </span>
                                 {o.kind === 'subscription'
                                   ? `숏핑 패스 ${config.subscriptionDays}일`
-                                  : o.kind === 'episode'
-                                    ? `${o.title} ${o.episode}화`
-                                    : o.title}
+                                  : o.kind === 'ping_charge'
+                                    ? `${pings(o.pings || 0)}` +
+                                      (o.bonus_pings ? ` + 보너스 ${pings(o.bonus_pings)}` : '')
+                                    : o.kind === 'ping_episode' || o.kind === 'episode'
+                                      ? `${o.title} ${o.episode}화`
+                                      : `${o.title} 전체`}
                               </strong>
                               <span>
-                                {new Date(o.created_at).toLocaleString('ko-KR')} · 테스트 결제 ·
-                                주문번호 {o.id.slice(0, 8)}
+                                {new Date(o.created_at).toLocaleString('ko-KR')} ·{' '}
+                                {o.kind.startsWith('ping_') && o.kind !== 'ping_charge'
+                                  ? '핑 사용'
+                                  : '테스트 결제'}{' '}
+                                · 주문번호 {o.id.slice(0, 8)}
                               </span>
                             </div>
-                            <b>{won(o.amount)}</b>
+                            <b>
+                              {o.kind === 'ping_episode' || o.kind === 'ping_title'
+                                ? '-' + pings(o.pings || 0)
+                                : won(o.amount)}
+                            </b>
                           </div>
                         ))
                       ) : (
                         <p className="muted">아직 구매 내역이 없어요.</p>
                       )}
                       <p className="order-note">
-                        결제 취소·환불이 필요하면 문의하기로 알려 주세요. 현재는 개발용 테스트
-                        결제라 실제 청구가 발생하지 않습니다.
+                        결제 취소·환불이 필요하면 문의하기로 알려 주세요. 사용하지 않은 충전 핑은
+                        환불 기준에 따라 처리됩니다. 현재는 개발용 테스트 결제라 실제 청구가
+                        발생하지 않습니다.
                       </p>
                       {lib.subscription && (
                         <button
@@ -1369,79 +1441,104 @@ export default function App() {
           )}
         </Modal>
       )}
-      {checkout && (
-        <Modal
-          title={
-            checkout === 'subscription'
-              ? '숏핑 패스 시작하기'
-              : isEpisodeBuy(checkout)
-                ? '이 회차만 보기'
-                : '작품 전체 소장하기'
-          }
-          close={() => !busy && setCheckout(null)}
-        >
-          <div className="checkout-product">
-            {checkout === 'subscription' ? (
+      {checkout &&
+        (checkout === 'subscription' ? (
+          <Modal title="숏핑 패스 시작하기" close={() => !busy && setCheckout(null)}>
+            <div className="checkout-product">
               <Crown size={42} className="lime" />
-            ) : (
-              <img src={isEpisodeBuy(checkout) ? checkout.drama.image : checkout.image} alt="" />
-            )}
-            <div>
-              <h3>
-                {checkout === 'subscription'
-                  ? `숏핑 패스 · ${config.subscriptionDays}일`
-                  : isEpisodeBuy(checkout)
-                    ? `${checkout.drama.title} ${checkout.episode}화`
-                    : checkout.title}
-              </h3>
-              <p>
-                {checkout === 'subscription'
-                  ? '모든 공개 작품 무제한 시청'
-                  : isEpisodeBuy(checkout)
-                    ? '이 회차만 바로 시청'
-                    : `전체 ${checkout.episode_count}회차 · 소장`}
-              </p>
+              <div>
+                <h3>숏핑 패스 · {config.subscriptionDays}일</h3>
+                <p>모든 공개 작품 무제한 시청</p>
+              </div>
             </div>
-          </div>
-          <div className="checkout-price">
-            <span>결제 금액</span>
-            <strong>
-              {won(
-                checkout === 'subscription'
-                  ? config.subscriptionPrice
-                  : isEpisodeBuy(checkout)
-                    ? checkout.drama.episode_price || config.defaultEpisodePrice
-                    : checkout.price,
-              )}
-            </strong>
-          </div>
-          {isEpisodeBuy(checkout) && (
-            <button
-              className="upsell"
-              onClick={() => setCheckout(checkout.drama)}
-              disabled={busy}
-            >
-              <Ticket size={17} />
-              <span>
-                <strong>전체 소장이 더 좋아요</strong>
-                <small>
-                  {won(checkout.drama.price)}에 {checkout.drama.episode_count}회차 전부 소장
-                </small>
-              </span>
-              <ChevronRight size={16} />
+            <div className="checkout-price">
+              <span>결제 금액</span>
+              <strong>{won(config.subscriptionPrice)}</strong>
+            </div>
+            <div className="info-box">
+              <ShieldCheck size={18} />
+              {config.demo
+                ? '개발용 테스트 결제입니다. 실제 결제나 청구는 발생하지 않으며, DB에 테스트 구독 내역과 시청 권한이 저장됩니다.'
+                : '실제 결제 연동을 준비하고 있어요.'}
+            </div>
+            <button className="primary full" disabled={busy || !config.demo} onClick={pay}>
+              {busy ? '처리 중…' : '테스트 결제하고 시청하기'}
             </button>
-          )}
-          <div className="info-box">
-            <ShieldCheck size={18} />
-            {config.demo
-              ? '개발용 테스트 결제입니다. 실제 결제나 청구는 발생하지 않으며, DB에 테스트 구매 내역과 시청 권한이 저장됩니다.'
-              : '실제 결제 연동을 준비하고 있어요.'}
-          </div>
-          <button className="primary full" disabled={busy || !config.demo} onClick={pay}>
-            {busy ? '처리 중…' : '테스트 결제하고 시청하기'}
-          </button>
-        </Modal>
-      )}
+          </Modal>
+        ) : (
+          (() => {
+            const need = unlockPings(checkout);
+            const short = Math.max(0, need - lib.wallet.total);
+            const d = checkout.drama;
+            const fullPrice = d.locked_count * d.episode_pings;
+            return (
+              <Modal
+                title={checkout.episode ? '이 회차 열기' : '작품 전체 열기'}
+                close={() => !busy && setCheckout(null)}
+              >
+                <div className="checkout-product">
+                  <img src={d.image} alt="" />
+                  <div>
+                    <h3>{checkout.episode ? `${d.title} ${checkout.episode}화` : d.title}</h3>
+                    <p>
+                      {checkout.episode
+                        ? '이 회차만 바로 시청'
+                        : `잠긴 ${d.locked_count}개 회차 모두 열기` +
+                          (d.title_discount ? ` · ${d.title_discount}% 할인` : '')}
+                    </p>
+                  </div>
+                </div>
+                <div className="checkout-price">
+                  <span>
+                    사용할 핑
+                    {!checkout.episode && fullPrice > need && (
+                      <s className="muted"> {pings(fullPrice)}</s>
+                    )}
+                  </span>
+                  <strong>{pings(need)}</strong>
+                </div>
+                <div className="checkout-balance">
+                  <span>보유 핑</span>
+                  <b>{pings(lib.wallet.total)}</b>
+                  <span>사용 후</span>
+                  <b className={short ? 'danger' : ''}>
+                    {short ? `${pings(short)} 부족` : pings(lib.wallet.total - need)}
+                  </b>
+                </div>
+                {checkout.episode && d.locked_count > 1 && (
+                  <button
+                    className="upsell"
+                    onClick={() => setCheckout({ drama: d })}
+                    disabled={busy}
+                  >
+                    <Ticket size={17} />
+                    <span>
+                      <strong>전체 열기가 더 좋아요</strong>
+                      <small>
+                        {pings(d.title_pings)}으로 남은 {d.locked_count}개 회차 모두 열기
+                        {d.title_discount ? ` · ${d.title_discount}% 할인` : ''}
+                      </small>
+                    </span>
+                    <ChevronRight size={16} />
+                  </button>
+                )}
+                <div className="info-box">
+                  <Coins size={18} />
+                  보너스 핑부터 먼저 사용돼요. 연 회차는 마이페이지에서 언제든 다시 볼 수 있어요.
+                </div>
+                {short ? (
+                  <button className="primary full" onClick={() => goCharge(checkout)}>
+                    <Coins size={16} /> 핑 충전하러 가기
+                  </button>
+                ) : (
+                  <button className="primary full" disabled={busy} onClick={pay}>
+                    {busy ? '처리 중…' : `${pings(need)}으로 열기`}
+                  </button>
+                )}
+              </Modal>
+            );
+          })()
+        ))}
     </div>
   );
 }
@@ -1845,7 +1942,7 @@ function DramaPage({
             전체 에피소드 <span>{d.episode_count}</span>
           </h3>
           <span>
-            {d.price === 0
+            {d.free
               ? '전 회차 무료'
               : `첫 ${Math.min(d.free_episodes, d.episode_count)}화 무료`}
           </span>
@@ -1863,24 +1960,33 @@ function DramaPage({
           ))}
         </div>
         <div className="purchase-options">
-          {!d.entitled && d.price > 0 && (
+          {!d.entitled && d.locked_count > 0 && (
             <button onClick={() => buy({ drama: d, episode: firstLocked })}>
-              <Play size={20} />
+              <Coins size={20} />
               <span>
                 <strong>회차별로 보기</strong>
                 <small>
-                  {won(d.episode_price)} · {firstLocked}화부터 한 편씩 결제
+                  한 편 {pings(d.episode_pings)} · {firstLocked}화부터 한 편씩 열기
                 </small>
               </span>
               <ChevronRight size={18} />
             </button>
           )}
-          <button onClick={() => buy(d)} disabled={d.entitled}>
+          <button onClick={() => buy({ drama: d })} disabled={d.entitled || d.locked_count === 0}>
             <Ticket size={21} />
             <span>
-              <strong>{d.entitled ? '시청 권한이 있어요' : '이 작품 전체 소장하기'}</strong>
+              <strong>
+                {d.entitled || d.locked_count === 0
+                  ? '시청 권한이 있어요'
+                  : `남은 ${d.locked_count}개 회차 전체 열기`}
+              </strong>
               <small>
-                {d.entitled ? '모든 회차를 시청할 수 있어요' : won(d.price) + ' · 전체 회차'}
+                {d.entitled || d.locked_count === 0
+                  ? '모든 회차를 시청할 수 있어요'
+                  : pings(d.title_pings) +
+                    (d.title_discount
+                      ? ` · ${pings(d.locked_count * d.episode_pings)}에서 ${d.title_discount}% 할인`
+                      : '')}
               </small>
             </span>
             <ChevronRight size={18} />
@@ -1924,6 +2030,7 @@ function WatchPage({
   notify,
   reloadLibrary,
   pass,
+  setUser,
 }: {
   id: string;
   number: number;
@@ -1934,18 +2041,52 @@ function WatchPage({
   notify: (s: string) => void;
   reloadLibrary: () => Promise<void>;
   pass: number;
+  setUser: (u: User) => void;
 }) {
   const [d, setD] = useState<Detail | null>(null),
     [error, setError] = useState(''),
     [episodesOpen, setEpisodesOpen] = useState(false),
-    [videoError, setVideoError] = useState(false);
+    [videoError, setVideoError] = useState(false),
+    [autoBusy, setAutoBusy] = useState(false);
   const video = useRef<HTMLVideoElement>(null),
-    lastSave = useRef(0);
+    lastSave = useRef(0),
+    autoTried = useRef(false);
   useEffect(() => {
     api<Detail>('/dramas/' + id)
       .then(setD)
       .catch((e) => setError(e.message));
   }, [id]);
+  const current = d?.episodes.find((e) => e.number === number);
+  // 자동 열기: 사용자가 켜 두었고 핑이 충분하면 잠긴 회차를 바로 엽니다(화면마다 한 번만 시도).
+  useEffect(() => {
+    if (!d || !user?.auto_unlock || !current?.locked || autoTried.current) return;
+    if (lib.wallet.total < d.episode_pings) return;
+    autoTried.current = true;
+    setAutoBusy(true);
+    api<{ pings: number; wallet: { total: number } }>('/pings/unlock', 'POST', {
+      dramaId: d.id,
+      episode: number,
+      idempotencyKey: crypto.randomUUID(),
+    })
+      .then(async (r) => {
+        notify(`자동 열기로 ${number}화에 ${pings(r.pings)}을 썼어요. 남은 핑 ${pings(r.wallet.total)}`);
+        await reloadLibrary();
+      })
+      .catch((e) => notify((e as Error).message))
+      .finally(() => setAutoBusy(false));
+  }, [d, current, user, lib.wallet.total, number, notify, reloadLibrary]);
+  const toggleAutoUnlock = async (enabled: boolean) => {
+    if (!user) return;
+    // 지금 보고 있는 잠긴 회차는 켜는 순간 몰래 열지 않습니다. 다음에 들어가는 회차부터 적용됩니다.
+    autoTried.current = true;
+    try {
+      await api('/account/auto-unlock', 'PUT', { enabled });
+      setUser({ ...user, auto_unlock: enabled });
+      notify(enabled ? '다음부터 잠긴 회차를 보유 핑으로 자동으로 열어요.' : '자동 열기를 껐어요.');
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
   const save = async (force = false) => {
     if (!user || !video.current || !d) return;
     const t = video.current.currentTime;
@@ -1973,7 +2114,7 @@ function WatchPage({
         <span className="spinner" />
       </div>
     );
-  const ep = d.episodes.find((e) => e.number === number);
+  const ep = current;
   if (!ep)
     return (
       <Empty
@@ -2015,23 +2156,45 @@ function WatchPage({
             <img className="locked-poster" src={d.image} alt="" />
             <div className="paywall">
               <LockKeyhole size={32} />
-              <h2>이야기는 계속돼요</h2>
+              <h2>{autoBusy ? '회차를 여는 중이에요' : '이야기는 계속돼요'}</h2>
               <p>
-                {number}화부터는 회차 구매, 작품 소장 또는
+                {number}화는 {pings(d.episode_pings)}으로 열 수 있어요.
                 <br />
-                숏핑 패스로 시청할 수 있어요.
+                {user ? `보유 핑 ${pings(lib.wallet.total)}` : '로그인하고 핑으로 이어 보세요.'}
               </p>
-              <button className="primary full" onClick={() => buy({ drama: d, episode: number })}>
-                <Play size={16} fill="currentColor" />이 회차만 보기 · {won(d.episode_price)}
+              <button
+                className="primary full"
+                disabled={autoBusy}
+                onClick={() => buy({ drama: d, episode: number })}
+              >
+                <Coins size={16} />
+                {pings(d.episode_pings)}으로 이 회차 보기
               </button>
-              <button className="secondary full" onClick={() => buy(d)}>
-                <Ticket size={17} />
-                전체 소장 · {won(d.price)}
-              </button>
+              {d.locked_count > 1 && (
+                <button
+                  className="secondary full"
+                  disabled={autoBusy}
+                  onClick={() => buy({ drama: d })}
+                >
+                  <Ticket size={17} />
+                  남은 {d.locked_count}화 전체 열기 · {pings(d.title_pings)}
+                  {d.title_discount ? ` (${d.title_discount}%↓)` : ''}
+                </button>
+              )}
               <button className="secondary full" onClick={() => buy('subscription')}>
                 <Crown size={18} /> 숏핑 패스 · {won(pass)}
               </button>
-              <small>구매한 회차와 작품은 마이페이지에서 확인할 수 있어요.</small>
+              {user && (
+                <label className="auto-unlock-toggle">
+                  <input
+                    type="checkbox"
+                    checked={!!user.auto_unlock}
+                    onChange={(e) => void toggleAutoUnlock(e.target.checked)}
+                  />
+                  다음 회차부터 보유 핑으로 자동 열기
+                </label>
+              )}
+              <small>연 회차와 핑 내역은 마이페이지에서 확인할 수 있어요.</small>
             </div>
           </>
         ) : (
@@ -2053,10 +2216,13 @@ function WatchPage({
               onPause={() => void save(true)}
               onEnded={() => {
                 void save(true);
+                const next = d.episodes.find((e) => e.number === number + 1);
+                // 잠긴 다음 회차는 자동 열기를 켜고 핑이 충분할 때만 이어서 이동합니다.
                 if (
                   user?.auto_next !== false &&
-                  number < d.episode_count &&
-                  !d.episodes.find((e) => e.number === number + 1)?.locked
+                  next &&
+                  (!next.locked ||
+                    (user?.auto_unlock && lib.wallet.total >= d.episode_pings))
                 )
                   navigate('watch/' + id + '/' + (number + 1));
               }}
@@ -2143,20 +2309,20 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
       ? lib.favorites
       : tab === '소장 작품'
         ? lib.purchases
-        : tab === '구매한 회차'
+        : tab === '연 회차'
           ? Object.keys(owned)
           : lib.history.map((h) => h.drama_id);
   return (
     <>
       <div className="library-tabs">
-        {['찜한 작품', '최근 시청', '소장 작품', '구매한 회차'].map((t) => (
+        {['찜한 작품', '최근 시청', '소장 작품', '연 회차'].map((t) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
             {t}
-            {t === '구매한 회차' && lib.episodes.length > 0 && <i>{lib.episodes.length}</i>}
+            {t === '연 회차' && lib.episodes.length > 0 && <i>{lib.episodes.length}</i>}
           </button>
         ))}
       </div>
-      {tab === '구매한 회차' ? (
+      {tab === '연 회차' ? (
         <div className="owned-episodes">
           {ids.map((id) => {
             const d = dramas.find((x) => x.id === id);
@@ -2167,7 +2333,7 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
                 <div>
                   <strong>{d.title}</strong>
                   <small>
-                    {d.genre} · 구매한 회차 {owned[id].length}화
+                    {d.genre} · 연 회차 {owned[id].length}화
                   </small>
                   <div className="owned-chips">
                     {[...owned[id]]
@@ -2211,8 +2377,8 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
               ? '마음에 드는 이야기를 찜해보세요'
               : tab === '소장 작품'
                 ? '소장한 작품이 아직 없어요'
-                : tab === '구매한 회차'
-                  ? '구매한 회차가 아직 없어요'
+                : tab === '연 회차'
+                  ? '연 회차가 아직 없어요'
                   : '첫 번째 이야기를 시작해 보세요'
           }
           text="새로운 몰입이 당신을 기다려요."

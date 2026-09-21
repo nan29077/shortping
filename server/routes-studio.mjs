@@ -4,6 +4,7 @@ import { loadSettings } from './settings.mjs';
 import {
   balanceOf,
   breakdown,
+  platformRateFor,
   refreshEntries,
   requestPayout,
   taxFor,
@@ -252,8 +253,12 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
       ),
       profile: await taxProfile(pdId),
       settings: {
-        platform_fee_rate: settings.platform_fee_rate,
+        platform_fee_rate: await platformRateFor(db, pdId, settings),
+        default_platform_fee_rate: settings.platform_fee_rate,
         pg_fee_rate: settings.pg_fee_rate,
+        app_store_fee_rate: settings.app_store_fee_rate,
+        google_play_fee_rate: settings.google_play_fee_rate,
+        ping_unit_won: settings.ping_unit_won,
         settle_hold_days: settings.settle_hold_days,
         payout_min: settings.payout_min,
         withholding_rate: settings.withholding_rate,

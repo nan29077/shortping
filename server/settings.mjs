@@ -3,12 +3,17 @@
 export const settingDefaults = {
   subscription_price: 7900,
   subscription_days: 30,
-  default_drama_price: 3900,
   default_free_episodes: 3,
-  default_episode_price: 500, // 회차 단건 구매 기본가
-  platform_fee_rate: 30, // %, 플랫폼 수수료
-  pg_fee_rate: 0, // %, 결제대행 수수료 (연동 후 사용)
-  settle_hold_days: 7, // 구매 후 판매 확정까지
+  // 핑(포인트): 10,000원 = 100핑 기준. 회차는 핑으로 열고, 작품 전체 열기는 할인해 줍니다.
+  ping_unit_won: 100, // 1핑 기준가(원). 무상 지급 핑의 정산 단가와 화면 환산에 사용
+  default_episode_pings: 5, // 작품별 회차 핑을 정하지 않았을 때
+  title_unlock_discount: 20, // 작품 전체 열기 할인율(%)
+  // 결제 채널 수수료(%). 정산은 채널 수수료를 뺀 순매출을 PD·플랫폼이 나눕니다.
+  pg_fee_rate: 0, // 웹 결제(PG) 수수료 — PG 연동 후 계약 요율 입력
+  app_store_fee_rate: 30, // App Store 인앱결제
+  google_play_fee_rate: 30, // Google Play 인앱결제
+  platform_fee_rate: 30, // 공통 플랫폼 몫(%). PD 몫 = 100 - 이 값. PD별 개별 비율이 우선
+  settle_hold_days: 7, // 판매 확정까지
   payout_min: 10000, // 최소 출금 신청 금액
   withholding_rate: 3.3, // 비사업자 사업소득 원천징수
   vat_rate: 10, // 사업자 세금계산서 부가세

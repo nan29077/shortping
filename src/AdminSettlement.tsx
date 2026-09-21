@@ -15,6 +15,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import {
+  settleKindLabel,
   api,
   day,
   moment,
@@ -463,7 +464,7 @@ export function AdminSettlementPanel({
                 ...data.entries.map((e) => [
                   moment(e.created_at),
                   e.pd_name || '',
-                  e.kind === 'drama' ? '개별 구매' : '구독 배분',
+                  settleKindLabel(e.kind),
                   e.drama_title || `${e.period} 구독`,
                   e.gross,
                   e.platform_fee + e.pg_fee,
@@ -497,7 +498,7 @@ export function AdminSettlementPanel({
                     <td>{e.pd_name}</td>
                     <td>
                       <strong>{e.drama_title || `${e.period} 숏핑 패스 배분`}</strong>
-                      <small>{e.kind === 'drama' ? '개별 구매' : '구독 배분'}</small>
+                      <small>{settleKindLabel(e.kind)}</small>
                     </td>
                     <td className="nowrap">{won(e.gross)}</td>
                     <td className="nowrap">
@@ -863,18 +864,13 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
         <h4 className="spaced-title">작품 기본값</h4>
         <div className="form-columns">
           <label>
-            기본 소장 가격 (원)
-            <input type="number" min={0} max={1000000} value={form.default_drama_price} onChange={number('default_drama_price')} required />
-          </label>
-          <label>
             기본 무료 회차
             <input type="number" min={1} max={50} value={form.default_free_episodes} onChange={number('default_free_episodes')} required />
           </label>
-          <label>
-            기본 회차 가격 (원)
-            <input type="number" min={0} max={100000} value={form.default_episode_price} onChange={number('default_episode_price')} required />
-          </label>
         </div>
+        <p className="muted settings-note">
+          회차 핑 가격 · 전체 열기 할인 · 충전 상품 · 인앱 수수료는 ‘포인트(핑) 관리’에서 설정합니다.
+        </p>
         <h4 className="spaced-title">수수료 · 정산</h4>
         <div className="form-columns">
           <label>
@@ -882,7 +878,7 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
             <input type="number" min={0} max={90} step={0.1} value={form.platform_fee_rate} onChange={number('platform_fee_rate')} required />
           </label>
           <label>
-            결제 수수료 (%)
+            웹 결제(PG) 수수료 (%)
             <input type="number" min={0} max={20} step={0.1} value={form.pg_fee_rate} onChange={number('pg_fee_rate')} required />
           </label>
           <label>
@@ -914,7 +910,8 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
         </label>
         <div className="info-box">
           수수료율 변경은 변경 이후 발생하는 판매부터 적용됩니다. 이미 생성된 정산 내역은 당시
-          요율을 유지합니다.
+          요율을 유지합니다. 플랫폼 수수료는 공통 비율이며, PD별 개별 비율은 포인트(핑) 관리에서
+          정합니다.
         </div>
         <button className="primary full" disabled={busy}>
           {busy ? '저장 중…' : '설정 저장'}
@@ -935,8 +932,8 @@ export function AdminPricingPanel({
 }) {
   const [editing, setEditing] = useState<Drama | null>(null),
     [form, setForm] = useState({
-      price: 0,
-      episode_price: 0,
+      free: false,
+      episode_pings: 0,
       free_episodes: 3,
       badge: 'NEW',
       status: 'published',
@@ -954,7 +951,7 @@ export function AdminPricingPanel({
         <div className="panel-heading">
           <div>
             <h3>작품 판매 설정</h3>
-            <p>공개된 작품의 소장 가격, 무료 회차, 노출 상태를 언제든 조정할 수 있습니다.</p>
+            <p>공개된 작품의 회차 핑 가격, 무료 회차, 노출 상태를 언제든 조정할 수 있습니다.</p>
           </div>
           <span className="tag-outline">{sellable.length}편</span>
         </div>
@@ -974,7 +971,7 @@ export function AdminPricingPanel({
                 <tr>
                   <th>작품</th>
                   <th>방송국</th>
-                  <th>소장 가격</th>
+                  <th>판매</th>
                   <th>회차 가격</th>
                   <th>무료 회차</th>
                   <th>뱃지</th>
@@ -993,10 +990,10 @@ export function AdminPricingPanel({
                     </td>
                     <td>{d.channel_name || '미지정'}</td>
                     <td className="nowrap">
-                      <b>{d.price === 0 ? '무료' : won(d.price)}</b>
+                      <b>{d.free ? '무료' : '핑 판매'}</b>
                     </td>
                     <td className="nowrap">
-                      {d.price === 0 ? '-' : d.episode_price ? won(d.episode_price) : '기본값'}
+                      {d.free ? '-' : d.episode_pings ? d.episode_pings + '핑' : '기본값'}
                     </td>
                     <td className="nowrap">{d.free_episodes}화</td>
                     <td>{d.badge}</td>
@@ -1011,8 +1008,8 @@ export function AdminPricingPanel({
                         onClick={() => {
                           setEditing(d);
                           setForm({
-                            price: d.price,
-                            episode_price: d.episode_price || 0,
+                            free: !!d.free,
+                            episode_pings: d.episode_pings || 0,
                             free_episodes: d.free_episodes,
                             badge: ['NEW', 'HOT', '독점', '완결', '추천'].includes(d.badge)
                               ? d.badge
@@ -1037,24 +1034,23 @@ export function AdminPricingPanel({
         <Modal title={editing.title + ' 판매 설정'} close={() => !busy && setEditing(null)}>
           <div className="form-columns">
             <label>
-              소장 가격 (원)
+              회차 가격 (핑 · 0이면 기본값)
               <input
                 type="number"
                 min={0}
-                max={1000000}
-                value={form.price}
-                onChange={(e) => setForm({ ...form, price: Number(e.target.value) })}
+                max={1000}
+                disabled={form.free}
+                value={form.episode_pings}
+                onChange={(e) => setForm({ ...form, episode_pings: Number(e.target.value) })}
               />
             </label>
-            <label>
-              회차 구매 가격 (원)
+            <label className="inline-check">
               <input
-                type="number"
-                min={0}
-                max={100000}
-                value={form.episode_price}
-                onChange={(e) => setForm({ ...form, episode_price: Number(e.target.value) })}
+                type="checkbox"
+                checked={form.free}
+                onChange={(e) => setForm({ ...form, free: e.target.checked })}
               />
+              전 회차 무료
             </label>
             <label>
               무료 회차

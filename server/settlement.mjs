@@ -66,6 +66,46 @@ export async function recordSale(db, { order, drama, settings }) {
   );
   return { net, confirmAt };
 }
+// PD별 분배율: 개별 설정이 있으면 그 값을, 없으면 공통 플랫폼 몫을 씁니다.
+export async function platformRateFor(db, pdId, settings) {
+  const row = await db.get('SELECT platform_fee_rate FROM pd_settlement_rates WHERE user_id=?', [
+    pdId,
+  ]);
+  return row ? Number(row.platform_fee_rate) : settings.platform_fee_rate;
+}
+// 이미 채널 수수료를 뺀 순매출을 분배율로만 나눕니다.
+export function splitByRate(gross, rate) {
+  const platformFee = Math.round((gross * rate) / 100);
+  return { gross, platformFee, pgFee: 0, net: gross - platformFee };
+}
+// 핑 사용 매출. 주문과 같은 트랜잭션에서 기록해 매출과 정산이 어긋나지 않게 합니다.
+export async function recordPingSale(db, { order, drama, gross, rate, settings }) {
+  if (gross <= 0) return null;
+  const { platformFee, net } = splitByRate(gross, rate);
+  const confirmAt = new Date(
+    new Date(order.created_at).getTime() + settings.settle_hold_days * 86400000,
+  ).toISOString();
+  await db.run(
+    'INSERT INTO settlement_entries (id,pd_id,order_id,drama_id,kind,period,gross,platform_fee,pg_fee,net,fee_rate,status,confirm_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
+    [
+      randomUUID(),
+      drama.owner_id,
+      order.id,
+      drama.id,
+      'ping',
+      periodOf(order.created_at),
+      gross,
+      platformFee,
+      0,
+      net,
+      rate,
+      'pending',
+      confirmAt,
+      order.created_at,
+    ],
+  );
+  return { net, confirmAt };
+}
 export async function refreshEntries(db) {
   await db.run("UPDATE settlement_entries SET status='available' WHERE status='pending' AND confirm_at<=?", [
     iso(),
@@ -105,7 +145,7 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
   const pool = Number(
     (
       await db.get(
-        "SELECT SUM(amount) AS total FROM orders WHERE kind='subscription' AND created_at>=? AND created_at<?",
+        "SELECT SUM(amount - channel_fee) AS total FROM orders WHERE kind='subscription' AND created_at>=? AND created_at<?",
         [start, end],
       )
     )?.total || 0,
@@ -138,7 +178,8 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
     const [pdId, weight] = ordered[i];
     const gross = amounts[i];
     if (gross <= 0) continue;
-    const { platformFee, pgFee, net } = breakdown(gross, settings);
+    const rate = await platformRateFor(db, pdId, settings);
+    const { platformFee, pgFee, net } = splitByRate(gross, rate);
     await db.run(
       'INSERT INTO settlement_entries (id,pd_id,order_id,drama_id,kind,period,gross,platform_fee,pg_fee,net,fee_rate,status,confirm_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
       [
@@ -152,7 +193,7 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
         platformFee,
         pgFee,
         net,
-        settings.platform_fee_rate,
+        rate,
         'available',
         stamp,
         stamp,

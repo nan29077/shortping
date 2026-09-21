@@ -103,13 +103,19 @@ export default function ContentReview({
                   </dd>
                 </div>
                 <div>
-                  <dt>전체 소장</dt>
-                  <dd>{won(detail.price)}</dd>
+                  <dt>회차 가격</dt>
+                  <dd>
+                    {detail.free
+                      ? '무료 작품'
+                      : detail.episode_pings
+                        ? `${detail.episode_pings}핑`
+                        : '기본 핑(요금 정책)'}
+                  </dd>
                 </div>
                 <div>
                   <dt>무료 공개</dt>
                   <dd>
-                    {detail.price === 0
+                    {detail.free
                       ? '전 회차 무료'
                       : detail.episodes.length
                         ? `1~${Math.min(detail.free_episodes, detail.episodes.length)}화`
@@ -184,7 +190,7 @@ export default function ContentReview({
                     {e.number}화 · {e.title}
                     <small>
                       {e.duration}초 ·{' '}
-                      {detail.price === 0 || e.number <= detail.free_episodes ? '무료' : '유료'}
+                      {detail.free || e.number <= detail.free_episodes ? '무료' : '유료'}
                       {loaded.includes(e.number) ? ' · 재생 준비 확인' : ''}
                     </small>
                   </span>
