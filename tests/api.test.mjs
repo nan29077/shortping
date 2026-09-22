@@ -302,6 +302,7 @@ test('PD creates private draft; empty draft cannot be submitted', async () => {
       genre: '스릴러',
       free_episodes: 1,
       image: '/images/shadow.webp',
+      rights_confirmed: true,
     },
   });
   assert.equal(r.status, 200);
@@ -523,6 +524,7 @@ const draftBody = {
   genre: '로맨스',
   free_episodes: 1,
   image: '/images/hero.webp',
+  rights_confirmed: true,
 };
 const makeDraft = async () => {
   const r = await request('/studio/dramas', { method: 'POST', cookie: pd, body: draftBody });
@@ -2098,4 +2100,136 @@ test('auto unlock preference is kept by profile saves and toggled on its own', a
   assert.equal(saved.status, 200);
   assert.equal((await me()).auto_unlock, true);
   assert.equal((await request('/account/auto-unlock', { method: 'PUT', body: { enabled: true } })).status, 401);
+});
+
+test('chunked resumable upload, prechecks, poster frames, subtitles and rights declaration', async () => {
+  const bytes = readFileSync('public/demo/preview.mp4');
+  const start = await request('/studio/uploads', {
+    method: 'POST',
+    cookie: pd,
+    body: { size: bytes.length, mime: 'video/mp4', filename: '03화_마지막.mp4' },
+  });
+  assert.equal(start.status, 201);
+  assert.equal(
+    (
+      await request('/studio/uploads', {
+        method: 'POST',
+        cookie: pd,
+        body: { size: 600 * 1024 * 1024, mime: 'video/mp4' },
+      })
+    ).status,
+    400,
+  );
+  const id = start.data.id;
+  const put = (offset, chunk, cookie = pd) =>
+    fetch(`${base}/api/studio/uploads/${id}?offset=${offset}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream', cookie },
+      body: chunk,
+    });
+  const third = Math.ceil(bytes.length / 3);
+  assert.equal((await put(0, bytes.subarray(0, third))).status, 200);
+  // 연결이 끊겨 같은 조각을 다시 보내면 서버가 받은 위치를 알려 준다.
+  const dup = await put(0, bytes.subarray(0, third));
+  assert.equal(dup.status, 409);
+  assert.equal((await dup.json()).received, third);
+  // 완료를 서두르면 거부된다.
+  assert.equal((await request(`/studio/uploads/${id}/complete`, { method: 'POST', cookie: pd })).status, 409);
+  // 시청자는 업로드 API를 쓸 수 없고, 같은 PD는 새 로그인에서도 이어 올릴 수 있다.
+  const other = await login('pd');
+  assert.equal((await request('/studio/uploads/' + id, { cookie: viewer })).status, 403);
+  const status = await request('/studio/uploads/' + id, { cookie: other });
+  assert.equal(status.data.received, third);
+  assert.equal((await put(third, bytes.subarray(third, third * 2))).status, 200);
+  assert.equal((await put(third * 2, bytes.subarray(third * 2))).status, 200);
+  const done = await request(`/studio/uploads/${id}/complete`, { method: 'POST', cookie: pd });
+  assert.equal(done.status, 200);
+  assert.match(done.data.url, /^\/uploads\/[a-f0-9-]+\.mp4$/);
+  assert.equal(done.data.duration, 12);
+  assert.ok(Array.isArray(done.data.warnings));
+  // 완료를 다시 호출해도 같은 파일을 돌려준다(멱등).
+  assert.equal(
+    (await request(`/studio/uploads/${id}/complete`, { method: 'POST', cookie: pd })).data.url,
+    done.data.url,
+  );
+
+  // 권리 확인 없이 만든 작품은 심사를 요청할 수 없다.
+  const { rights_confirmed, ...undeclared } = draftBody;
+  assert.equal(rights_confirmed, true);
+  const drama = (await request('/studio/dramas', { method: 'POST', cookie: pd, body: { ...undeclared, title: '업로드 고도화 검수' } })).data.id;
+  assert.equal(
+    (
+      await request('/studio/dramas/' + drama + '/episodes', {
+        method: 'POST',
+        cookie: pd,
+        body: { number: 1, title: '1화', duration: 1, video: done.data.url },
+      })
+    ).status,
+    200,
+  );
+  const detail = (await request('/studio/dramas/' + drama, { cookie: pd })).data;
+  assert.ok(Array.isArray(detail.episodes[0].warnings));
+  assert.ok(detail.episodes[0].width > 0);
+  const blocked = await request('/studio/dramas/' + drama + '/submit', { method: 'POST', cookie: pd });
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.data.error, /권리/);
+
+  // 영상에서 포스터 후보 3장
+  const frames = await request('/studio/media/frames', { method: 'POST', cookie: pd, body: { video: done.data.url } });
+  assert.equal(frames.status, 200);
+  assert.equal(frames.data.frames.length, 3);
+  assert.equal((await fetch(base + frames.data.frames[0])).status, 200);
+  assert.equal(
+    (await request('/studio/media/frames', { method: 'POST', cookie: viewer, body: { video: done.data.url } })).status,
+    403,
+  );
+  assert.equal(
+    (await request('/studio/dramas/' + drama + '/poster', { method: 'PUT', cookie: pd, body: { image: frames.data.frames[1] } })).status,
+    200,
+  );
+  assert.equal((await request('/studio/dramas/' + drama, { cookie: pd })).data.image, frames.data.frames[1]);
+
+  // 자막: SRT → VTT, 태그 제거, 시청 권한 확인
+  const srt = '1\r\n00:00:01,000 --> 00:00:03,500\r\n<b>안녕하세요</b>\r\n\r\n2\r\n00:00:04,000 --> 00:00:06,000\r\n두 번째 대사\r\n';
+  const sub = await request(`/studio/dramas/${drama}/episodes/1/subtitles`, { method: 'POST', cookie: pd, body: { text: srt } });
+  assert.equal(sub.status, 200);
+  assert.equal(sub.data.cues, 2);
+  assert.equal(
+    (await request(`/studio/dramas/${drama}/episodes/1/subtitles`, { method: 'POST', cookie: pd, body: { text: '자막이 아닌 그냥 글입니다' } })).status,
+    400,
+  );
+  const vtt = await fetch(`${base}/api/subtitles/${drama}/1`, { headers: { cookie: pd } });
+  assert.equal(vtt.status, 200);
+  const vttText = await vtt.text();
+  assert.match(vttText, /^WEBVTT/);
+  assert.match(vttText, /00:00:01\.000 --> 00:00:03\.500\n안녕하세요/);
+  assert.doesNotMatch(vttText, /<b>/);
+  // 비공개 작품의 자막은 다른 사람이 볼 수 없다.
+  assert.equal((await fetch(`${base}/api/subtitles/${drama}/1`, { headers: { cookie: viewer } })).status, 404);
+
+  // 권리·AI 자가 신고 후 심사 요청 → 관리자 검수 화면에서 확인
+  assert.equal(
+    (
+      await request('/studio/dramas/' + drama + '/declaration', {
+        method: 'PUT',
+        cookie: pd,
+        body: { rights_confirmed: true, likeness_confirmed: true, ai_usage: 'partial' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await request('/studio/dramas/' + drama + '/submit', { method: 'POST', cookie: pd })).status, 200);
+  const review = (await request('/studio/dramas/' + drama, { cookie: admin })).data;
+  assert.equal(review.ai_usage, 'partial');
+  assert.equal(Number(review.rights_confirmed), 1);
+  assert.equal(review.episodes[0].has_subtitles, 1);
+  assert.equal(
+    (await request('/admin/dramas/' + drama + '/review', { method: 'POST', cookie: admin, body: { status: 'published' } })).status,
+    200,
+  );
+  const pub = (await request('/dramas/' + drama)).data;
+  assert.equal(pub.ai_label, true);
+  assert.equal(pub.episodes[0].has_subtitles, 1);
+  // 공개 후 1화(무료)는 누구나 자막을 받는다.
+  assert.equal((await fetch(`${base}/api/subtitles/${drama}/1`)).status, 200);
 });

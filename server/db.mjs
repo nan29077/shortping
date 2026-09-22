@@ -110,6 +110,29 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS ping_consumptions (ledger_id TEXT NOT NULL REFERENCES ping_ledger(id) ON DELETE CASCADE, lot_id TEXT NOT NULL REFERENCES ping_lots(id) ON DELETE CASCADE, paid INTEGER NOT NULL DEFAULT 0, bonus INTEGER NOT NULL DEFAULT 0, value_milli BIGINT NOT NULL, PRIMARY KEY(ledger_id, lot_id))`,
     `CREATE TABLE IF NOT EXISTS pd_settlement_rates (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, platform_fee_rate REAL NOT NULL CHECK(platform_fee_rate >= 0 AND platform_fee_rate <= 100), updated_at TEXT NOT NULL, updated_by TEXT)`,
     `CREATE TABLE IF NOT EXISTS member_notes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, actor_id TEXT NOT NULL REFERENCES users(id), note TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    // ── 업로드 고도화 ─────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS upload_sessions (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, mime TEXT NOT NULL, size BIGINT NOT NULL, received BIGINT NOT NULL DEFAULT 0, filename TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', url TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    // ── 라마(제작 포인트, 1라마 = 10원) ────────────────────────────
+    `CREATE TABLE IF NOT EXISTS lama_products (id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL CHECK(price >= 0), lama INTEGER NOT NULL CHECK(lama > 0), bonus_lama INTEGER NOT NULL DEFAULT 0 CHECK(bonus_lama >= 0), badge TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS lama_wallets (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, paid_balance INTEGER NOT NULL DEFAULT 0 CHECK(paid_balance >= 0), bonus_balance INTEGER NOT NULL DEFAULT 0 CHECK(bonus_balance >= 0), held_paid INTEGER NOT NULL DEFAULT 0 CHECK(held_paid >= 0), held_bonus INTEGER NOT NULL DEFAULT 0 CHECK(held_bonus >= 0), updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS lama_ledger (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, paid_delta INTEGER NOT NULL DEFAULT 0, bonus_delta INTEGER NOT NULL DEFAULT 0, held_delta INTEGER NOT NULL DEFAULT 0, paid_after INTEGER NOT NULL, bonus_after INTEGER NOT NULL, held_after INTEGER NOT NULL DEFAULT 0, job_id TEXT, order_id TEXT, payout_id TEXT, memo TEXT NOT NULL DEFAULT '', actor_id TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS lama_ledger_user ON lama_ledger(user_id, created_at)`,
+    // ── AI 연결 ────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS ai_providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, base_url TEXT NOT NULL DEFAULT '', api_key_enc TEXT NOT NULL DEFAULT '', key_hint TEXT NOT NULL DEFAULT '', secret_enc TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'unknown', last_error TEXT NOT NULL DEFAULT '', last_checked_at TEXT, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ai_models (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE, capability TEXT NOT NULL, model_id TEXT NOT NULL, label TEXT NOT NULL, tier TEXT NOT NULL DEFAULT 'standard', unit TEXT NOT NULL, cost_usd REAL NOT NULL DEFAULT 0, price_lama REAL NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT '', max_seconds INTEGER NOT NULL DEFAULT 10, image_input INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 50, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ai_user_limits (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, daily_lama INTEGER, monthly_lama INTEGER, blocked INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT)`,
+    `CREATE TABLE IF NOT EXISTS ai_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id TEXT, target_type TEXT NOT NULL DEFAULT '', target_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, capability TEXT NOT NULL, requested_model TEXT NOT NULL DEFAULT 'auto', model_ref TEXT, provider_id TEXT, vendor_model TEXT NOT NULL DEFAULT '', tier TEXT NOT NULL DEFAULT 'standard', input TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued', estimate_lama INTEGER NOT NULL DEFAULT 0, hold_paid INTEGER NOT NULL DEFAULT 0, hold_bonus INTEGER NOT NULL DEFAULT 0, charged_lama INTEGER NOT NULL DEFAULT 0, cost_won INTEGER NOT NULL DEFAULT 0, vendor_ref TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, tried TEXT NOT NULL DEFAULT '', claimed_by TEXT, billed INTEGER NOT NULL DEFAULT 1, idempotency_key TEXT UNIQUE, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, next_poll_at TEXT)`,
+    `CREATE INDEX IF NOT EXISTS ai_jobs_status ON ai_jobs(status, created_at)`,
+    `CREATE INDEX IF NOT EXISTS ai_jobs_user ON ai_jobs(user_id, created_at)`,
+    // ── 숏핑 스튜디오(AI 제작) ─────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS studio_projects (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, drama_id TEXT, title TEXT NOT NULL, logline TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '로맨스', tone TEXT NOT NULL DEFAULT '', style TEXT NOT NULL DEFAULT '', synopsis TEXT NOT NULL DEFAULT '', episode_count INTEGER NOT NULL DEFAULT 5, episode_seconds INTEGER NOT NULL DEFAULT 60, poster TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS studio_characters (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', look TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', voice_model TEXT NOT NULL DEFAULT 'auto', voice TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS studio_episodes (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, number INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'outline', video TEXT NOT NULL DEFAULT '', duration INTEGER NOT NULL DEFAULT 0, subtitles TEXT NOT NULL DEFAULT '', exported_at TEXT, UNIQUE(project_id, number))`,
+    `CREATE TABLE IF NOT EXISTS studio_shots (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES studio_episodes(id) ON DELETE CASCADE, sort_order INTEGER NOT NULL DEFAULT 0, scene TEXT NOT NULL DEFAULT '', visual TEXT NOT NULL DEFAULT '', dialogue TEXT NOT NULL DEFAULT '', speaker_id TEXT, camera TEXT NOT NULL DEFAULT '', seconds INTEGER NOT NULL DEFAULT 5, image TEXT NOT NULL DEFAULT '', audio TEXT NOT NULL DEFAULT '', audio_seconds REAL NOT NULL DEFAULT 0, video TEXT NOT NULL DEFAULT '')`,
+    `CREATE TABLE IF NOT EXISTS studio_assets (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL, job_id TEXT, model_label TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_assets_target ON studio_assets(target_type, target_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS ai_route_rules (id TEXT PRIMARY KEY, capability TEXT NOT NULL, tier TEXT NOT NULL, model_ids TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, updated_by TEXT, UNIQUE(capability, tier))`,
+    `CREATE TABLE IF NOT EXISTS ai_safety_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, term TEXT NOT NULL, excerpt TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
   ];
   for (const sql of statements) await db.run(sql);
   // Added after the first release: keep existing local and hosted databases usable.
@@ -133,6 +156,27 @@ export async function migrate(db) {
   await ensureColumn(db, 'orders', 'pings', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'orders', 'bonus_pings', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'orders', 'product_id', 'TEXT');
+  // 업로드 고도화: 권리·AI 자가 신고, 회차 출처와 자막, 소리 유무
+  await ensureColumn(db, 'dramas', 'rights_confirmed', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'dramas', 'likeness_confirmed', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'dramas', 'ai_usage', "TEXT NOT NULL DEFAULT 'none'");
+  await ensureColumn(db, 'dramas', 'declared_at', 'TEXT');
+  await ensureColumn(db, 'episodes', 'source', "TEXT NOT NULL DEFAULT 'upload'");
+  await ensureColumn(db, 'episodes', 'subtitles', "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'episodes', 'studio_episode_id', 'TEXT');
+  await ensureColumn(db, 'media_metadata', 'has_audio', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(db, 'user_profiles', 'studio_terms_at', 'TEXT');
+  // 정산 수익을 라마로 전환한 지급은 method='lama'
+  await ensureColumn(db, 'payouts', 'method', "TEXT NOT NULL DEFAULT 'bank'");
+  await ensureColumn(db, 'payouts', 'lama', 'INTEGER NOT NULL DEFAULT 0');
+  // 스튜디오 고도화: 자동 제작, 중국 모델 제외, 목소리 미리듣기, 공급사 동시작업·월예산·장애 차단
+  await ensureColumn(db, 'studio_projects', 'exclude_cn', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'studio_projects', 'autopilot', "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'studio_characters', 'voice_sample', "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'ai_providers', 'max_concurrency', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'ai_providers', 'monthly_budget_won', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'ai_providers', 'fail_streak', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'ai_providers', 'cooldown_until', 'TEXT');
   // 처음 한 번만 기본 충전 상품(웹)을 만들어 둡니다. 이후 구성은 관리자 포인트 관리에서 바꿉니다.
   if (!(await db.get('SELECT id FROM ping_products LIMIT 1'))) {
     const stamp = new Date().toISOString();
@@ -148,6 +192,22 @@ export async function migrate(db) {
       await db.run(
         "INSERT INTO ping_products (id,channel,name,price,pings,bonus_pings,badge,active,sort_order,created_at,updated_at) VALUES (?,'web',?,?,?,?,?,1,?,?,?) ON CONFLICT DO NOTHING",
         [id, name, price, pings, bonus, badge, order++, stamp, stamp],
+      );
+  }
+  // 라마 기본 충전 상품(웹 전용 · PD 스튜디오). 이후 구성은 관리자 라마 관리에서 바꿉니다.
+  if (!(await db.get('SELECT id FROM lama_products LIMIT 1'))) {
+    const stamp = new Date().toISOString();
+    const defaults = [
+      ['lama-10k', '1,000라마', 10000, 1000, 0, ''],
+      ['lama-50k', '5,000라마', 50000, 5000, 250, '보너스'],
+      ['lama-100k', '10,000라마', 100000, 10000, 700, '인기'],
+      ['lama-300k', '30,000라마', 300000, 30000, 3000, '제작사 추천'],
+    ];
+    let order = 0;
+    for (const [id, name, price, lama, bonus, badge] of defaults)
+      await db.run(
+        'INSERT INTO lama_products (id,name,price,lama,bonus_lama,badge,active,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,1,?,?,?) ON CONFLICT DO NOTHING',
+        [id, name, price, lama, bonus, badge, order++, stamp, stamp],
       );
   }
   await db.run(

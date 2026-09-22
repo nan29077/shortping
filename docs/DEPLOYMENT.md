@@ -26,6 +26,7 @@ UPLOAD_DIR=/app/uploads
 TRUST_PROXY_HOPS=1
 ANDROID_STORE_URL=
 IOS_STORE_URL=
+AI_SECRET_KEY=...32자-이상-임의-문자열(AI API 키 암호화 · 바꾸면 저장된 키를 다시 입력해야 함)...
 ```
 
 운영 도메인·비밀키는 실제 값 확정 후 비밀 관리 서비스로 주입하세요. `.env`를 Git에 올리지 않습니다. `DATABASE_URL`만 설정한다고 기존 SQLite 데이터가 자동 이전되지는 않습니다. 마이그레이션은 외래키 순서에 맞춘 별도 데이터 이관 및 검증이 필요합니다.

@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Check, Film, X } from 'lucide-react';
+import { AlertTriangle, Captions, Check, Film, ShieldCheck, Sparkles, X } from 'lucide-react';
 import { Modal } from './App';
-import { api, won, type Drama, type Episode } from './api';
+import { aiUsageLabel, api, jobKindLabel, type Drama, type Episode } from './api';
 
 export type ManagedDrama = Drama & {
   owner_name: string;
   episodes: (Episode & { video: string })[];
   issues: string[];
   reviews: { id: string; name: string; status: string; note: string; created_at: string }[];
+};
+type Provenance = {
+  models: { kind: string; model_label: string | null; provider_name: string | null; country: string | null; jobs: number; lama: number }[];
 };
 export const reviewStatus: Record<string, string> = {
   pending: '심사 요청',
@@ -35,10 +38,14 @@ export default function ContentReview({
   const [loaded, setLoaded] = useState<number[]>([]);
   const [checked, setChecked] = useState(false);
   const [posterReady, setPosterReady] = useState(false);
+  const [provenance, setProvenance] = useState<Provenance | null>(null);
   async function load() {
     try {
-      setDetail(await api<ManagedDrama>('/studio/dramas/' + drama.id));
+      const d = await api<ManagedDrama>('/studio/dramas/' + drama.id);
+      setDetail(d);
       setError('');
+      if (d.episodes.some((e) => e.source === 'studio'))
+        setProvenance(await api<Provenance>('/studio/dramas/' + drama.id + '/provenance').catch(() => null));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -126,6 +133,73 @@ export default function ContentReview({
             </div>
           </div>
           <p className="review-synopsis">{detail.synopsis}</p>
+          {(() => {
+            const studio = detail.episodes.filter((e) => e.source === 'studio').length;
+            const source =
+              studio === 0 ? '직접 업로드' : studio === detail.episodes.length ? '숏핑 스튜디오 AI 제작' : '혼합 (업로드 + AI 제작)';
+            const warned = detail.episodes.filter((e) => e.warnings?.length);
+            const subs = detail.episodes.filter((e) => e.has_subtitles).length;
+            return (
+              <div className="provenance">
+                <div>
+                  <span>
+                    <Sparkles size={14} /> 제작 출처
+                  </span>
+                  <strong>{source}</strong>
+                </div>
+                <div>
+                  <span>
+                    <ShieldCheck size={14} /> 권리 · 초상권
+                  </span>
+                  <strong className={Number(detail.rights_confirmed) ? '' : 'danger'}>
+                    {Number(detail.rights_confirmed) ? '권리 확인' : '권리 미확인'} ·{' '}
+                    {Number(detail.likeness_confirmed) ? '초상권 동의' : '초상권 미확인'}
+                  </strong>
+                </div>
+                <div>
+                  <span>AI 사용 신고</span>
+                  <strong>
+                    {aiUsageLabel[detail.ai_usage || 'none']}
+                    {studio ? ` · 스튜디오 제작 ${studio}화` : ''}
+                  </strong>
+                </div>
+                <div>
+                  <span>
+                    <Captions size={14} /> 자막
+                  </span>
+                  <strong>
+                    {subs}/{detail.episodes.length}화
+                  </strong>
+                </div>
+                {provenance && provenance.models.length > 0 && (
+                  <div className="provenance-models">
+                    <span>
+                      <Sparkles size={14} /> 스튜디오 제작 이력 (사용한 AI 모델)
+                    </span>
+                    <ul>
+                      {provenance.models.map((m, i) => (
+                        <li key={i}>
+                          {jobKindLabel[m.kind] || m.kind} · {m.model_label || '삭제된 모델'} ({m.provider_name}
+                          {m.country === 'CN' ? ' · 중국' : ''}) · {m.jobs}회
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {warned.length > 0 && (
+                  <ul className="precheck-list wide">
+                    {warned.flatMap((e) =>
+                      (e.warnings || []).map((w) => (
+                        <li key={e.id + w}>
+                          <AlertTriangle size={12} /> {e.number}화: {w}
+                        </li>
+                      )),
+                    )}
+                  </ul>
+                )}
+              </div>
+            );
+          })()}
           {detail.issues.length > 0 && (
             <div className="review-alert" role="alert">
               <strong>등록 상태 확인 필요</strong>
@@ -154,7 +228,11 @@ export default function ContentReview({
                     );
                     setLoaded((prev) => prev.filter((n) => n !== number));
                   }}
-                />
+                >
+                  {episode.has_subtitles ? (
+                    <track kind="subtitles" srcLang="ko" label="한국어" default src={`/api/subtitles/${detail.id}/${number}`} />
+                  ) : null}
+                </video>
               ) : (
                 <p className="muted">등록된 회차가 없습니다.</p>
               )}
@@ -189,6 +267,7 @@ export default function ContentReview({
                   <span>
                     {e.number}화 · {e.title}
                     <small>
+                      {e.source === 'studio' ? 'AI · ' : ''}
                       {e.duration}초 ·{' '}
                       {detail.free || e.number <= detail.free_episodes ? '무료' : '유료'}
                       {loaded.includes(e.number) ? ' · 재생 준비 확인' : ''}

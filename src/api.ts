@@ -58,6 +58,16 @@ export type Drama = {
   episode_count: number;
   review_note: string;
   created_at: string;
+  rights_confirmed?: number;
+  likeness_confirmed?: number;
+  ai_usage?: 'none' | 'partial' | 'full';
+  studio_episodes?: number;
+  ai_label?: boolean;
+};
+export const aiUsageLabel: Record<string, string> = {
+  none: 'AI 미사용',
+  partial: 'AI 일부 사용',
+  full: 'AI 제작',
 };
 export type Episode = {
   id: string;
@@ -67,6 +77,11 @@ export type Episode = {
   is_demo: number;
   locked: boolean;
   owned?: boolean;
+  source?: 'upload' | 'studio';
+  has_subtitles?: number;
+  warnings?: string[];
+  width?: number | null;
+  height?: number | null;
 };
 export type Detail = Drama & {
   episodes: Episode[];
@@ -144,6 +159,7 @@ export const orderKindLabel = (kind: string) =>
     ({
       subscription: '숏핑 패스',
       ping_charge: '핑 충전',
+      lama_charge: '라마 충전',
       ping_episode: '회차 열기',
       ping_title: '작품 전체 열기',
       drama: '작품 소장',
@@ -245,6 +261,8 @@ export type Payout = {
   income_tax: number;
   local_tax: number;
   payable: number;
+  method?: string;
+  lama?: number;
   business_type: string;
   bank_name: string;
   account_number: string;
@@ -459,3 +477,380 @@ export const localDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const count = (n: number) =>
   n >= 10000 ? (n / 10000).toFixed(1) + '만' : n.toLocaleString();
+
+// ── 라마(제작 포인트) · 숏핑 스튜디오(AI 제작) ─────────────────────────
+export const lama = (n: number) => new Intl.NumberFormat('ko-KR').format(Math.round(Number(n) || 0)) + '라마';
+export type LamaWallet = { paid: number; bonus: number; held: number; total: number };
+export type LamaLedgerRow = {
+  id: string;
+  type: string;
+  paid_delta: number;
+  bonus_delta: number;
+  held_delta: number;
+  paid_after: number;
+  bonus_after: number;
+  held_after: number;
+  memo: string;
+  created_at: string;
+  job_id?: string | null;
+  user_name?: string;
+  user_email?: string;
+  actor_name?: string | null;
+};
+export type LamaProduct = {
+  id: string;
+  name: string;
+  price: number;
+  lama: number;
+  bonus_lama: number;
+  badge: string;
+  active?: number;
+  sort_order?: number;
+  sold?: number;
+};
+export type LamaState = {
+  wallet: LamaWallet;
+  products: LamaProduct[];
+  ledger: LamaLedgerRow[];
+  policy: {
+    unit_won: number;
+    convert_min: number;
+    convert_bonus_rate: number;
+    withholding_rate: number;
+    vat_rate: number;
+    daily_limit: number;
+  };
+  convertible: number;
+  demo: boolean;
+};
+export const lamaTypeLabel: Record<string, string> = {
+  welcome: '체험 지급',
+  charge: '충전',
+  convert: '정산 전환',
+  grant: '관리자 지급',
+  revoke: '관리자 회수',
+  hold: 'AI 작업 예약',
+  spend: 'AI 작업 사용',
+  release: '예약 반환',
+};
+export type Capability = 'text' | 'image' | 'video' | 'tts' | 'stt';
+export const capabilityLabel: Record<Capability, string> = {
+  text: '기획·대본',
+  image: '이미지',
+  video: '영상',
+  tts: '음성',
+  stt: '자막 인식',
+};
+export const unitLabel: Record<string, string> = {
+  per_1k_tokens: '1천 토큰',
+  per_image: '장',
+  per_second: '초',
+  per_1k_chars: '1천 자',
+  per_minute: '분',
+};
+export const tierLabel: Record<string, string> = { draft: '초안(저렴)', standard: '표준', premium: '고급' };
+export type AiModelOption = {
+  id: string;
+  capability: Capability;
+  label: string;
+  provider: string;
+  country: string;
+  tier: string;
+  unit: string;
+  lama_per_unit: number;
+  max_seconds: number;
+  tags: string;
+  cooling?: boolean;
+};
+export type StudioProject = {
+  id: string;
+  owner_id: string;
+  drama_id: string | null;
+  title: string;
+  logline: string;
+  genre: string;
+  tone: string;
+  style: string;
+  synopsis: string;
+  episode_count: number;
+  episode_seconds: number;
+  poster: string;
+  status: string;
+  exclude_cn?: number;
+  autopilot?: string;
+  created_at: string;
+  updated_at: string;
+  episode_total?: number;
+  composed?: number;
+  spent?: number;
+};
+export type AiOverview = {
+  terms_version: string;
+  agreed_at: string | null;
+  wallet: LamaWallet;
+  enabled: boolean;
+  models: AiModelOption[];
+  genres: string[];
+  projects: StudioProject[];
+};
+export type StudioCharacter = {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  look: string;
+  image: string;
+  voice_model: string;
+  voice: string;
+  voice_sample?: string;
+};
+export type StudioShot = {
+  id: string;
+  episode_id: string;
+  sort_order: number;
+  scene: string;
+  visual: string;
+  dialogue: string;
+  speaker_id: string | null;
+  camera: string;
+  seconds: number;
+  image: string;
+  audio: string;
+  audio_seconds: number;
+  video: string;
+};
+export type StudioEpisode = {
+  id: string;
+  number: number;
+  title: string;
+  summary: string;
+  status: string;
+  video: string;
+  duration: number;
+  subtitles: string;
+  exported_at: string | null;
+  shots: StudioShot[];
+};
+export type StudioJob = {
+  id: string;
+  kind: string;
+  target_type: string;
+  target_id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+  estimate_lama: number;
+  charged_lama: number;
+  error: string;
+  created_at: string;
+  finished_at: string | null;
+  model_label: string | null;
+  requested_model: string;
+};
+export type StudioAsset = {
+  id: string;
+  target_type: string;
+  target_id: string;
+  kind: string;
+  url: string;
+  model_label: string;
+  created_at: string;
+};
+export type StudioProjectDetail = {
+  project: StudioProject;
+  characters: StudioCharacter[];
+  episodes: StudioEpisode[];
+  jobs: StudioJob[];
+  assets: StudioAsset[];
+  spent: number;
+  drama: { id: string; title: string; status: string; review_note: string } | null;
+  wallet: LamaWallet;
+  costs: { kind: string; jobs: number; lama: number; failed: number }[];
+  autopilot: Autopilot | null;
+};
+export type AutopilotChoice = { requested: string; tier: 'draft' | 'standard' | 'premium' };
+export type Autopilot = {
+  status: 'running' | 'paused' | 'done' | 'stopped';
+  stage: string;
+  message: string;
+  cap: number;
+  estimate?: number;
+  includeVideo: boolean;
+  started_at: string;
+  updated_at: string;
+  spent?: number;
+  choices: Record<'text' | 'image' | 'tts' | 'video', AutopilotChoice>;
+};
+export type AutopilotEstimate = {
+  stages: { stage: string; label: string; count: number; lama: number | null }[];
+  total: number;
+  unavailable: string[];
+  wallet: LamaWallet;
+};
+export type StudioActivity = {
+  active: number;
+  running: number;
+  failedLastHour: number;
+  autopilots: (Partial<Autopilot> & { id: string; title: string })[];
+  wallet: LamaWallet;
+};
+// 스튜디오 결과물(영상·음성)은 본인만 받을 수 있는 경로로 재생합니다. 이미지는 공개 경로 그대로.
+export const studioMedia = (url: string) =>
+  !url ? '' : /\.(mp4|mp3|wav)$/.test(url) ? '/api/studio/media/' + url.split('/').pop() : url;
+export type AiProviderView = {
+  id: string;
+  name: string;
+  kind: string;
+  base_url: string;
+  region: string;
+  country: string;
+  active: number;
+  status: string;
+  last_error: string;
+  last_checked_at: string | null;
+  key_hint: string;
+  has_key: boolean;
+  has_secret: boolean;
+  sort_order: number;
+  max_concurrency: number;
+  monthly_budget_won: number;
+  fail_streak: number;
+  cooldown_until: string | null;
+  month_cost: number;
+  has_list: boolean;
+};
+export type AiRouteRule = { id: string; capability: Capability; tier: string; model_ids: string; active: number; updated_at: string };
+export type AiAnalytics = {
+  days: number;
+  series: { day: string; jobs: number; failed: number; cost_won: number; lama: number }[];
+  models: {
+    model_ref: string;
+    label: string;
+    provider: string;
+    country: string;
+    capability: Capability;
+    jobs: number;
+    succeeded: number;
+    failed: number;
+    retries: number;
+    success_rate: number;
+    avg_seconds: number | null;
+    cost_won: number;
+    lama: number;
+  }[];
+};
+export type AiProjectRow = {
+  id: string;
+  title: string;
+  genre: string;
+  status: string;
+  episode_count: number;
+  autopilot: string;
+  exclude_cn: number;
+  updated_at: string;
+  drama_id: string | null;
+  owner_name: string;
+  owner_email: string;
+  drama_status: string | null;
+  composed: number;
+  shots: number;
+  spent: number;
+  cost_won: number;
+  active: number;
+};
+export type AiSafetyRow = { id: string; user_id: string; user_name: string; user_email: string; term: string; excerpt: string; kind: string; created_at: string };
+export type AiModelRow = {
+  id: string;
+  provider_id: string;
+  provider_name: string;
+  kind: string;
+  capability: Capability;
+  model_id: string;
+  label: string;
+  tier: string;
+  unit: string;
+  cost_usd: number;
+  price_lama: number;
+  lama_per_unit: number;
+  tags: string;
+  max_seconds: number;
+  image_input: number;
+  active: number;
+  priority: number;
+  notes: string;
+};
+export type AdminAi = {
+  settings: PlatformSettings & Record<string, number | string>;
+  catalog: Record<string, { label: string; capabilities: Capability[]; base: string; secretLabel: string }>;
+  presets: { kind: string; name: string; country: string; base_url: string; models: number; capabilities: Capability[] }[];
+  tags: string[];
+  capabilities: Record<string, string>;
+  providers: AiProviderView[];
+  routes: AiRouteRule[];
+  models: AiModelRow[];
+  usage: {
+    month: { jobs: number; cost_won: number; lama: number; failed: number; active: number };
+    byModel: { model_ref: string; label: string | null; capability: string; jobs: number; cost_won: number; lama: number; failed: number }[];
+    byUser: { user_id: string; name: string; email: string; jobs: number; lama: number; cost_won: number }[];
+  };
+  jobs: {
+    id: string;
+    user_id: string;
+    user_name: string;
+    kind: string;
+    capability: string;
+    status: string;
+    requested_model: string;
+    tier: string;
+    estimate_lama: number;
+    charged_lama: number;
+    cost_won: number;
+    error: string;
+    attempts: number;
+    created_at: string;
+    finished_at: string | null;
+    billed: number;
+    model_label: string | null;
+    provider_name: string | null;
+  }[];
+  limits: { id: string; name: string; email: string; role: string; daily_lama: number | null; monthly_lama: number | null; blocked: number }[];
+};
+export type AdminLama = {
+  summary: {
+    outstanding_paid: number;
+    outstanding_bonus: number;
+    held: number;
+    charge_count: number;
+    charge_amount: number;
+    charge_fee: number;
+    convert_count: number;
+    convert_amount: number;
+    convert_lama: number;
+    spent_lama: number;
+    spent_won: number;
+    ai_cost_won: number;
+  };
+  flows: { type: string; paid: number; bonus: number; count: number }[];
+  products: LamaProduct[];
+  wallets: { id: string; name: string; email: string; role: string; paid: number; bonus: number; held: number }[];
+  ledger: LamaLedgerRow[];
+};
+export const jobKindLabel: Record<string, string> = {
+  plan: '기획안',
+  script: '대본',
+  character_image: '인물 이미지',
+  shot_image: '스토리보드',
+  shot_tts: '대사 음성',
+  shot_video: '컷 영상',
+  poster: '포스터',
+  tool_poster: 'AI 포스터(업로드 작품)',
+  tool_subtitles: '자동 자막',
+  rewrite_shot: '컷 AI 고치기',
+  voice_sample: '목소리 미리듣기',
+  playground: '관리자 시험',
+};
+export const jobStatusLabel: Record<string, string> = {
+  queued: '대기 중',
+  running: '만드는 중',
+  succeeded: '완료',
+  failed: '실패',
+  canceled: '취소',
+};

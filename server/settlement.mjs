@@ -263,6 +263,45 @@ export async function requestPayout(db, { pdId, profile, settings }) {
     return { id, amount, ...tax };
   });
 }
+// 정산 수익을 라마로 전환합니다. 출금과 같은 세금 규칙(원천징수·부가세)을 적용한 지급액을
+// 라마(1라마 = 10원, 10원 미만은 PD에게 유리하게 올림)로 바로 지급하고, 지급 내역(method='lama')을 남깁니다.
+export async function convertToLama(db, { pdId, profile, settings, credit }) {
+  return db.transaction(async () => {
+    if (db.engine === 'postgresql')
+      await db.get('SELECT id FROM users WHERE id=? FOR UPDATE', [pdId]);
+    await refreshEntries(db);
+    const rows = await db.all(
+      "SELECT id,net FROM settlement_entries WHERE pd_id=? AND status='available'",
+      [pdId],
+    );
+    const amount = rows.reduce((n, r) => n + Number(r.net), 0);
+    if (!rows.length || amount <= 0) throw error(400, '라마로 바꿀 수 있는 정산 금액이 없습니다.');
+    if (amount < settings.lama_convert_min)
+      throw error(400, `라마 전환은 ${settings.lama_convert_min.toLocaleString('ko-KR')}원부터 할 수 있어요.`);
+    const tax = taxFor(amount, profile, settings);
+    const lama = Math.ceil(tax.payable / 10);
+    const bonus = Math.floor((lama * Number(settings.lama_convert_bonus_rate || 0)) / 100);
+    const id = randomUUID();
+    const stamp = iso();
+    await db.run(
+      'INSERT INTO payouts (id,pd_id,amount,vat,income_tax,local_tax,payable,business_type,bank_name,account_number,account_holder,status,memo,requested_at,processed_at,processed_by,method,lama) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [id, pdId, amount, tax.vat, tax.incomeTax, tax.localTax, tax.payable, tax.businessType, '', '', '', 'paid', '라마 전환', stamp, stamp, pdId, 'lama', lama + bonus],
+    );
+    await db.run(
+      `UPDATE settlement_entries SET status='paid', payout_id=? WHERE status='available' AND id IN (${rows.map(() => '?').join(',')})`,
+      [id, ...rows.map((r) => r.id)],
+    );
+    const locked = await db.all('SELECT id FROM settlement_entries WHERE payout_id=?', [id]);
+    if (locked.length !== rows.length)
+      throw error(409, '다른 출금 신청이 처리 중입니다. 잠시 후 다시 시도해 주세요.');
+    const wallet = await credit({ payoutId: id, paid: lama, bonus });
+    await db.run(
+      'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
+      [randomUUID(), pdId, 'payout:lama', id, stamp],
+    );
+    return { id, amount, ...tax, lama, bonus, wallet };
+  });
+}
 export async function processPayout(db, { payoutId, action, actorId, memo = '' }) {
   return db.transaction(async () => {
     const payout = await db.get('SELECT * FROM payouts WHERE id=?', [payoutId]);

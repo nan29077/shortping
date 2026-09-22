@@ -194,6 +194,19 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         withholding_rate: z.number().min(0).max(30),
         vat_rate: z.number().min(0).max(30),
         payout_notice: z.string().trim().max(300),
+        ai_enabled: z.number().int().min(0).max(1),
+        usd_krw_rate: z.number().min(100).max(10000),
+        ai_margin_rate: z.number().min(100).max(1000),
+        ai_monthly_budget_won: z.number().int().min(0).max(10000000000),
+        ai_daily_limit_lama: z.number().int().min(0).max(100000000),
+        ai_concurrency: z.number().int().min(1).max(20),
+        lama_signup_bonus: z.number().int().min(0).max(100000),
+        lama_convert_min: z.number().int().min(0).max(100000000),
+        lama_convert_bonus_rate: z.number().min(0).max(50),
+        ai_blocked_terms: z.string().max(5000),
+        ai_allow_cn: z.number().int().min(0).max(1),
+        ai_breaker_failures: z.number().int().min(1).max(100),
+        ai_breaker_cooldown_min: z.number().int().min(1).max(1440),
       })
       .partial()
       .parse(req.body);

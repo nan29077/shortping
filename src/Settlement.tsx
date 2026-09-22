@@ -518,10 +518,11 @@ export default function Settlement({
                       </td>
                       <td className="nowrap">
                         <b>{won(p.payable)}</b>
+                        {p.method === 'lama' && <small>{Number(p.lama).toLocaleString('ko-KR')}라마로 전환</small>}
                       </td>
                       <td>
-                        <span className={'status-chip ' + p.status}>{payoutStatus[p.status]}</span>
-                        {p.memo && <small>{p.memo}</small>}
+                        <span className={'status-chip ' + p.status}>{p.method === 'lama' ? '라마 전환' : payoutStatus[p.status]}</span>
+                        {p.memo && p.method !== 'lama' && <small>{p.memo}</small>}
                       </td>
                     </tr>
                   ))}

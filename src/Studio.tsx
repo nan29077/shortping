@@ -34,6 +34,9 @@ import {
   SlidersHorizontal,
   UserCog,
   Coins,
+  Sparkles,
+  Cpu,
+  Gem,
 } from 'lucide-react';
 import {
   api,
@@ -45,7 +48,8 @@ import {
   type Order,
   type User,
 } from './api';
-import ContentReview, { reviewStatus, type ManagedDrama } from './ContentReview';
+import ContentReview, { reviewStatus } from './ContentReview';
+import EpisodeManager from './EpisodeManager';
 import { Brand, Empty, Modal, navigate } from './App';
 import {
   StudioInsights,
@@ -62,6 +66,13 @@ import ChannelStudio from './ChannelStudio';
 import Settlement from './Settlement';
 import AdminMembers from './AdminMembers';
 import AdminPoints from './AdminPoints';
+import AdminAiPanel from './AdminAi';
+import AdminLamaPanel from './AdminLama';
+import LamaWalletPanel from './Lama';
+import AiStudio from './studio/AiStudio';
+import ProductionGuide from './studio/Guide';
+import './studio/creator.css';
+import { ActivityChip, StudioOverviewCard } from './studio/Activity';
 import {
   AdminChannelsPanel,
   AdminPricingPanel,
@@ -105,6 +116,9 @@ const initialForm = {
   episode_pings: 0,
   free_episodes: 3,
   image: '/images/hero.webp',
+  rights_confirmed: false,
+  likeness_confirmed: false,
+  ai_usage: 'none' as 'none' | 'partial' | 'full',
 };
 export default function Studio({
   user,
@@ -132,10 +146,12 @@ export default function Studio({
   const [data, setData] = useState<StudioData | null>(null),
     [error, setError] = useState(''),
     [editor, setEditor] = useState<Drama | 'new' | null>(null),
+    [chooser, setChooser] = useState(false),
     [episodeEditor, setEpisodeEditor] = useState<Drama | null>(null),
     [review, setReview] = useState<Drama | null>(null),
     [busy, setBusy] = useState(false),
     [filter, setFilter] = useState('all'),
+    [sourceFilter, setSourceFilter] = useState('all'),
     [contentSearch, setContentSearch] = useState('');
   const admin = user.role === 'admin';
   // 1차 분류(성격)와 2차 분류(메뉴). 관리자와 PD가 같은 구조를 공유합니다.
@@ -157,6 +173,17 @@ export default function Studio({
             { id: 'pricing', name: '작품 판매 설정', icon: Tag },
             { id: 'channels', name: '방송국 관리', icon: Radio },
             { id: 'home', name: '메인페이지 관리', icon: Palette },
+          ],
+        },
+        {
+          id: 'ai-studio',
+          name: 'AI 스튜디오',
+          items: [
+            { id: 'ai', name: '숏핑 스튜디오 (AI 제작)', icon: Sparkles },
+            { id: 'production-guide', name: '제작 가이드', icon: BookOpen },
+            { id: 'ai-admin', name: 'AI 연결 · 모델', icon: Cpu },
+            { id: 'lama-admin', name: '라마 관리', icon: Gem },
+            { id: 'lama', name: '내 라마 지갑', icon: Wallet },
           ],
         },
         {
@@ -205,6 +232,15 @@ export default function Studio({
           items: [
             { id: 'contents', name: '내 작품 · 회차', icon: Film },
             { id: 'channel', name: '마이 방송국', icon: Radio },
+          ],
+        },
+        {
+          id: 'ai-studio',
+          name: '숏핑 스튜디오',
+          items: [
+            { id: 'ai', name: 'AI 드라마 제작', icon: Sparkles },
+            { id: 'production-guide', name: '제작 가이드', icon: BookOpen },
+            { id: 'lama', name: '라마 지갑', icon: Gem },
           ],
         },
         {
@@ -281,6 +317,7 @@ export default function Studio({
         </a>
         <div>
           <span className="environment-pill">{demo ? '테스트 운영' : '서비스 운영'}</span>
+          <ActivityChip go={() => setTab('ai')} />
           <button onClick={() => navigate('home')}>
             <Eye size={16} />
             시청자 화면
@@ -409,6 +446,7 @@ export default function Studio({
               />
             </div>
             <StudioInsights data={data} admin={admin} />
+            {!admin && <StudioOverviewCard go={() => setTab('ai')} />}
             <div className="studio-callout">
               <Clapperboard size={30} />
               <div>
@@ -425,7 +463,7 @@ export default function Studio({
                   if (admin) {
                     setFilter('pending');
                     setTab('contents');
-                  } else setEditor('new');
+                  } else setChooser(true);
                 }}
               >
                 {admin ? '심사하기' : '작품 등록'}
@@ -481,7 +519,7 @@ export default function Studio({
                 {admin ? '전체 콘텐츠' : '내 작품'}{' '}
                 <span className="lime">{data.dramas.length}</span>
               </h2>
-              <button className="primary compact" onClick={() => setEditor('new')}>
+              <button className="primary compact" onClick={() => setChooser(true)}>
                 <Plus size={15} />새 작품
               </button>
             </div>
@@ -511,10 +549,27 @@ export default function Studio({
                 </button>
               ))}
             </div>
+            <div className="studio-filters source-filters">
+              {[
+                ['all', '모든 출처'],
+                ['upload', '직접 업로드'],
+                ['studio', 'AI 제작'],
+                ['mixed', '혼합'],
+              ].map(([v, t]) => (
+                <button
+                  className={sourceFilter === v ? 'active' : ''}
+                  key={v}
+                  onClick={() => setSourceFilter(v)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
             {data.dramas
               .filter(
                 (d) =>
                   (filter === 'all' || d.status === filter) &&
+                  (sourceFilter === 'all' || sourceOf(d) === sourceFilter) &&
                   `${d.title} ${d.genre}`.toLowerCase().includes(contentSearch.toLowerCase()),
               )
               .map((d) => (
@@ -570,6 +625,7 @@ export default function Studio({
             {!data.dramas.some(
               (d) =>
                 (filter === 'all' || d.status === filter) &&
+                (sourceFilter === 'all' || sourceOf(d) === sourceFilter) &&
                 `${d.title} ${d.genre}`.toLowerCase().includes(contentSearch.toLowerCase()),
             ) && <Empty title="해당 상태의 작품이 없어요" text="새로운 작품을 등록해 보세요." />}
           </>
@@ -611,6 +667,11 @@ export default function Studio({
         )}
         {tab === 'policy' && admin && <AdminSettingsPanel notify={notify} />}
         {tab === 'points' && admin && <AdminPoints notify={notify} />}
+        {tab === 'ai' && <AiStudio notify={notify} goLama={() => setTab('lama')} />}
+        {tab === 'production-guide' && <ProductionGuide go={setTab} notify={notify} />}
+        {tab === 'lama' && <LamaWalletPanel notify={notify} />}
+        {tab === 'ai-admin' && admin && <AdminAiPanel notify={notify} />}
+        {tab === 'lama-admin' && admin && <AdminLamaPanel notify={notify} />}
         {tab === 'orders' && <StudioOrders orders={data.orders} admin={admin} />}
         {tab === 'support' && admin && <Support user={user} managing notify={notify} />}
         {tab === 'subscriptions' && admin && (
@@ -621,7 +682,7 @@ export default function Studio({
         )}
         {tab === 'operations' && admin && <StudioOperations operations={data.operations} />}
         {tab === 'home' && admin && <HomeAppearance notify={notify} onAppearance={onAppearance} />}
-        {tab === 'guide' && <StudioGuide admin={admin} onCreate={() => setEditor('new')} />}
+        {tab === 'guide' && <StudioGuide admin={admin} onCreate={() => setChooser(true)} />}
         {tab === 'settings' && (
           <AccountSettings
             key={user.id}
@@ -630,6 +691,33 @@ export default function Studio({
             notify={notify}
             onHistoryCleared={reloadLibrary}
           />
+        )}
+        {chooser && (
+          <Modal title="새 작품 만들기" close={() => setChooser(false)}>
+            <p className="muted">어떤 방법으로 만들든 같은 검수 절차를 거쳐 공개돼요.</p>
+            <div className="create-choices">
+              <button
+                onClick={() => {
+                  setChooser(false);
+                  setEditor('new');
+                }}
+              >
+                <Upload size={26} />
+                <strong>직접 업로드</strong>
+                <span>외부에서 만든 숏폼 드라마 영상을 여러 회차 한 번에 올리고 바로 검수를 신청해요.</span>
+              </button>
+              <button
+                onClick={() => {
+                  setChooser(false);
+                  setTab('ai');
+                }}
+              >
+                <Sparkles size={26} />
+                <strong>숏핑 스튜디오로 AI 제작</strong>
+                <span>기획·대본·캐릭터·음성·영상·썸네일까지 AI로 만들고, 완성 회차를 바로 검수 신청해요. 라마를 사용해요.</span>
+              </button>
+            </div>
+          </Modal>
         )}
         {editor && (
           <DramaEditor
@@ -644,7 +732,7 @@ export default function Studio({
           />
         )}
         {episodeEditor && (
-          <EpisodeEditor
+          <EpisodeManager
             d={episodeEditor}
             demo={demo}
             notify={notify}
@@ -692,12 +780,20 @@ function Stat({
     </div>
   );
 }
+// 작품 출처: 스튜디오 제작 회차 수로 판단합니다.
+const sourceOf = (d: Drama) => {
+  const studio = Number(d.studio_episodes || 0);
+  return studio === 0 ? 'upload' : studio >= Number(d.episode_count || 0) ? 'studio' : 'mixed';
+};
 function ContentRow({ d, onClick }: { d: Drama; onClick: () => void }) {
   return (
     <button className="content-row" onClick={onClick}>
       <img src={d.image} alt="" />
       <div>
         <span className={'status ' + d.status}>{statusLabel[d.status]}</span>
+        {sourceOf(d) !== 'upload' && (
+          <span className="source-chip studio">{sourceOf(d) === 'studio' ? 'AI 제작' : '혼합'}</span>
+        )}
         <h3>{d.title}</h3>
         <p>
           {d.genre} · {d.episode_count}회차 · {count(d.views)} 조회
@@ -730,6 +826,9 @@ function DramaEditor({
             episode_pings: drama.episode_pings ?? 0,
             free_episodes: drama.free_episodes,
             image: drama.image,
+            rights_confirmed: Number(drama.rights_confirmed) === 1,
+            likeness_confirmed: Number(drama.likeness_confirmed) === 1,
+            ai_usage: drama.ai_usage || 'none',
           },
     ),
     [busy, setBusy] = useState(false),
@@ -854,8 +953,7 @@ function DramaEditor({
           </label>
         </div>
         <p className="field-hint">
-          시청자는 잠긴 회차에서 회차 구매 가격으로 한 편씩 결제하거나, 전체 소장 가격으로 모든
-          회차를 소장할 수 있어요.
+          시청자는 잠긴 회차를 핑으로 한 편씩 열거나, 할인된 가격으로 작품 전체를 열 수 있어요.
         </p>
         <label>작품 포스터</label>
         <img className="editor-poster-preview" src={f.image} alt="선택한 작품 포스터 미리보기" />
@@ -886,241 +984,46 @@ function DramaEditor({
             onChange={(e) => void upload(e.target.files?.[0])}
           />
         </label>
+        <fieldset className="declaration">
+          <legend>권리 · AI 사용 확인 (심사 요청 전 필수)</legend>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={f.rights_confirmed}
+              onChange={(e) => setF({ ...f, rights_confirmed: e.target.checked })}
+            />
+            <span>
+              이 작품의 영상·음악·글·이미지에 대한 저작권 또는 이용 권리를 가지고 있으며, 제3자의 권리를
+              침해하지 않습니다. 문제가 생기면 등록한 PD가 책임을 집니다.
+            </span>
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={f.likeness_confirmed}
+              onChange={(e) => setF({ ...f, likeness_confirmed: e.target.checked })}
+            />
+            <span>출연자가 있다면 얼굴·목소리 사용에 대한 동의를 받았습니다. (출연자 없음 포함)</span>
+          </label>
+          <label>
+            생성형 AI 사용
+            <select
+              value={f.ai_usage}
+              onChange={(e) => setF({ ...f, ai_usage: e.target.value as typeof f.ai_usage })}
+            >
+              <option value="none">사용하지 않음</option>
+              <option value="partial">일부 사용 (음성·배경·편집 등)</option>
+              <option value="full">대부분 AI로 제작</option>
+            </select>
+          </label>
+          <p className="field-hint">
+            AI 기본법에 따라 생성형 AI를 사용한 작품에는 시청 화면에 ‘AI 제작’ 표시가 붙어요.
+          </p>
+        </fieldset>
         <button className="primary full" disabled={busy || uploading}>
           {busy ? '저장 중…' : '작품 임시저장'}
         </button>
       </form>
     </Modal>
-  );
-}
-function EpisodeEditor({
-  d,
-  demo,
-  notify,
-  close,
-}: {
-  d: Drama;
-  demo: boolean;
-  notify: (s: string) => void;
-  close: () => void;
-}) {
-  const [detail, setDetail] = useState<ManagedDrama | null>(null),
-    [f, setF] = useState({ number: 1, title: '', video: '', duration: 90 }),
-    [busy, setBusy] = useState(false),
-    [uploading, setUploading] = useState(false),
-    [editing, setEditing] = useState(false),
-    [removeNumber, setRemoveNumber] = useState<number | null>(null),
-    [loadError, setLoadError] = useState('');
-  const load = async () => {
-    try {
-      const r = await api<ManagedDrama>('/studio/dramas/' + d.id);
-      setDetail(r);
-      setF({
-        number: Math.max(0, ...r.episodes.map((e) => e.number)) + 1,
-        title: '',
-        video: '',
-        duration: 90,
-      });
-      setEditing(false);
-      setRemoveNumber(null);
-      setLoadError('');
-    } catch (e) {
-      setLoadError((e as Error).message);
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, [d.id]);
-  return (
-    <Modal
-      title={d.title + ' · 회차 관리'}
-      close={() => {
-        if (!busy && !uploading) close();
-      }}
-    >
-      {loadError && (
-        <p role="alert" className="review-alert">
-          {loadError}
-          <button className="secondary compact" onClick={() => void load()}>
-            다시 시도
-          </button>
-        </p>
-      )}
-      {detail && detail.episodes.length > 0 && (
-        <div className="registered-episodes">
-          {detail.episodes.map((e) => (
-            <div key={e.id}>
-              <FileVideo size={16} />
-              <span>
-                {e.number}화 · {e.title}
-              </span>
-              <small>{e.duration}초</small>
-              <button
-                type="button"
-                className="secondary compact"
-                disabled={busy || uploading}
-                onClick={() => {
-                  setF({ number: e.number, title: e.title, video: e.video, duration: e.duration });
-                  setEditing(true);
-                  setRemoveNumber(null);
-                }}
-              >
-                수정
-              </button>
-              {e.number === Math.max(...detail.episodes.map((ep) => ep.number)) && (
-                <button
-                  type="button"
-                  className="secondary compact"
-                  disabled={busy || uploading}
-                  onClick={() => setRemoveNumber(e.number)}
-                >
-                  삭제
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {removeNumber !== null && (
-        <div className="review-alert">
-          {removeNumber}화 등록을 삭제할까요? 원본 파일은 유지됩니다.
-          <div className="form-actions">
-            <button className="secondary" disabled={busy} onClick={() => setRemoveNumber(null)}>
-              취소
-            </button>
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await api('/studio/dramas/' + d.id + '/episodes/' + removeNumber, 'DELETE');
-                  await load();
-                  notify('회차 등록을 삭제했어요.');
-                } catch (e) {
-                  notify((e as Error).message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              회차 삭제 확인
-            </button>
-          </div>
-        </div>
-      )}
-      {detail?.issues.length ? <div className="info-box">{detail.issues.join(' ')}</div> : null}
-      {editing && (
-        <div className="info-box">
-          {f.number}화 수정 중 · 영상 교체 없이 제목을 수정할 수 있어요.
-          <button
-            type="button"
-            className="secondary compact"
-            disabled={busy || uploading}
-            onClick={() => void load()}
-          >
-            새 회차 등록으로
-          </button>
-        </div>
-      )}
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setBusy(true);
-          try {
-            await api('/studio/dramas/' + d.id + '/episodes', 'POST', f);
-            await load();
-            notify('회차 영상을 저장했어요.');
-          } catch (err) {
-            notify((err as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <div className="form-columns">
-          <label>
-            회차
-            <input type="number" min={1} max={500} value={f.number} readOnly required />
-          </label>
-          <label>
-            재생 시간 (초 · 자동 측정)
-            <input type="number" min={1} max={3600} value={f.duration} readOnly required />
-          </label>
-        </div>
-        <label>
-          회차 제목
-          <input
-            value={f.title}
-            onChange={(e) => setF({ ...f, title: e.target.value })}
-            placeholder="이 회차의 제목"
-            required
-            maxLength={100}
-          />
-        </label>
-        <label className="video-drop">
-          <Upload size={27} />
-          <strong>
-            {uploading ? '영상 업로드 중…' : f.video ? '영상이 준비됐어요' : 'MP4 영상 업로드'}
-          </strong>
-          <small>H.264 MP4 · 세로형 권장 · 최대 250MB / 60분</small>
-          <input
-            type="file"
-            accept="video/mp4"
-            disabled={uploading}
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              if (file.size > 250 * 1024 * 1024) {
-                notify('250MB 이하 영상을 선택해 주세요.');
-                return;
-              }
-              setUploading(true);
-              try {
-                const body = new FormData();
-                body.set('file', file);
-                const r = await api<{ url: string; duration: number }>(
-                  '/studio/upload',
-                  'POST',
-                  body,
-                );
-                setF((prev) => ({ ...prev, video: r.url, duration: r.duration }));
-                notify('파일 검사가 완료됐어요. 회차 저장을 눌러 등록하세요.');
-              } catch (err) {
-                notify((err as Error).message);
-              } finally {
-                setUploading(false);
-              }
-            }}
-          />
-        </label>
-        {demo && (
-          <button
-            className="secondary full"
-            type="button"
-            disabled={uploading || busy}
-            onClick={() => setF({ ...f, video: '/demo/preview.mp4', duration: 12 })}
-          >
-            <PlayIcon />
-            개발용 샘플 영상 사용
-          </button>
-        )}
-        <button className="primary full" disabled={busy || uploading || !f.video || !detail}>
-          {busy ? '저장 중…' : `${f.number}화 ${editing ? '수정 저장' : '저장'}`}
-        </button>
-        <p className="demo-footnote">
-          기존 회차는 목록의 수정 버튼으로 수정할 수 있어요.
-          <br />
-          영상 등록 후 작품 목록에서 심사를 요청하세요.
-        </p>
-      </form>
-    </Modal>
-  );
-}
-function PlayIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-      <path d="m6 3 15 9-15 9z" />
-    </svg>
   );
 }

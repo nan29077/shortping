@@ -69,41 +69,61 @@ export function ChannelLogo({ channel, size = 46 }: { channel: Partial<Channel>;
     </span>
   );
 }
+// 방송국 카드: 배너 → 로고가 겹친 머리 → 소개 → 통계 칩 → 대표작 진열(작은 썸네일 4칸).
 export function ChannelCard({ channel }: { channel: Channel }) {
+  const posters = (channel.posters || []).slice(0, 3);
+  const more = Math.max(0, (channel.drama_count || 0) - posters.length);
   return (
     <button
       className="channel-card"
       style={channelStyle(channel)}
       onClick={() => navigate('channel/' + channel.id)}
     >
-      <ChannelBanner channel={channel} />
-      <div className="channel-card-body">
-        <ChannelLogo channel={channel} size={52} />
-        <div>
+      <div className="channel-card-cover">
+        <ChannelBanner channel={channel} />
+        {channel.featured ? <span className="channel-card-badge">추천</span> : null}
+      </div>
+      <div className="channel-card-head">
+        <ChannelLogo channel={channel} size={54} />
+        <div className="channel-card-title">
           <strong>
-            {channel.name}
+            <span>{channel.name}</span>
             {channel.featured ? <BadgeCheck size={15} className="channel-verified" /> : null}
           </strong>
-          <span>{channel.tagline || channel.owner_name + ' 스튜디오'}</span>
+          <p>{channel.tagline || channel.owner_name + ' 스튜디오'}</p>
         </div>
-        <ChevronRight size={18} />
+        <span className="channel-card-go" aria-hidden="true">
+          <ChevronRight size={16} />
+        </span>
       </div>
       <div className="channel-card-meta">
         <span>
-          <Clapperboard size={13} /> {channel.drama_count}편
+          <Clapperboard size={12} /> 작품 {channel.drama_count}
         </span>
         <span>
-          <Eye size={13} /> {count(channel.views)}
+          <Eye size={12} /> {count(channel.views)}
         </span>
         <span>
-          <Users size={13} /> 구독 {count(channel.followers)}
+          <Users size={12} /> 구독 {count(channel.followers)}
         </span>
       </div>
-      {channel.posters && channel.posters.length > 0 && (
-        <div className="channel-card-posters">
-          {channel.posters.map((image, i) => (
-            <img src={image} alt="" key={image + i} />
+      {posters.length > 0 ? (
+        <div className="channel-card-shelf">
+          {posters.map((image, i) => (
+            <span className="channel-card-thumb" key={image + i}>
+              <img src={image} alt="" loading="lazy" />
+            </span>
           ))}
+          {more > 0 && (
+            <span className="channel-card-thumb more">
+              <b>+{more}</b>
+              <small>더보기</small>
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="channel-card-empty">
+          <Play size={13} /> 첫 작품을 준비하고 있어요
         </div>
       )}
     </button>

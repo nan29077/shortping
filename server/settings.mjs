@@ -17,6 +17,20 @@ export const settingDefaults = {
   payout_min: 10000, // 최소 출금 신청 금액
   withholding_rate: 3.3, // 비사업자 사업소득 원천징수
   vat_rate: 10, // 사업자 세금계산서 부가세
+  // ── 숏핑 스튜디오(AI 제작) · 라마(1라마 = 10원) ──
+  ai_enabled: 1, // 0이면 모든 AI 제작 작업을 멈춥니다
+  usd_krw_rate: 1400, // 모델 원가(USD)를 원화로 바꾸는 환율
+  ai_margin_rate: 180, // 원가 대비 라마 판매가(%) — 모델별 고정 단가가 있으면 그 값이 우선
+  ai_monthly_budget_won: 1000000, // 플랫폼 전체 월 AI 원가 한도(원), 0이면 무제한
+  ai_daily_limit_lama: 20000, // PD 1명의 하루 라마 사용 한도, 0이면 무제한 (PD별 개별 한도 우선)
+  ai_concurrency: 3, // 동시에 실행할 AI 작업 수
+  lama_signup_bonus: 300, // PD 첫 방문 시 체험 라마
+  lama_convert_min: 1000, // 정산 수익 → 라마 전환 최소 금액(원)
+  lama_convert_bonus_rate: 0, // 라마 전환 보너스(%)
+  ai_blocked_terms: '', // 줄바꿈으로 구분한 금칙어(기본 금칙어에 추가)
+  ai_allow_cn: 1, // 중국 공급사(Kling·Hailuo·Wan·Seedance·DeepSeek 등) 사용 허용
+  ai_breaker_failures: 5, // 공급사 연속 실패가 이 횟수면 잠시 자동 제외
+  ai_breaker_cooldown_min: 10, // 자동 제외 시간(분)
   payout_notice:
     '출금은 영업일 기준 3일 이내에 지급됩니다. 지급대행 연동 후 자동 이체로 전환됩니다.',
   home_theme: 'cinematic',

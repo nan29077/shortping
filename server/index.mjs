@@ -15,7 +15,7 @@ import { mkdirSync, openSync, readSync, closeSync, unlinkSync, existsSync } from
 import path from 'node:path';
 import { openDb, migrate } from './db.mjs';
 import { seed, hashPassword } from './seed.mjs';
-import { inspectMedia } from './media.mjs';
+import { inspectMedia, precheck } from './media.mjs';
 import { loadSettings } from './settings.mjs';
 import {
   backfillEntries,
@@ -34,6 +34,12 @@ import {
 } from './pings.mjs';
 import { studioRoutes } from './routes-studio.mjs';
 import { adminRoutes } from './routes-admin.mjs';
+import { uploadRoutes } from './routes-upload.mjs';
+import { lamaRoutes } from './routes-lama.mjs';
+import { createAiEngine } from './ai/engine.mjs';
+import { adminAiRoutes, seedMock } from './ai/routes-admin-ai.mjs';
+import { studioAiRoutes } from './ai/routes-studio-ai.mjs';
+import { allowLocalDownloads } from './ai/http.mjs';
 import { appearanceFromSettings } from './home-appearance.mjs';
 
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
@@ -87,7 +93,9 @@ app.use('/api', (req, res, next) => {
   if (
     !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
     req.get('origin') &&
-    ![origin, ...(production ? [] : [`http://127.0.0.1:${port}`])].includes(req.get('origin'))
+    ![origin, ...(production ? [] : [`http://127.0.0.1:${port}`])].includes(req.get('origin')) &&
+    // 개발 모드에서만 Cloudflare Tunnel 외부 미리보기 주소 허용
+    !(!production && /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(req.get('origin')))
   )
     return res.status(403).json({ error: '허용되지 않은 요청입니다.' });
   next();
@@ -335,7 +343,7 @@ app.delete('/api/account/history', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 const catalogSql =
-  'SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_count FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id';
+  "SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_count, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.source='studio') AS studio_episodes FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id";
 app.get('/api/dramas', async (req, res) =>
   res.json(await db.all(catalogSql + " WHERE d.status='published' ORDER BY d.views DESC")),
 );
@@ -347,7 +355,7 @@ app.get('/api/dramas/:id', async (req, res) => {
   const settings = await loadSettings(db);
   const owned = await ownedEpisodes(req.user, d.id);
   const episodes = await db.all(
-    "SELECT id,number,title,duration,CASE WHEN video='/demo/preview.mp4' THEN 1 ELSE 0 END AS is_demo FROM episodes WHERE drama_id=? ORDER BY number",
+    "SELECT id,number,title,duration,source,CASE WHEN video='/demo/preview.mp4' THEN 1 ELSE 0 END AS is_demo,CASE WHEN subtitles<>'' THEN 1 ELSE 0 END AS has_subtitles FROM episodes WHERE drama_id=? ORDER BY number",
     [d.id],
   );
   const isLocked = (number) => !entitled && number > d.free_episodes && !owned.includes(number);
@@ -356,6 +364,8 @@ app.get('/api/dramas/:id', async (req, res) => {
   res.json({
     ...d,
     entitled,
+    // AI 기본법에 따른 생성형 AI 결과물 표시: PD 자가 신고 또는 스튜디오 제작 회차가 있으면 표시
+    ai_label: d.ai_usage !== 'none' || Number(d.studio_episodes) > 0,
     episode_pings: perEpisode,
     title_pings: titlePingsOf(lockedCount, perEpisode, settings),
     title_discount: lockedCount > 1 ? settings.title_unlock_discount : 0,
@@ -777,7 +787,26 @@ const dramaSchema = z.object({
   episode_pings: z.number().int().min(0).max(1000).default(0),
   free_episodes: z.number().int().min(1).max(50),
   image: z.string().regex(/^\/(images\/[a-z0-9-]+\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/),
+  // 권리·AI 자가 신고(외부 제작 영상). 보내지 않으면 기존 값을 유지합니다.
+  rights_confirmed: z.boolean().optional(),
+  likeness_confirmed: z.boolean().optional(),
+  ai_usage: z.enum(['none', 'partial', 'full']).optional(),
 });
+async function saveDeclaration(id, b) {
+  if (b.rights_confirmed === undefined && b.likeness_confirmed === undefined && b.ai_usage === undefined)
+    return;
+  const d = await db.get('SELECT rights_confirmed,likeness_confirmed,ai_usage FROM dramas WHERE id=?', [id]);
+  await db.run(
+    'UPDATE dramas SET rights_confirmed=?,likeness_confirmed=?,ai_usage=?,declared_at=? WHERE id=?',
+    [
+      (b.rights_confirmed ?? Number(d.rights_confirmed) === 1) ? 1 : 0,
+      (b.likeness_confirmed ?? Number(d.likeness_confirmed) === 1) ? 1 : 0,
+      b.ai_usage ?? d.ai_usage,
+      now(),
+      id,
+    ],
+  );
+}
 async function checkMedia(req, url) {
   if (url.startsWith('/uploads/')) {
     const file = await db.get('SELECT * FROM media_files WHERE url=?', [url]);
@@ -839,6 +868,7 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
       channel?.id || null,
     ],
   );
+  await saveDeclaration(id, b);
   res.json({ id });
 });
 async function owned(req, lock = false) {
@@ -859,10 +889,24 @@ app.get('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
     'SELECT r.*,u.name FROM content_reviews r JOIN users u ON u.id=r.actor_id WHERE drama_id=? ORDER BY r.created_at DESC',
     [d.id],
   );
+  const metas = await db.all(
+    'SELECT m.* FROM media_metadata m JOIN episodes e ON e.video=m.url WHERE e.drama_id=?',
+    [d.id],
+  );
   res.json({
     ...d,
     episode_count: episodes.length,
-    episodes,
+    episodes: episodes.map((e) => {
+      const meta = metas.find((m) => m.url === e.video);
+      return {
+        ...e,
+        has_subtitles: e.subtitles ? 1 : 0,
+        subtitles: undefined,
+        width: meta ? Number(meta.width) : null,
+        height: meta ? Number(meta.height) : null,
+        warnings: meta ? precheck(meta) : [],
+      };
+    }),
     issues,
     reviews,
     owner_name: owner.name,
@@ -891,6 +935,7 @@ app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
         d.id,
       ],
     );
+    await saveDeclaration(d.id, b);
   });
   res.json({ ok: true });
 });
@@ -899,6 +944,8 @@ app.post('/api/studio/dramas/:id/submit', roles('pd', 'admin'), async (req, res)
     const d = await owned(req, true);
     if (!['draft', 'rejected'].includes(d.status)) fail(409, '현재 상태에서는 제출할 수 없습니다.');
     const { issues } = await contentIssues(d);
+    if (!Number(d.rights_confirmed))
+      issues.push('작품 정보에서 권리 보유 확인에 동의해 주세요.');
     if (issues.length) fail(400, issues.join(' '));
     await db.run("UPDATE dramas SET status='pending',review_note='' WHERE id=?", [d.id]);
     await contentEvent(req, d.id, 'pending');
@@ -918,7 +965,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 250 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 500 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, cb) =>
     cb(null, ['video/mp4', 'image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)),
 });
@@ -929,6 +976,11 @@ async function uploadMedia(req, res) {
     unlinkSync(f.path);
     fail(400, '프로필은 JPG, PNG, WEBP 이미지만 등록할 수 있어요.');
   }
+  res.json(await registerMediaFile(f, req.user.id));
+}
+// 업로드된 파일(일반·분할 업로드 공통)의 형식을 확인하고 media_files에 등록합니다.
+// 실패하면 파일을 지웁니다.
+async function registerMediaFile(f, ownerId) {
   const head = Buffer.alloc(16),
     fd = openSync(f.path, 'r');
   try {
@@ -953,18 +1005,18 @@ async function uploadMedia(req, res) {
     await db.transaction(async () => {
       await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [
         url,
-        req.user.id,
+        ownerId,
         f.mimetype,
         now(),
       ]);
-      await db.run('INSERT INTO media_metadata (url,duration,width,height) VALUES (?,?,?,?)', [
-        url,
-        metadata.duration,
-        metadata.width,
-        metadata.height,
-      ]);
+      await db.run(
+        'INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)',
+        [url, metadata.duration, metadata.width, metadata.height, metadata.hasAudio ? 1 : 0],
+      );
     });
-    res.json({ url, type: f.mimetype, ...metadata });
+    const warnings =
+      f.mimetype === 'video/mp4' ? precheck({ ...metadata, has_audio: metadata.hasAudio ? 1 : 0 }) : [];
+    return { url, type: f.mimetype, ...metadata, warnings };
   } catch (error) {
     if (existsSync(f.path)) unlinkSync(f.path);
     throw error;
@@ -1106,9 +1158,34 @@ app.patch('/api/admin/support/:id', roles('admin'), async (req, res) => {
   });
   res.json({ ok: true });
 });
-const routeContext = { app, db, fail, now, roles, requireAuth, checkMedia, catalogSql };
+const routeContext = {
+  app,
+  db,
+  fail,
+  now,
+  roles,
+  requireAuth,
+  checkMedia,
+  catalogSql,
+  demo,
+  uploadDir,
+  mediaPath,
+  owned,
+  canWatch,
+  registerMediaFile,
+  contentIssues,
+};
 studioRoutes(routeContext);
 adminRoutes(routeContext);
+uploadRoutes(routeContext);
+lamaRoutes(routeContext);
+// 숏핑 스튜디오(AI 제작): 개발 환경에서는 키 없이 쓰는 가짜 AI를 함께 등록합니다.
+allowLocalDownloads(!production);
+if (demo) await seedMock(db);
+const aiEngine = createAiEngine({ db, uploadDir, demo });
+adminAiRoutes({ ...routeContext, engine: aiEngine });
+studioAiRoutes({ ...routeContext, engine: aiEngine });
+await aiEngine.start();
 // Confirmed sales become withdrawable on their own schedule, so refresh on a timer too.
 setInterval(() => void refreshEntries(db).catch(() => {}), 60 * 60 * 1000).unref();
 app.use('/api', (req, res) => res.status(404).json({ error: '요청을 찾을 수 없습니다.' }));
@@ -1120,7 +1197,7 @@ app.use((err, req, res, next) => {
       details: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
     });
   if (err instanceof multer.MulterError)
-    return res.status(400).json({ error: '업로드 제한을 확인해 주세요. 최대 250MB입니다.' });
+    return res.status(400).json({ error: '업로드 제한을 확인해 주세요. 영상은 최대 500MB입니다.' });
   console.error(err.message);
   res.status(err.status || 500).json({
     error: err.status ? err.message : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',

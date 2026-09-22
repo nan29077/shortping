@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -49,7 +49,8 @@ import {
   type Role,
   type User,
 } from './api';
-import Studio from './Studio';
+// 관리 화면(스튜디오·관리자·AI 제작)은 시청자에게 필요 없으므로 필요할 때만 불러옵니다.
+const Studio = lazy(() => import('./Studio'));
 import {
   ChannelListPage,
   ChannelPage,
@@ -1208,6 +1209,13 @@ export default function App() {
             )}
             {route.page === 'studio' &&
               (user && user.role !== 'viewer' ? (
+                <Suspense
+                  fallback={
+                    <div className="loading">
+                      <span className="spinner" />
+                    </div>
+                  }
+                >
                 <Studio
                   user={user}
                   demo={config.demo}
@@ -1222,6 +1230,7 @@ export default function App() {
                     setConfig((current) => ({ ...current, homeAppearance }))
                   }
                 />
+                </Suspense>
               ) : (
                 <Empty
                   title="스튜디오 접근 권한이 필요해요"
@@ -1906,7 +1915,10 @@ function DramaPage({
         <h1>{d.title}</h1>
       </div>
       <div className="page-content detail-body">
-        <span className="detail-tag">{d.badge} · 숏핑 오리지널</span>
+        <span className="detail-tag">
+          {d.badge} · 숏핑 오리지널
+          {d.ai_label && <b className="ai-badge">AI 제작</b>}
+        </span>
         <h2>{d.tagline}</h2>
         <div className="detail-meta">
           {d.genre}
@@ -2226,7 +2238,11 @@ function WatchPage({
                 )
                   navigate('watch/' + id + '/' + (number + 1));
               }}
-            />
+            >
+              {ep.has_subtitles ? (
+                <track kind="subtitles" srcLang="ko" label="한국어" default src={`/api/subtitles/${id}/${number}`} />
+              ) : null}
+            </video>
             {videoError && (
               <div className="video-error">
                 <h3>영상이 아직 준비되지 않았어요</h3>
