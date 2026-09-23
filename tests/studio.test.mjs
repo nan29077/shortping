@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { DatabaseSync } from 'node:sqlite';
+import { prepareTestDb } from './_db.mjs';
 
 // 숏핑 스튜디오(AI 제작) · 라마 · AI 연결 통합 테스트.
 // 실제 AI 대신 개발용 가짜 AI와, 공급사 API 형식을 흉내 내는 로컬 가짜 서버를 씁니다.
@@ -32,14 +32,8 @@ async function request(url, { method = 'GET', body, cookie } = {}) {
 }
 const login = async (role) => (await request('/auth/demo', { method: 'POST', body: { role } })).cookie;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const readDb = (sql, params = []) => {
-  const db = new DatabaseSync(path.join(dataDir, 'shortping.sqlite'), { readOnly: true });
-  try {
-    return db.prepare(sql).all(...params);
-  } finally {
-    db.close();
-  }
-};
+let testDb;
+const readDb = (sql, params = []) => testDb.all(sql, params);
 async function newPd(tag) {
   const email = `${tag}-${runId}@studio.test`;
   const reg = await request('/auth/register', { method: 'POST', body: { email, password: 'StudioTest!2026', name: '스튜디오 ' + tag } });
@@ -69,7 +63,11 @@ async function waitJob(cookie, jobId, timeout = 60000) {
 // 공급사 흉내: OpenAI 호환 채팅, fal 대기열(영상), 항상 실패하는 모델
 const clip = readFileSync('public/demo/preview.mp4');
 const polls = new Map();
+const pic = readFileSync('public/images/share-shortping.jpg');
+let flakySubmits = 0,
+  slowRelease = false;
 before(async () => {
+  testDb = await prepareTestDb(runId, dataDir);
   vendor = createServer(async (req, res) => {
     let body = '';
     for await (const c of req) body += c;
@@ -110,10 +108,32 @@ before(async () => {
       return json(200, { request_id: id, status_url: `http://127.0.0.1:${vendorPort}/fal/status/${id}`, response_url: `http://127.0.0.1:${vendorPort}/fal/result/${id}` });
     }
     if (req.url.startsWith('/fal/broken-video')) return json(500, { detail: 'overloaded' });
+    // 결과 확인 중 한 번 503을 내는 영상 모델(작업은 계속 진행 중) — 새로 생성하지 않고 기다려야 한다
+    if (req.url.startsWith('/fal/flaky-video') && req.method === 'POST') {
+      flakySubmits++;
+      const id = 'flaky-' + randomUUID();
+      polls.set(id, 0);
+      return json(200, { request_id: id, status_url: `http://127.0.0.1:${vendorPort}/fal/status/${id}`, response_url: `http://127.0.0.1:${vendorPort}/fal/result/${id}` });
+    }
+    // 끝나지 않는 이미지 모델(동시 작업 한도 확인용)
+    if (req.url.startsWith('/fal/slow-image') && req.method === 'POST') {
+      const id = 'slow-' + randomUUID();
+      return json(200, { request_id: id, status_url: `http://127.0.0.1:${vendorPort}/fal/status/${id}`, response_url: `http://127.0.0.1:${vendorPort}/fal/result/${id}` });
+    }
     if (req.url.startsWith('/fal/status/')) {
       const id = req.url.split('/').pop();
+      if (id.startsWith('slow-')) return json(200, { status: slowRelease ? 'COMPLETED' : 'IN_PROGRESS' });
+      if (id.startsWith('flaky-') && !polls.get(id)) {
+        polls.set(id, 1);
+        return json(503, { detail: 'temporarily overloaded' });
+      }
       polls.set(id, (polls.get(id) || 0) + 1);
       return json(200, { status: polls.get(id) >= 2 ? 'COMPLETED' : 'IN_PROGRESS' });
+    }
+    if (req.url.startsWith('/fal/result/slow-')) return json(200, { images: [{ url: `http://127.0.0.1:${vendorPort}/files/pic.png` }] });
+    if (req.url === '/files/pic.png') {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': pic.length });
+      return res.end(pic);
     }
     if (req.url.startsWith('/fal/result/')) return json(200, { video: { url: `http://127.0.0.1:${vendorPort}/files/clip.mp4` } });
     if (req.url === '/files/clip.mp4') {
@@ -128,7 +148,7 @@ before(async () => {
     env: {
       ...process.env,
       NODE_ENV: 'test',
-      DATABASE_URL: '',
+      DATABASE_URL: testDb.url,
       PORT: String(port),
       APP_ORIGIN: base,
       ENABLE_DEMO: 'true',
@@ -151,9 +171,11 @@ before(async () => {
   pd = await login('pd');
   viewer = await login('viewer');
 });
-after(() => {
+after(async () => {
   child?.kill();
   vendor?.close();
+  await new Promise((r) => setTimeout(r, 300));
+  await testDb?.close();
 });
 
 test('lama wallet: welcome bonus once, test charge, idempotency, admin grant and revoke', async () => {
@@ -178,8 +200,8 @@ test('lama wallet: welcome bonus once, test charge, idempotency, admin grant and
   assert.equal(overview.status, 200);
   assert.ok(overview.data.summary.charge_amount >= 10000);
   // 장부 합계 = 지갑 잔액
-  const [wallet] = readDb('SELECT paid_balance,bonus_balance,held_paid,held_bonus FROM lama_wallets WHERE user_id=?', ['demo-pd']);
-  const [sum] = readDb('SELECT SUM(paid_delta) AS p, SUM(bonus_delta) AS b, SUM(held_delta) AS h FROM lama_ledger WHERE user_id=?', ['demo-pd']);
+  const [wallet] = (await readDb('SELECT paid_balance,bonus_balance,held_paid,held_bonus FROM lama_wallets WHERE user_id=?', ['demo-pd']));
+  const [sum] = (await readDb('SELECT SUM(paid_delta) AS p, SUM(bonus_delta) AS b, SUM(held_delta) AS h FROM lama_ledger WHERE user_id=?', ['demo-pd']));
   assert.equal(sum.p, wallet.paid_balance);
   assert.equal(sum.b, wallet.bonus_balance);
   assert.equal(sum.h, wallet.held_paid + wallet.held_bonus);
@@ -239,7 +261,7 @@ test('AI providers: encrypted keys, presets, connection test, model registry and
   assert.equal(view.has_key, true);
   assert.equal('api_key_enc' in view, false);
   assert.ok(!JSON.stringify(list).includes('emu-key-wrong'));
-  const [row] = readDb('SELECT api_key_enc FROM ai_providers WHERE id=?', [created.data.id]);
+  const [row] = (await readDb('SELECT api_key_enc FROM ai_providers WHERE id=?', [created.data.id]));
   assert.match(row.api_key_enc, /^v1:/);
   assert.ok(!row.api_key_enc.includes('emu-key'));
   // 틀린 키 → 연결 실패, 키 교체 → 성공
@@ -316,6 +338,12 @@ test('studio production end to end with the development AI: plan, cast, script, 
   p = await waitJobs(seller.cookie, pid);
   assert.ok(p.characters.every((c) => c.image.startsWith('/uploads/')));
   assert.ok(p.episodes.every((e) => e.shots.length >= 3));
+  // 기획안을 다시 만들어도 같은 이름의 인물은 그대로 남아 컷의 화자 연결이 끊기지 않는다.
+  const speakersBefore = p.episodes[0].shots.map((x) => x.speaker_id);
+  assert.equal((await run('plan', { requested: 'mock-writer' })).status, 201);
+  p = await waitJobs(seller.cookie, pid);
+  assert.deepEqual(p.episodes[0].shots.map((x) => x.speaker_id), speakersBefore);
+  assert.ok(speakersBefore.filter(Boolean).every((id) => p.characters.some((c) => c.id === id)));
   const ep = p.episodes[0];
   assert.ok(ep.shots.some((s) => s.speaker_id), '대사 화자가 인물과 연결돼야 한다');
   assert.equal((await run('batch_shot_image', { targetId: ep.id, tier: 'draft' })).status, 201);
@@ -353,6 +381,19 @@ test('studio production end to end with the development AI: plan, cast, script, 
   assert.ok(Math.abs(composed.duration - total) <= 2, `합성 길이 ${composed.duration} vs ${total}`);
   const vtt = await fetch(`${base}/api/studio/ai/episodes/${ep.id}/subtitles`, { headers: { cookie: seller.cookie } });
   assert.match(await vtt.text(), /^WEBVTT/);
+  // 합성한 뒤 컷 순서를 바꾸면 옛 합성본은 내보낼 수 없고, 다시 합성해야 한다.
+  assert.equal((await request('/studio/ai/shots/' + shots[0].id + '/move', { method: 'POST', cookie: seller.cookie, body: { direction: 'down' } })).status, 200);
+  assert.equal((await request('/studio/ai/shots/' + shots[0].id + '/move', { method: 'POST', cookie: seller.cookie, body: { direction: 'up' } })).status, 200);
+  const staleExport = await request(`/studio/ai/projects/${pid}/export`, { method: 'POST', cookie: seller.cookie, body: { tagline: '한 집에 사는 두 비밀', submit: false } });
+  assert.equal(staleExport.status, 409);
+  assert.match(staleExport.data.error, /다시 합성/);
+  assert.equal((await request(`/studio/ai/projects/${pid}/episodes/${ep.id}/compose`, { method: 'POST', cookie: seller.cookie })).status, 202);
+  for (let i = 0; i < 240; i++) {
+    composed = (await request(`/studio/ai/projects/${pid}/episodes/${ep.id}/compose`, { cookie: seller.cookie })).data;
+    if (composed.status !== 'composing') break;
+    await sleep(250);
+  }
+  assert.equal(composed.status, 'composed', composed.error);
   // 1화만 합성됐으므로 내보내기는 1화만. 포스터가 없으면 인물 이미지를 쓴다.
   const exported = await request(`/studio/ai/projects/${pid}/export`, { method: 'POST', cookie: seller.cookie, body: { tagline: '한 집에 사는 두 비밀', episode_pings: 5, free_episodes: 1, submit: true } });
   assert.equal(exported.status, 200, JSON.stringify(exported.data));
@@ -374,13 +415,13 @@ test('studio production end to end with the development AI: plan, cast, script, 
   assert.equal(pub.episodes[0].has_subtitles, 1);
   assert.equal((await fetch(`${base}/api/subtitles/${dramaId}/1`)).status, 200);
   // 라마 장부: 예약·사용·반환이 지갑과 일치하고, 예약 잔액이 남지 않는다.
-  const [w] = readDb('SELECT * FROM lama_wallets WHERE user_id=?', [seller.id]);
-  const [s] = readDb('SELECT SUM(paid_delta) AS p, SUM(bonus_delta) AS b, SUM(held_delta) AS h FROM lama_ledger WHERE user_id=?', [seller.id]);
+  const [w] = (await readDb('SELECT * FROM lama_wallets WHERE user_id=?', [seller.id]));
+  const [s] = (await readDb('SELECT SUM(paid_delta) AS p, SUM(bonus_delta) AS b, SUM(held_delta) AS h FROM lama_ledger WHERE user_id=?', [seller.id]));
   assert.equal(w.held_paid + w.held_bonus, 0);
   assert.equal(s.h, 0);
   assert.equal(s.p, w.paid_balance);
   assert.equal(s.b, w.bonus_balance);
-  const [charged] = readDb("SELECT SUM(charged_lama) AS n FROM ai_jobs WHERE user_id=? AND status='succeeded'", [seller.id]);
+  const [charged] = (await readDb("SELECT SUM(charged_lama) AS n FROM ai_jobs WHERE user_id=? AND status='succeeded'", [seller.id]));
   assert.equal(300 - (w.paid_balance + w.bonus_balance), charged.n);
 });
 
@@ -424,7 +465,15 @@ test('AI engine routing: vendor adapters, automatic fallback, refunds, limits, b
   p = await waitJobs(seller.cookie, pid, 90000);
   const failed = p.jobs.find((j) => j.kind === 'shot_video' && j.status === 'failed');
   assert.ok(failed);
-  assert.match(failed.error, /500|overloaded/);
+  // PD 화면에는 정리된 문구만, 공급사 원문은 관리자 작업 목록에서만 보입니다.
+  assert.match(failed.error, /AI 공급사/);
+  assert.doesNotMatch(failed.error, /500|overloaded/);
+  // 관리자에게는 PD에게 보인 문구와 원문을 함께 줍니다.
+  const adminJob = (await request('/admin/ai', { cookie: admin })).data.jobs.find((j) => j.id === failed.id);
+  assert.equal(adminJob.error, failed.error);
+  assert.match(adminJob.error_detail, /500|overloaded/);
+  const adminDetail = (await request('/admin/ai/jobs/' + failed.id, { cookie: admin })).data;
+  assert.match(adminDetail.error_detail, /500|overloaded/);
   assert.equal((await request('/lama', { cookie: seller.cookie })).data.wallet.total, refundBase);
   // PD 하루 한도
   await request(`/admin/ai/limits/${seller.id}`, { method: 'PUT', cookie: admin, body: { daily_lama: 1, monthly_lama: null, blocked: false } });
@@ -581,8 +630,8 @@ test('autopilot builds a whole draft within a lama cap, pauses on the cap and ca
   } finally {
     await request('/admin/settings', { method: 'PUT', cookie: admin, body: { ai_concurrency: 3 } });
   }
-  const [w] = readDb('SELECT * FROM lama_wallets WHERE user_id=?', [seller.id]);
-  const [sum] = readDb('SELECT SUM(paid_delta) AS p, SUM(bonus_delta) AS b, SUM(held_delta) AS h FROM lama_ledger WHERE user_id=?', [seller.id]);
+  const [w] = (await readDb('SELECT * FROM lama_wallets WHERE user_id=?', [seller.id]));
+  const [sum] = (await readDb('SELECT SUM(paid_delta) AS p, SUM(bonus_delta) AS b, SUM(held_delta) AS h FROM lama_ledger WHERE user_id=?', [seller.id]));
   assert.equal(w.held_paid + w.held_bonus, 0);
   assert.equal(sum.h, 0);
   assert.equal(sum.b, w.bonus_balance);
@@ -691,4 +740,288 @@ test('shot rewrite and voice sample; admin routing rules, China policy, breaker,
   const safety = (await request('/admin/ai/safety', { cookie: admin })).data;
   assert.ok(safety.some((x) => x.user_id === seller.id && x.term === '딥페이크'));
   assert.equal((await request('/admin/ai/safety', { cookie: seller.cookie })).status, 403);
+});
+
+// ── 2026-09-22 검수 후속: 관리자 오류 원문, AI 한도 0, 결과 소유자, 합성 중복, 저장 공간 정리, 다운로드·금칙어 ──
+test('personal AI limit 0 blocks paid jobs; blank follows the shared limit; monthly 0 blocks too', async () => {
+  const seller = await newPd('limit0');
+  await request('/studio/ai/terms', { method: 'POST', cookie: seller.cookie, body: { agree: true, version: '2026-09' } });
+  await request('/lama', { cookie: seller.cookie });
+  const pid = (await request('/studio/ai/projects', { method: 'POST', cookie: seller.cookie, body: { title: '한도 검사', logline: '한도 0은 사용 금지를 뜻한다', genre: '코미디', episode_count: 1, episode_seconds: 20 } })).data.id;
+  const run = () => request(`/studio/ai/projects/${pid}/run`, { method: 'POST', cookie: seller.cookie, body: { action: 'plan', requested: 'mock-writer' } });
+  const setLimit = (body) => request(`/admin/ai/limits/${seller.id}`, { method: 'PUT', cookie: admin, body: { blocked: false, ...body } });
+  try {
+    // 하루 한도 0 → 막힘(예전에는 무제한으로 처리됐음)
+    assert.equal((await setLimit({ daily_lama: 0, monthly_lama: null })).status, 200);
+    let r = await run();
+    assert.equal(r.status, 429);
+    assert.match(r.data.error, /0라마/);
+    // 월 한도 0 → 막힘
+    await setLimit({ daily_lama: null, monthly_lama: 0 });
+    r = await run();
+    assert.equal(r.status, 429);
+    assert.match(r.data.error, /월 AI 제작 한도를 0라마/);
+    // 비워 두면 공통 한도(기본 20,000라마)를 따라 실행된다.
+    await setLimit({ daily_lama: null, monthly_lama: null });
+    r = await run();
+    assert.equal(r.status, 201);
+    await waitJobs(seller.cookie, pid);
+    // 개인 한도가 있으면 그 값이 상한: 이미 쓴 양 + 새 작업이 넘으면 막힘
+    await setLimit({ daily_lama: 1, monthly_lama: null });
+    assert.equal((await run()).status, 429);
+  } finally {
+    await setLimit({ daily_lama: null, monthly_lama: null });
+  }
+});
+
+test('results made by an administrator inside a PD project belong to that PD', async () => {
+  const seller = await newPd('owner');
+  await request('/studio/ai/terms', { method: 'POST', cookie: seller.cookie, body: { agree: true, version: '2026-09' } });
+  await request('/studio/ai/terms', { method: 'POST', cookie: admin, body: { agree: true, version: '2026-09' } });
+  await request('/lama', { cookie: admin });
+  const pid = (await request('/studio/ai/projects', { method: 'POST', cookie: seller.cookie, body: { title: '대신 만들기', logline: '관리자가 대신 포스터를 만든다', genre: '청춘', episode_count: 1, episode_seconds: 20 } })).data.id;
+  const r = await request(`/studio/ai/projects/${pid}/run`, { method: 'POST', cookie: admin, body: { action: 'poster', requested: 'mock-image' } });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const p = await waitJobs(seller.cookie, pid);
+  assert.ok(p.project.poster.startsWith('/uploads/'));
+  const owner = (await readDb('SELECT owner_id FROM media_files WHERE url=?', [p.project.poster]))[0];
+  assert.equal(owner.owner_id, seller.id);
+  const asset = (await readDb('SELECT owner_id FROM studio_assets WHERE url=?', [p.project.poster]))[0];
+  assert.equal(asset.owner_id, seller.id);
+  // PD가 미리보기로 열 수 있고, 다른 PD는 못 연다.
+  const file = p.project.poster.split('/').pop();
+  assert.equal((await fetch(`${base}/api/studio/media/${file}`, { headers: { cookie: seller.cookie } })).status, 200);
+  assert.equal((await fetch(`${base}/api/studio/media/${file}`, { headers: { cookie: pd } })).status, 404);
+});
+
+test('an episode is composed once even when compose is requested twice at the same time', async () => {
+  const seller = await newPd('compose');
+  await request('/studio/ai/terms', { method: 'POST', cookie: seller.cookie, body: { agree: true, version: '2026-09' } });
+  await request('/lama', { cookie: seller.cookie });
+  const pid = (await request('/studio/ai/projects', { method: 'POST', cookie: seller.cookie, body: { title: '동시 합성', logline: '합성 버튼을 두 번 눌러도 한 번만 돈다', genre: '스릴러', episode_count: 1, episode_seconds: 20 } })).data.id;
+  const run = (action, targetId, extra = {}) => request(`/studio/ai/projects/${pid}/run`, { method: 'POST', cookie: seller.cookie, body: { action, targetId, requested: 'mock-image', tier: 'draft', ...extra } });
+  assert.equal((await run('plan', undefined, { requested: 'mock-writer', tier: 'standard' })).status, 201);
+  let p = await waitJobs(seller.cookie, pid);
+  const ep = p.episodes[0];
+  assert.equal((await run('script', ep.id, { requested: 'mock-writer', tier: 'standard' })).status, 201);
+  await waitJobs(seller.cookie, pid);
+  assert.equal((await run('batch_shot_image', ep.id)).status, 201);
+  await waitJobs(seller.cookie, pid);
+  const url = `/studio/ai/projects/${pid}/episodes/${ep.id}/compose`;
+  const both = await Promise.all([request(url, { method: 'POST', cookie: seller.cookie }), request(url, { method: 'POST', cookie: seller.cookie })]);
+  assert.deepEqual(both.map((r) => r.status).sort(), [202, 409]);
+  // 합성 중에는 프로젝트를 지울 수 없다.
+  const del = await request('/studio/ai/projects/' + pid, { method: 'DELETE', cookie: seller.cookie });
+  const state = (await request(url, { cookie: seller.cookie })).data;
+  if (state.status === 'composing') assert.equal(del.status, 409);
+  const end = Date.now() + 60000;
+  let done;
+  while (Date.now() < end) {
+    done = (await request(url, { cookie: seller.cookie })).data;
+    if (done.status !== 'composing') break;
+    await sleep(200);
+  }
+  assert.equal(done.status, 'composed', JSON.stringify(done));
+  const versions = (await readDb("SELECT COUNT(*) AS n FROM studio_assets WHERE target_type='episode' AND target_id=?", [ep.id]))[0].n;
+  assert.equal(versions, 1);
+});
+
+test('storage cleanup: default 91 days, admin-set period, only unreferenced old files are removed', async () => {
+  const uploads = path.join(dataDir, 'uploads');
+  let s = await request('/admin/storage', { cookie: admin });
+  assert.equal(s.status, 200);
+  assert.equal(s.data.retention_days, 91);
+  assert.equal(s.data.default_days, 91);
+  assert.equal(s.data.checked_places, 22);
+  assert.equal((await request('/admin/storage', { cookie: pd })).status, 403);
+  // 잘못된 기간은 거절(0=끔, 7~3650)
+  assert.equal((await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 5 } })).status, 400);
+  assert.equal((await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 4000 } })).status, 400);
+  // 끄면 수동 정리도 안 된다.
+  assert.equal((await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 0 } })).status, 200);
+  assert.equal((await request('/admin/storage/cleanup', { method: 'POST', cookie: admin })).status, 400);
+  // 준비: 오래된 미사용 파일 1개, 오래됐지만 프로필 사진으로 쓰는 파일 1개, 최근 미사용 파일 1개
+  const orphan = randomUUID() + '.jpg',
+    used = randomUUID() + '.jpg',
+    fresh = randomUUID() + '.jpg';
+  const { writeFileSync, existsSync } = await import('node:fs');
+  for (const f of [orphan, used, fresh]) writeFileSync(path.join(uploads, f), 'x'.repeat(2048));
+  {
+    const old = new Date(Date.now() - 120 * 86400000).toISOString();
+    const recent = new Date(Date.now() - 10 * 86400000).toISOString();
+    const ins = 'INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)';
+    await testDb.run(ins, ['/uploads/' + orphan, 'demo-viewer', 'image/jpeg', old]);
+    await testDb.run(ins, ['/uploads/' + used, 'demo-viewer', 'image/jpeg', old]);
+    await testDb.run(ins, ['/uploads/' + fresh, 'demo-viewer', 'image/jpeg', recent]);
+    await testDb.run('UPDATE user_profiles SET avatar=? WHERE user_id=?', ['/uploads/' + used, 'demo-viewer']);
+  }
+  try {
+    // 기본값 91일: 120일 된 미사용 파일만 대상, 10일 된 파일과 사용 중인 파일은 제외
+    await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 91 } });
+    s = (await request('/admin/storage', { cookie: admin })).data;
+    const urls = s.candidates.sample.map((x) => x.url);
+    assert.ok(urls.includes('/uploads/' + orphan));
+    assert.ok(!urls.includes('/uploads/' + used));
+    assert.ok(!urls.includes('/uploads/' + fresh));
+    // 관리자가 기간을 7일로 줄이면 10일 된 파일도 대상이 된다.
+    await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 7 } });
+    s = (await request('/admin/storage', { cookie: admin })).data;
+    assert.equal(s.retention_days, 7);
+    assert.ok(s.candidates.sample.some((x) => x.url === '/uploads/' + fresh));
+    // 다시 150일로 늘리면 120일 된 파일도 보관 기간 안이라 대상이 아니다.
+    await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 150 } });
+    s = (await request('/admin/storage', { cookie: admin })).data;
+    assert.ok(!s.candidates.sample.some((x) => x.url === '/uploads/' + orphan));
+    // 91일로 정리 실행: 미사용·오래된 파일만 지워지고 나머지는 그대로
+    await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 91 } });
+    const clean = await request('/admin/storage/cleanup', { method: 'POST', cookie: admin });
+    assert.equal(clean.status, 200);
+    assert.ok(clean.data.deleted >= 1);
+    assert.equal(existsSync(path.join(uploads, orphan)), false);
+    assert.equal(existsSync(path.join(uploads, used)), true);
+    assert.equal(existsSync(path.join(uploads, fresh)), true);
+    assert.equal((await readDb('SELECT COUNT(*) AS n FROM media_files WHERE url=?', ['/uploads/' + orphan]))[0].n, 0);
+    assert.equal((await readDb('SELECT COUNT(*) AS n FROM media_files WHERE url=?', ['/uploads/' + used]))[0].n, 1);
+    // 운영 기록에 남는다.
+    assert.ok((await readDb("SELECT action FROM audit_logs WHERE action LIKE 'storage:cleanup:%'")).length >= 1);
+    s = (await request('/admin/storage', { cookie: admin })).data;
+    assert.equal(s.last_sweep.by, 'manual');
+  } finally {
+    await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 91 } });
+  }
+});
+
+test('result downloads re-check every redirect, drop vendor keys across origins and block private hosts', async () => {
+  const { download, allowLocalDownloads } = await import('../server/ai/http.mjs');
+  const seen = [];
+  const other = createServer((req, res) => {
+    seen.push({ url: req.url, auth: req.headers.authorization || '' });
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' }).end(Buffer.from('other-origin'));
+  });
+  await new Promise((r) => other.listen(0, '127.0.0.1', r));
+  const otherPort = other.address().port;
+  const origin = createServer((req, res) => {
+    seen.push({ url: req.url, auth: req.headers.authorization || '' });
+    if (req.url === '/same') return res.writeHead(302, { Location: '/file' }).end();
+    if (req.url === '/file') return res.writeHead(200).end(Buffer.from('same-origin'));
+    if (req.url === '/cross') return res.writeHead(302, { Location: `http://127.0.0.1:${otherPort}/file` }).end();
+    if (req.url === '/private') return res.writeHead(302, { Location: 'https://10.0.0.5/secret' }).end();
+    if (req.url === '/loop') return res.writeHead(302, { Location: '/loop' }).end();
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => origin.listen(0, '127.0.0.1', r));
+  const at = `http://127.0.0.1:${origin.address().port}`;
+  try {
+    // 개발 허용이 꺼져 있으면 http 로컬 주소부터 막힌다.
+    allowLocalDownloads(false);
+    await assert.rejects(download(at + '/file'), /안전하지 않은/);
+    await assert.rejects(download('https://192.168.0.10/x'), /안전하지 않은/);
+    await assert.rejects(download('https://localhost/x'), /안전하지 않은/);
+    allowLocalDownloads(true);
+    // 같은 곳으로의 리다이렉트: 인증 헤더 유지
+    assert.equal((await download(at + '/same', { authorization: 'Key vendor-secret' })).toString(), 'same-origin');
+    assert.equal(seen.find((h) => h.url === '/file').auth, 'Key vendor-secret');
+    // 다른 곳으로의 리다이렉트: 공급사 키를 보내지 않음
+    assert.equal((await download(at + '/cross', { authorization: 'Key vendor-secret' })).toString(), 'other-origin');
+    assert.equal(seen.filter((h) => h.url === '/file').at(-1).auth, '');
+    // 내부망 주소로 넘기면 막힘, 무한 리다이렉트도 막힘
+    await assert.rejects(download(at + '/private'), /안전하지 않은/);
+    await assert.rejects(download(at + '/loop'), /너무 여러 번/);
+    // data: 주소도 크기 검사를 거친다(정상 크기는 통과).
+    assert.equal((await download('data:text/plain;base64,' + Buffer.from('ok').toString('base64'))).toString(), 'ok');
+  } finally {
+    allowLocalDownloads(false);
+    origin.close();
+    other.close();
+  }
+});
+
+test('blocked words avoid false positives inside other words but still catch attached long terms', async () => {
+  const { blockedTerm } = await import('../server/ai/prompts.mjs');
+  assert.equal(blockedTerm(['오늘 칼로리 계산']), null);
+  assert.equal(blockedTerm(['글로리 이야기']), null);
+  assert.equal(blockedTerm(['denuded forest']), null);
+  assert.equal(blockedTerm(['로리를 그려 줘']), '로리');
+  assert.equal(blockedTerm(['nude scene']), 'nude');
+  assert.equal(blockedTerm(['pornography']), 'porn');
+  assert.equal(blockedTerm(['아이돌딥페이크 영상']), '딥페이크');
+  assert.equal(blockedTerm(['금지어없음'], '금지어'), '금지어');
+});
+
+test('vendor error text is cleaned for PDs and kept in full for administrators', async () => {
+  const { publicError } = await import('../server/ai/engine.mjs');
+  const { VendorError } = await import('../server/ai/http.mjs');
+  assert.match(publicError(new VendorError('AI 공급사 오류(500): overloaded at https://internal.host/x')), /일시적인 문제/);
+  assert.match(publicError(new VendorError('AI 공급사 오류(401): Incorrect API key provided: sk-abcd1234efgh', { status: 401 })), /인증에 실패/);
+  const plain = publicError(new Error('키 sk-live-abcdef123456 와 https://10.0.0.1/a 가 포함된 오류'));
+  assert.doesNotMatch(plain, /sk-live-abcdef123456|10\.0\.0\.1/);
+  assert.match(publicError(new Error('결과 파일이 비어 있어요.')), /결과 파일이 비어 있어요/);
+});
+
+test('a vendor hiccup while checking a video result waits instead of generating the video again', async () => {
+  const seller = await newPd('flaky');
+  await request('/studio/ai/terms', { method: 'POST', cookie: seller.cookie, body: { agree: true, version: '2026-09' } });
+  await request('/admin/lama/adjust', { method: 'POST', cookie: admin, body: { userId: seller.id, action: 'grant', lama: 500, memo: '결과 확인 검수' } });
+  const prov = await request('/admin/ai/providers', { method: 'POST', cookie: admin, body: { name: '에뮬 fal 2', kind: 'fal', base_url: `http://127.0.0.1:${vendorPort}/fal`, country: 'US', api_key: 'fal-emu' } });
+  const model = await request('/admin/ai/models', { method: 'POST', cookie: admin, body: { provider_id: prov.data.id, capability: 'video', model_id: 'flaky-video', label: '가끔 503', tier: 'standard', cost_usd: 0.1, price_lama: 4, tags: [], priority: 10, max_seconds: 10, image_input: true } });
+  const project = await request('/studio/ai/projects', { method: 'POST', cookie: seller.cookie, body: { title: '일시 오류', logline: '결과 확인 중 일시 오류에도 다시 만들지 않는다', genre: '스릴러', episode_count: 1, episode_seconds: 20 } });
+  const pid = project.data.id;
+  const run = (action, extra = {}) => request(`/studio/ai/projects/${pid}/run`, { method: 'POST', cookie: seller.cookie, body: { action, tier: 'standard', requested: 'auto', ...extra } });
+  await run('plan', { requested: 'mock-writer' });
+  let p = await waitJobs(seller.cookie, pid);
+  await run('script', { targetId: p.episodes[0].id, requested: 'mock-writer' });
+  p = await waitJobs(seller.cookie, pid);
+  const shot = p.episodes[0].shots[0];
+  flakySubmits = 0;
+  assert.equal((await run('shot_video', { targetId: shot.id, requested: model.data.id })).status, 201);
+  p = await waitJobs(seller.cookie, pid, 90000);
+  const job = p.jobs.find((j) => j.kind === 'shot_video');
+  assert.equal(job.status, 'succeeded', job.error);
+  assert.equal(flakySubmits, 1, '공급사에 영상 생성을 한 번만 요청해야 한다');
+});
+
+test('a provider at its concurrency limit does not hold up work for other providers', async () => {
+  const seller = await newPd('limit');
+  await request('/studio/ai/terms', { method: 'POST', cookie: seller.cookie, body: { agree: true, version: '2026-09' } });
+  await request('/admin/lama/adjust', { method: 'POST', cookie: admin, body: { userId: seller.id, action: 'grant', lama: 2000, memo: '동시 한도 검수' } });
+  const prov = await request('/admin/ai/providers', { method: 'POST', cookie: admin, body: { name: '느린 fal', kind: 'fal', base_url: `http://127.0.0.1:${vendorPort}/fal`, country: 'US', api_key: 'fal-emu', max_concurrency: 1 } });
+  assert.equal(prov.status, 201, JSON.stringify(prov.data));
+  const slow = await request('/admin/ai/models', { method: 'POST', cookie: admin, body: { provider_id: prov.data.id, capability: 'image', model_id: 'slow-image', label: '느린 이미지', tier: 'standard', cost_usd: 0.01, price_lama: 1, tags: [], priority: 1, max_seconds: 10, image_input: true } });
+  assert.equal(slow.status, 201, JSON.stringify(slow.data));
+  const project = await request('/studio/ai/projects', { method: 'POST', cookie: seller.cookie, body: { title: '동시 한도', logline: '한 공급사 대기열이 다른 작업을 막지 않는다', genre: '로맨스', episode_count: 1, episode_seconds: 20 } });
+  const pid = project.data.id;
+  const run = (action, extra = {}) => request(`/studio/ai/projects/${pid}/run`, { method: 'POST', cookie: seller.cookie, body: { action, tier: 'standard', requested: 'auto', ...extra } });
+  await run('plan', { requested: 'mock-writer' });
+  let p = await waitJobs(seller.cookie, pid);
+  const ep = p.episodes[0];
+  slowRelease = false;
+  // 컷 55개를 만들고 느린 공급사에 스토리보드 55건을 쌓는다(한 번에 1건만 실행 가능)
+  for (let i = 0; i < 55; i++)
+    assert.equal((await request(`/studio/ai/projects/${pid}/episodes/${ep.id}/shots`, { method: 'POST', cookie: seller.cookie, body: { visual: 'shot ' + i, seconds: 3 } })).status, 201);
+  const batch = await run('batch_shot_image', { targetId: ep.id, requested: slow.data.id });
+  assert.equal(batch.status, 201, JSON.stringify(batch.data));
+  assert.ok(batch.data.jobs.length >= 51);
+  const labels = (await request('/studio/ai/projects/' + pid, { cookie: seller.cookie })).data.jobs.filter((j) => j.kind === 'shot_image').map((j) => j.model_label);
+  assert.ok(labels.every((l) => l === '느린 이미지'), JSON.stringify([...new Set(labels)]));
+  // 다른 공급사(개발용) 작업은 그 뒤에 넣어도 바로 끝나야 한다
+  const t0 = Date.now();
+  const other = await run('plan', { requested: 'mock-writer' });
+  assert.equal(other.status, 201);
+  let done = null;
+  while (Date.now() - t0 < 20000) {
+    const j = (await request('/studio/ai/projects/' + pid, { cookie: seller.cookie })).data.jobs.find((x) => x.id === other.data.jobs[0].id);
+    if (j && !['queued', 'running'].includes(j.status)) {
+      done = j;
+      break;
+    }
+    await sleep(300);
+  }
+  assert.equal(done?.status, 'succeeded', '다른 공급사 작업이 막히면 안 된다');
+  // 정리: 대기 중인 느린 작업은 취소(라마 반환), 실행 중인 1건은 끝내 준다
+  const jobs = (await request('/studio/ai/projects/' + pid, { cookie: seller.cookie })).data.jobs.filter((j) => j.status === 'queued');
+  for (const j of jobs) await request('/studio/ai/jobs/' + j.id + '/cancel', { method: 'POST', cookie: seller.cookie });
+  slowRelease = true;
+  p = await waitJobs(seller.cookie, pid, 60000);
+  const [w] = await readDb('SELECT held_paid, held_bonus FROM lama_wallets WHERE user_id=?', [seller.id]);
+  assert.equal(Number(w.held_paid) + Number(w.held_bonus), 0);
 });

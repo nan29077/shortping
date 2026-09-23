@@ -103,8 +103,10 @@ export async function runFfmpeg(args, timeout = 120000) {
   } catch (error) {
     if (error.code === 'ENOENT')
       throw Object.assign(new Error('영상 처리 도구가 준비되지 않았습니다.'), { status: 503 });
-    throw Object.assign(new Error('영상 처리에 실패했습니다. ' + String(error.stderr || error.message).slice(-300)), {
+    // 사용자에게는 정리된 문구만, 원문(서버 경로가 섞일 수 있음)은 서버 기록용 detail에만 둡니다.
+    throw Object.assign(new Error('영상 처리에 실패했습니다. 파일 형식을 확인하거나 잠시 후 다시 시도해 주세요.'), {
       status: 500,
+      detail: String(error.stderr || error.message).slice(-600),
     });
   }
 }

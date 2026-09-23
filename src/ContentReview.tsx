@@ -1,16 +1,46 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Captions, Check, Film, ShieldCheck, Sparkles, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Captions,
+  Check,
+  FileVideo,
+  Film,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { Modal } from './App';
 import { aiUsageLabel, api, jobKindLabel, type Drama, type Episode } from './api';
+import EpisodeManager from './EpisodeManager';
+import EpisodeReviewQueue from './serial/EpisodeReviewQueue';
+import { EpisodeStatusChip, useSerialToast } from './serial/EpisodeStatus';
+import { asset } from './platform';
+
+// 관리자 · 회차 검수 목록(연재형 공개). 콘텐츠 · 심사 화면에서 바로 쓸 수 있게 여기서도 내보냅니다.
+export { EpisodeReviewQueue };
 
 export type ManagedDrama = Drama & {
   owner_name: string;
-  episodes: (Episode & { video: string })[];
+  // 연재형 공개: review_status(approved·draft·pending·rejected·scheduled), review_note, publish_at
+  episodes: (Episode & {
+    video: string;
+    review_status?: string;
+    review_note?: string;
+    publish_at?: string | null;
+    submitted_at?: string | null;
+  })[];
   issues: string[];
   reviews: { id: string; name: string; status: string; note: string; created_at: string }[];
 };
 type Provenance = {
-  models: { kind: string; model_label: string | null; provider_name: string | null; country: string | null; jobs: number; lama: number }[];
+  models: {
+    kind: string;
+    model_label: string | null;
+    provider_name: string | null;
+    country: string | null;
+    jobs: number;
+    lama: number;
+  }[];
 };
 export const reviewStatus: Record<string, string> = {
   pending: '심사 요청',
@@ -39,13 +69,19 @@ export default function ContentReview({
   const [checked, setChecked] = useState(false);
   const [posterReady, setPosterReady] = useState(false);
   const [provenance, setProvenance] = useState<Provenance | null>(null);
+  // PD: 공개 중인 작품의 회차 관리(연재) 창과 안내 문구
+  const [manage, setManage] = useState(false);
+  const [demo, setDemo] = useState(false);
+  const [say, toastUi] = useSerialToast();
   async function load() {
     try {
       const d = await api<ManagedDrama>('/studio/dramas/' + drama.id);
       setDetail(d);
       setError('');
       if (d.episodes.some((e) => e.source === 'studio'))
-        setProvenance(await api<Provenance>('/studio/dramas/' + drama.id + '/provenance').catch(() => null));
+        setProvenance(
+          await api<Provenance>('/studio/dramas/' + drama.id + '/provenance').catch(() => null),
+        );
     } catch (e) {
       setError((e as Error).message);
     }
@@ -54,6 +90,13 @@ export default function ContentReview({
     void load();
   }, [drama.id]);
   const reviewing = admin && detail?.status === 'pending';
+  const serial = detail?.status === 'published';
+  const pendingEpisodes = detail?.episodes.filter((e) => e.review_status === 'pending').length || 0;
+  const openManager = async () => {
+    const config = await api<{ demo?: boolean }>('/config').catch(() => null);
+    setDemo(!!config?.demo);
+    setManage(true);
+  };
   const episode = detail?.episodes.find((e) => e.number === number);
   async function decide(status: 'published' | 'rejected') {
     setBusy(true);
@@ -71,7 +114,7 @@ export default function ContentReview({
     <Modal
       title={reviewing ? '작품 검토 · 심사' : '작품 미리보기'}
       close={() => {
-        if (!busy) close();
+        if (!busy && !manage) close();
       }}
       className="content-review-modal"
     >
@@ -89,7 +132,7 @@ export default function ContentReview({
         <>
           <div className="review-summary">
             <img
-              src={detail.image}
+              src={asset(detail.image)}
               alt={detail.title + ' 포스터'}
               onLoad={() => setPosterReady(true)}
               onError={() => setPosterReady(false)}
@@ -133,10 +176,26 @@ export default function ContentReview({
             </div>
           </div>
           <p className="review-synopsis">{detail.synopsis}</p>
+          {serial && !admin && (
+            <div className="info-box serial-info">
+              <FileVideo size={16} />
+              <span>
+                <b>연재 중인 작품이에요.</b> 다음 회차를 올리고 회차마다 검수를 신청할 수 있어요.
+                공개 예약과 썸네일 비교도 회차 관리에서 할 수 있어요.
+              </span>
+              <button className="primary compact" onClick={() => void openManager()}>
+                <FileVideo size={14} /> 회차 관리 · 새 회차 올리기
+              </button>
+            </div>
+          )}
           {(() => {
             const studio = detail.episodes.filter((e) => e.source === 'studio').length;
             const source =
-              studio === 0 ? '직접 업로드' : studio === detail.episodes.length ? '숏핑 스튜디오 AI 제작' : '혼합 (업로드 + AI 제작)';
+              studio === 0
+                ? '직접 업로드'
+                : studio === detail.episodes.length
+                  ? '숏핑 스튜디오 AI 제작'
+                  : '혼합 (업로드 + AI 제작)';
             const warned = detail.episodes.filter((e) => e.warnings?.length);
             const subs = detail.episodes.filter((e) => e.has_subtitles).length;
             return (
@@ -179,7 +238,8 @@ export default function ContentReview({
                     <ul>
                       {provenance.models.map((m, i) => (
                         <li key={i}>
-                          {jobKindLabel[m.kind] || m.kind} · {m.model_label || '삭제된 모델'} ({m.provider_name}
+                          {jobKindLabel[m.kind] || m.kind} · {m.model_label || '삭제된 모델'} (
+                          {m.provider_name}
                           {m.country === 'CN' ? ' · 중국' : ''}) · {m.jobs}회
                         </li>
                       ))}
@@ -216,8 +276,8 @@ export default function ContentReview({
                   controls
                   playsInline
                   preload="metadata"
-                  poster={detail.image}
-                  src={'/api/play/' + detail.id + '/' + number}
+                  poster={asset(detail.image)}
+                  src={asset('/api/play/' + detail.id + '/' + number)}
                   onLoadedData={() => {
                     setLoaded((prev) => (prev.includes(number) ? prev : [...prev, number]));
                     setMediaError('');
@@ -230,7 +290,13 @@ export default function ContentReview({
                   }}
                 >
                   {episode.has_subtitles ? (
-                    <track kind="subtitles" srcLang="ko" label="한국어" default src={`/api/subtitles/${detail.id}/${number}`} />
+                    <track
+                      kind="subtitles"
+                      srcLang="ko"
+                      label="한국어"
+                      default
+                      src={asset(`/api/subtitles/${detail.id}/${number}`)}
+                    />
                   ) : null}
                 </video>
               ) : (
@@ -266,6 +332,9 @@ export default function ContentReview({
                 >
                   <span>
                     {e.number}화 · {e.title}
+                    {serial && e.review_status && e.review_status !== 'approved' && (
+                      <EpisodeStatusChip status={e.review_status} publishAt={e.publish_at} />
+                    )}
                     <small>
                       {e.source === 'studio' ? 'AI · ' : ''}
                       {e.duration}초 ·{' '}
@@ -278,6 +347,14 @@ export default function ContentReview({
               ))}
             </div>
           </div>
+          {admin && serial && pendingEpisodes > 0 && (
+            <EpisodeReviewQueue
+              dramaId={detail.id}
+              embedded
+              notify={say}
+              onChanged={() => void load()}
+            />
+          )}
           {reviewing && (
             <div className="review-decision">
               <label>
@@ -344,6 +421,18 @@ export default function ContentReview({
           )}
         </>
       )}
+      {manage && detail && (
+        <EpisodeManager
+          d={detail}
+          demo={demo}
+          notify={say}
+          close={() => {
+            setManage(false);
+            void load();
+          }}
+        />
+      )}
+      {toastUi}
     </Modal>
   );
 }

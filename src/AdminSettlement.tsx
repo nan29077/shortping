@@ -32,10 +32,10 @@ import { downloadCsv } from './StudioPanels';
 import { entryStatus, payoutStatus } from './Settlement';
 
 const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+// setMonth(-1)은 31일에 달을 건너뛰므로(5/31 → 4/31 → 5/1) 1일로 고정해 계산합니다.
 const lastMonth = () => {
   const d = new Date();
-  d.setMonth(d.getMonth() - 1);
-  return monthKey(d);
+  return monthKey(new Date(d.getFullYear(), d.getMonth() - 1, 1));
 };
 
 export function AdminSettlementPanel({
@@ -110,8 +110,16 @@ export function AdminSettlementPanel({
               <Banknote size={18} />
               <span>누적 지급</span>
             </div>
-            <strong>{won(data.payouts.filter((p) => p.status === 'paid').reduce((n, p) => n + p.payable, 0))}</strong>
-            <small>{data.payouts.filter((p) => p.status === 'paid').length}건 완료</small>
+            <strong>
+              {won(
+                data.payoutStats?.paid_bank ??
+                  data.payouts.filter((p) => p.status === 'paid' && p.method !== 'lama').reduce((n, p) => n + p.payable, 0),
+              )}
+            </strong>
+            <small>
+              계좌 지급 기준
+              {data.payoutStats?.paid_lama ? ` · 라마 전환 ${won(data.payoutStats.paid_lama)} 별도` : ''}
+            </small>
           </div>
         </div>
         <section className="management-panel">
@@ -126,7 +134,7 @@ export function AdminSettlementPanel({
               onClick={() =>
                 downloadCsv('숏핑-출금요청.csv', [
                   ['신청일', 'PD', '구분', '정산기준액', '부가세', '원천징수', '지급액', '은행', '계좌', '예금주', '상태'],
-                  ...payouts.map((p) => [
+                  ...payouts.filter((p) => p.method !== 'lama').map((p) => [
                     moment(p.requested_at),
                     p.pd_name || '',
                     p.business_type === 'business' ? '사업자' : '비사업자',
@@ -527,15 +535,16 @@ export function AdminTaxPanel({ notify }: { notify: (s: string) => void }) {
     [type, setType] = useState('all'),
     [busy, setBusy] = useState(false),
     [editing, setEditing] = useState<AdminTax['creators'][number] | null>(null),
-    [note, setNote] = useState('');
+    [note, setNote] = useState(''),
+    [year, setYear] = useState(() => String(new Date(Date.now() + 9 * 3600000).getUTCFullYear()));
   const load = useCallback(async () => {
     try {
-      setData(await api<AdminTax>('/admin/tax'));
+      setData(await api<AdminTax>('/admin/tax?year=' + year));
       setError('');
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [year]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -599,8 +608,18 @@ export function AdminTaxPanel({ notify }: { notify: (s: string) => void }) {
         <div className="panel-heading">
           <div>
             <h3>PD 세무 관리</h3>
-            <p>사업자는 세금계산서, 비사업자는 원천징수로 구분해 처리합니다.</p>
+            <p>사업자는 세금계산서, 비사업자는 원천징수로 구분해 처리합니다. 지급액은 실제 지급일(한국 시간) 기준입니다.</p>
           </div>
+          <label className="compact-field">
+            <span>연도</span>
+            <select value={year} onChange={(e) => setYear(e.target.value)} aria-label="집계 연도">
+              {Array.from({ length: 5 }, (_, i) => String(new Date(Date.now() + 9 * 3600000).getUTCFullYear() - i)).map((y) => (
+                <option key={y} value={y}>
+                  {y}년
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             className="secondary compact"
             disabled={!creators.length}
@@ -842,7 +861,21 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
           e.preventDefault();
           setBusy(true);
           try {
-            await api('/admin/settings', 'PUT', form);
+            // 이 화면이 다루는 항목만 보냅니다. 전체를 보내면 다른 탭(AI·라마·핑 정책)에서 그사이 바꾼 값이
+            // 이 화면을 연 시점의 값으로 되돌아갈 수 있습니다.
+            const keys = [
+              'subscription_price',
+              'subscription_days',
+              'default_free_episodes',
+              'platform_fee_rate',
+              'pg_fee_rate',
+              'settle_hold_days',
+              'payout_min',
+              'withholding_rate',
+              'vat_rate',
+              'payout_notice',
+            ] as const;
+            await api('/admin/settings', 'PUT', Object.fromEntries(keys.map((k) => [k, form[k]])));
             notify('플랫폼 설정을 저장했어요.');
           } catch (err) {
             notify((err as Error).message);

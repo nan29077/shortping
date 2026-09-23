@@ -1,20 +1,25 @@
 import { useEffect, useState } from 'react';
 import { Bot, Loader2, Pause, Play, Rocket, Square } from 'lucide-react';
 import { api, lama, won, type AiModelOption, type AutopilotEstimate, type StudioProjectDetail } from '../api';
-import { ModelPicker, defaultChoices, type Choices } from './parts';
+import { ModelPicker, loadChoices, type Choices } from './parts';
 
 const stageName: Record<string, string> = {
   plan: '기획안',
+  bible: '설정집',
+  season: '시즌 설계',
   cast: '인물 이미지',
   script: '대본',
   board: '스토리보드',
   voice: '대사 음성',
   video: '컷 영상',
+  lipsync: '입 모양',
+  sfx: '효과음',
+  music: '배경음악',
   compose: '회차 합성',
 };
 const statusName = { running: '진행 중', paused: '일시 멈춤', done: '완료', stopped: '멈춤' } as const;
 
-// 자동 제작: 비어 있는 단계만 순서대로 채우고, PD가 정한 최대 라마 안에서만 씁니다.
+// 빠른 제작: 비어 있는 단계만 순서대로 채우고, PD가 정한 최대 라마 안에서만 씁니다.
 export default function AutopilotPanel({
   data,
   models,
@@ -33,19 +38,34 @@ export default function AutopilotPanel({
   const ap = data.autopilot;
   const running = ap?.status === 'running';
   const [open, setOpen] = useState(!compact);
-  const [choices, setChoices] = useState<Choices>((ap?.choices as Choices) || defaultChoices);
+  const [choices, setChoices] = useState<Choices>(() => ({ ...loadChoices(), ...((ap?.choices as Partial<Choices>) || {}) }));
   const [includeVideo, setIncludeVideo] = useState(!!ap?.includeVideo);
+  const has = (c: string) => models.some((m) => m.capability === c);
+  const [extra, setExtra] = useState({
+    includeBible: ap ? !!ap.includeBible : true,
+    includeLipsync: !!ap?.includeLipsync,
+    includeSfx: !!ap?.includeSfx,
+    includeMusic: !!ap?.includeMusic,
+    musicMood: ap?.musicMood || data.project.tone || '',
+  });
+  // 모델이 준비되지 않은 기능은 끄고 보냅니다.
+  const opts = {
+    ...extra,
+    includeLipsync: extra.includeLipsync && includeVideo && has('lipsync'),
+    includeSfx: extra.includeSfx && has('sfx'),
+    includeMusic: extra.includeMusic && has('music'),
+  };
   const [cap, setCap] = useState('');
   const [est, setEst] = useState<AutopilotEstimate | null>(null);
   const [busy, setBusy] = useState(false);
-  const body = () => ({ choices, includeVideo, ...(cap ? { cap: Number(cap) } : {}) });
+  const body = () => ({ choices, includeVideo, ...opts, ...(cap ? { cap: Number(cap) } : {}) });
   // 설정이 바뀌면 예상 비용을 다시 계산합니다.
   useEffect(() => {
     if (!open || running) return;
     let alive = true;
     const t = setTimeout(async () => {
       try {
-        const r = await api<AutopilotEstimate>(`/studio/ai/projects/${data.project.id}/autopilot/estimate`, 'POST', { choices, includeVideo });
+        const r = await api<AutopilotEstimate>(`/studio/ai/projects/${data.project.id}/autopilot/estimate`, 'POST', { choices, includeVideo, ...opts });
         if (alive) setEst(r);
       } catch (e) {
         if (alive) notify((e as Error).message);
@@ -55,14 +75,15 @@ export default function AutopilotPanel({
       alive = false;
       clearTimeout(t);
     };
-  }, [open, running, choices, includeVideo, data.project.id, data.project.updated_at, data.characters.length, data.episodes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, running, choices, includeVideo, JSON.stringify(opts), data.project.id, data.project.updated_at, data.characters.length, data.episodes]);
   const suggested = est ? Math.ceil(est.total * 1.3) + 10 : 0;
   const lacking = !!est && est.wallet.total < Math.min(cap ? Number(cap) : suggested, est.total);
   const start = async () => {
     setBusy(true);
     try {
       await api(`/studio/ai/projects/${data.project.id}/autopilot`, 'POST', body());
-      notify('자동 제작을 시작했어요. 화면을 닫아도 계속 진행돼요.');
+      notify('빠른 제작을 시작했어요. 화면을 닫아도 계속 진행돼요.');
       await reload();
     } catch (e) {
       notify((e as Error).message);
@@ -74,7 +95,7 @@ export default function AutopilotPanel({
     setBusy(true);
     try {
       await api(`/studio/ai/projects/${data.project.id}/autopilot/stop`, 'POST');
-      notify('자동 제작을 멈췄어요.');
+      notify('빠른 제작을 멈췄어요.');
       await reload();
     } catch (e) {
       notify((e as Error).message);
@@ -82,14 +103,21 @@ export default function AutopilotPanel({
       setBusy(false);
     }
   };
-  const stages = Object.keys(stageName).filter((s) => s !== 'video' || ap?.includeVideo);
+  const stages = Object.keys(stageName).filter(
+    (s) =>
+      (!['bible', 'season'].includes(s) || ap?.includeBible) &&
+      (s !== 'video' || ap?.includeVideo) &&
+      (s !== 'lipsync' || (ap?.includeVideo && ap?.includeLipsync)) &&
+      (s !== 'sfx' || ap?.includeSfx) &&
+      (s !== 'music' || ap?.includeMusic),
+  );
   const at = ap ? stages.indexOf(ap.stage) : -1;
   return (
     <section className={'management-panel autopilot-card' + (running ? ' running' : '')}>
       <div className="panel-heading">
         <div>
           <h3>
-            <Bot size={18} /> 자동 제작
+            <Bot size={18} /> 빠른 제작
             {ap && <span className={'status-chip ' + (ap.status === 'running' ? '' : 'neutral')}>{statusName[ap.status]}</span>}
           </h3>
           <p>버튼 한 번으로 기획부터 회차 합성까지 비어 있는 단계만 차례로 채워요. 정한 라마를 넘으면 스스로 멈춰요.</p>
@@ -129,7 +157,7 @@ export default function AutopilotPanel({
       {running ? (
         <div className="form-actions start">
           <button className="secondary" disabled={busy} onClick={() => void stop()}>
-            <Square size={14} /> 자동 제작 멈추기
+            <Square size={14} /> 빠른 제작 멈추기
           </button>
           <small className="muted">대기 중인 작업은 취소하고 라마를 돌려드려요.</small>
         </div>
@@ -137,14 +165,45 @@ export default function AutopilotPanel({
         open && (
           <>
             <div className="picker-bar">
-              {(['text', 'image', 'tts', ...(includeVideo ? ['video'] : [])] as (keyof Choices)[]).map((c) => (
+              {(
+                [
+                  'text',
+                  'image',
+                  'tts',
+                  ...(includeVideo ? ['video'] : []),
+                  ...(opts.includeLipsync ? ['lipsync'] : []),
+                  ...(opts.includeSfx ? ['sfx'] : []),
+                  ...(opts.includeMusic ? ['music'] : []),
+                ] as (keyof Choices)[]
+              ).map((c) => (
                 <ModelPicker key={c} capability={c} models={models} value={choices[c]} onChange={(v) => setChoices({ ...choices, [c]: v })} />
               ))}
             </div>
             <div className="form-columns autopilot-options">
               <label className="inline-check">
+                <input type="checkbox" checked={extra.includeBible} onChange={(e) => setExtra({ ...extra, includeBible: e.target.checked })} />설정집 · 시즌 설계 먼저
+              </label>
+              <label className="inline-check">
                 <input type="checkbox" checked={includeVideo} onChange={(e) => setIncludeVideo(e.target.checked)} />컷 영상까지 만들기 (비용 큼)
               </label>
+              <label className="inline-check" title={has('lipsync') ? '' : '관리자가 모델을 준비하면 쓸 수 있어요'}>
+                <input type="checkbox" checked={opts.includeLipsync} disabled={!has('lipsync') || !includeVideo} onChange={(e) => setExtra({ ...extra, includeLipsync: e.target.checked })} />
+                입 모양 맞추기{has('lipsync') ? '' : ' (준비 중)'}
+              </label>
+              <label className="inline-check">
+                <input type="checkbox" checked={opts.includeSfx} disabled={!has('sfx')} onChange={(e) => setExtra({ ...extra, includeSfx: e.target.checked })} />
+                효과음{has('sfx') ? '' : ' (준비 중)'}
+              </label>
+              <label className="inline-check">
+                <input type="checkbox" checked={opts.includeMusic} disabled={!has('music')} onChange={(e) => setExtra({ ...extra, includeMusic: e.target.checked })} />
+                배경음악{has('music') ? '' : ' (준비 중)'}
+              </label>
+              {opts.includeMusic && (
+                <label>
+                  음악 분위기
+                  <input value={extra.musicMood} maxLength={200} placeholder="예: 설레는 피아노" onChange={(e) => setExtra({ ...extra, musicMood: e.target.value })} />
+                </label>
+              )}
               <label>
                 최대 사용 라마
                 <input type="number" min={1} value={cap} placeholder={suggested ? `추천 ${suggested.toLocaleString('ko-KR')}` : '자동'} onChange={(e) => setCap(e.target.value.replace(/\D/g, ''))} />
@@ -185,7 +244,7 @@ export default function AutopilotPanel({
               ) : (
                 <button className="primary" disabled={busy || !est || !!est.unavailable.length} onClick={() => void start()}>
                   {ap?.status === 'paused' || ap?.status === 'stopped' ? <Play size={15} /> : <Rocket size={15} />}
-                  {ap?.status === 'paused' || ap?.status === 'stopped' ? ' 이어서 자동 제작' : ' 자동 제작 시작'}
+                  {ap?.status === 'paused' || ap?.status === 'stopped' ? ' 이어서 빠른 제작' : ' 빠른 제작 시작'}
                 </button>
               )}
               {ap?.status === 'paused' && (

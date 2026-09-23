@@ -1,0 +1,395 @@
+/* 시청자 화면 보강 스타일. style.css보다 먼저 로드되므로 선택자를 한 단계 더 구체적으로 씁니다. */
+
+/* ── iPhone 노치 등 상단 안전 영역 ───────────────────────── */
+.app-shell > .app-header {
+  box-sizing: content-box;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.watch-page > .watch-top {
+  height: auto;
+  min-height: calc(73px + env(safe-area-inset-top, 0px));
+  padding-top: calc(15px + env(safe-area-inset-top, 0px));
+}
+@media (max-width: 620px) {
+  .watch-page > .video-stage {
+    height: calc(100dvh - 140px - env(safe-area-inset-top, 0px));
+  }
+}
+
+/* ── 잠금(결제) 화면: 작은 화면·가로 화면에서 잘리지 않고 스크롤 ───────── */
+.video-stage > .paywall {
+  box-sizing: border-box;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  /* 넘치면 위쪽부터 보이도록(가운데 정렬 시 위가 잘리는 문제 방지) */
+  margin: auto;
+  align-self: flex-start;
+  scrollbar-width: thin;
+}
+@media (max-height: 700px) {
+  .video-stage > .paywall {
+    padding: 18px 20px;
+  }
+  .video-stage > .paywall > svg {
+    margin-bottom: 12px;
+  }
+  .video-stage > .paywall h2 {
+    font-size: 21px;
+    margin-bottom: 10px;
+  }
+  .video-stage > .paywall p {
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+  .video-stage > .paywall small {
+    margin-top: 12px;
+  }
+}
+
+/* ── 자동 재생이 막혔을 때 크게 누르는 재생 버튼 ───────────────── */
+.video-stage > .viewer-play-overlay {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #0b120ecc;
+  border: 1px solid #c4f56266;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  z-index: 3;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 10px 40px #0008;
+}
+.viewer-play-overlay > span {
+  color: var(--lime);
+  display: flex;
+}
+.viewer-play-overlay > span svg {
+  margin-left: 4px;
+}
+.video-stage > .video-error {
+  z-index: 4;
+}
+
+/* ── 자막 스타일(작품 설정) ───────────────────────────── */
+.video-stage.sub-size-s video::cue {
+  font-size: 70%;
+}
+.video-stage.sub-size-m video::cue {
+  font-size: 100%;
+}
+.video-stage.sub-size-l video::cue {
+  font-size: 130%;
+}
+.video-stage.sub-size-xl video::cue {
+  font-size: 160%;
+}
+.video-stage.sub-bg-none video::cue {
+  background: transparent;
+  text-shadow: none;
+}
+.video-stage.sub-bg-box video::cue {
+  background: rgba(0, 0, 0, 0.72);
+  text-shadow: none;
+}
+.video-stage.sub-bg-shadow video::cue {
+  background: transparent;
+  text-shadow:
+    0 0 4px #000,
+    0 2px 3px #000,
+    0 0 1px #000;
+}
+
+/* ── 해시태그 ────────────────────────────────────── */
+.viewer-hashtags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 16px 0 -4px;
+}
+.viewer-hashtags > button {
+  font-size: 11px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid #33473a;
+  background: #1a2320;
+  color: #cfe8b2;
+}
+.viewer-hashtags > button:hover {
+  border-color: var(--lime);
+  color: var(--lime);
+}
+
+/* ── 예고편 ─────────────────────────────────────── */
+.detail-actions > .viewer-trailer-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.modal.viewer-trailer-modal {
+  width: 440px;
+  padding: 20px;
+}
+.viewer-trailer {
+  position: relative;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.viewer-trailer video {
+  display: block;
+  width: 100%;
+  max-height: 70dvh;
+  background: #000;
+}
+.viewer-trailer-sound {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: #000a;
+  color: #fff;
+  font-size: 11px;
+}
+.viewer-trailer-error {
+  padding: 50px 20px;
+  text-align: center;
+  color: #9caf9e;
+  font-size: 12px;
+}
+
+/* ── 회차 썸네일 · 공개 상태 ───────────────────────────── */
+.episode-grid.with-thumbs {
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+}
+.episode-grid > button.has-thumb {
+  min-height: 0;
+  aspect-ratio: 9 / 12;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+}
+.episode-grid > button > .episode-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.72);
+}
+.episode-grid > button.locked > .episode-thumb {
+  filter: brightness(0.4) grayscale(0.4);
+}
+.episode-grid > button.has-thumb > span {
+  position: relative;
+  margin: 0 0 7px 9px;
+  font-size: 15px;
+  font-weight: 800;
+  text-shadow: 0 1px 4px #000;
+  color: #fff;
+}
+.episode-grid > button.has-thumb svg {
+  color: #fff;
+}
+.episode-grid > button > .episode-status {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  right: 4px;
+  font-style: normal;
+  font-size: 9px;
+  line-height: 1.3;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: #3a3320;
+  color: #f5d77a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.episode-grid > button > .episode-status.scheduled {
+  background: #1f3040;
+  color: #9fd2ff;
+}
+.episode-grid > button > .episode-status.rejected {
+  background: #3d2020;
+  color: #ff9b9b;
+}
+.episode-grid > button > .episode-status.draft {
+  background: #2a2f33;
+  color: #c3ccd1;
+}
+.episode-grid > button.unreleased:not(.has-thumb) {
+  padding-top: 16px;
+  border-style: dashed;
+}
+
+/* ── 알림 종 ─────────────────────────────────────── */
+.viewer-bell {
+  position: relative;
+  display: inline-flex;
+}
+.viewer-bell > .viewer-bell-button {
+  position: relative;
+  min-height: 34px;
+  min-width: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.viewer-bell-badge {
+  position: absolute;
+  top: 0;
+  right: -7px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--lime);
+  color: #111519;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 17px;
+  text-align: center;
+  box-sizing: border-box;
+}
+.viewer-bell-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: -12px;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(460px, 70dvh);
+  overflow-y: auto;
+  background: #171d22;
+  border: 1px solid #39423e;
+  border-radius: 14px;
+  box-shadow: 0 16px 60px #000a;
+  z-index: 90;
+  text-align: left;
+}
+/* 헤더에서는 헤더 오른쪽 끝, 사이드바에서는 계정 카드 폭에 맞춰 펼칩니다(화면 밖으로 잘리지 않게). */
+/* (다른 화면에서 쓰면 종 버튼 기준 오른쪽 정렬) */
+.app-shell > .app-header .viewer-bell,
+.rail-account-card .viewer-bell {
+  position: static;
+}
+.app-shell > .app-header .viewer-bell-panel {
+  top: calc(100% - 4px);
+  right: 12px;
+}
+.rail-account-card {
+  position: relative;
+}
+.rail-account-card .viewer-bell-panel {
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  width: auto;
+}
+.viewer-bell-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: #171d22;
+  border-bottom: 1px solid #2a3330;
+}
+.viewer-bell-head strong {
+  font-size: 14px;
+}
+.viewer-bell-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--lime);
+}
+.viewer-bell-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.viewer-bell-list li + li {
+  border-top: 1px solid #232b28;
+}
+.viewer-bell-list button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 13px 16px;
+  text-align: left;
+  color: #9aa89f;
+}
+.viewer-bell-list button:hover {
+  background: #1d2529;
+}
+.viewer-bell-list button.unread {
+  color: #eef3ea;
+  background: #1a2320;
+}
+.viewer-bell-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.viewer-bell-title > i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lime);
+}
+.viewer-bell-body {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8f9d94;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.viewer-bell-list time {
+  font-size: 10px;
+  color: #6d7c73;
+}
+.viewer-bell-empty {
+  padding: 30px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #8b9b90;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── 핑 화면 · 불러오기 실패 ─────────────────────────── */
+.viewer-retry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}

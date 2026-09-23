@@ -1,4 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { apiUrl, authHeaders, fetchCredentials } from './platform';
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -31,15 +32,24 @@ import {
   Zap,
   MessageCircle,
   Radio,
+  Star,
+  Megaphone,
 } from 'lucide-react';
 import {
   api,
   ApiError,
   count,
   defaultHomeAppearance,
+  defaultHomeLayout,
+  defaultHomeStyle,
+  type CopyKey,
+  type HomeLayout,
   emptyLibrary,
+  lama,
   orderKindLabel,
   pings,
+  SESSION_EXPIRED_EVENT,
+  uuid,
   won,
   type Detail,
   type Drama,
@@ -49,6 +59,7 @@ import {
   type Role,
   type User,
 } from './api';
+import { asset } from './platform';
 // 관리 화면(스튜디오·관리자·AI 제작)은 시청자에게 필요 없으므로 필요할 때만 불러옵니다.
 const Studio = lazy(() => import('./Studio'));
 import {
@@ -60,6 +71,9 @@ import {
 import Support from './Support';
 import AccountSettings, { Avatar } from './AccountSettings';
 import PingsPage from './Pings';
+import NotificationBell from './viewer/NotificationBell';
+import TrailerModal from './viewer/TrailerModal';
+import './viewer/viewer.css';
 
 type Route = { page: string; id?: string; episode?: number };
 // 결제 대상: 숏핑 패스(원화 구독) 또는 핑으로 열기(회차 한 편 / episode 없으면 작품 전체).
@@ -72,8 +86,137 @@ const readRoute = (): Route => {
   const p = location.hash.replace('#', '').split('/').filter(Boolean);
   return { page: p[0] || 'home', id: p[1], episode: Number(p[2]) || 1 };
 };
-export const navigate = (page: string) => {
+// ── 앱 안 이동 기록 ─────────────────────────────────────────────
+// 각 기록 항목의 history.state에 앱 안에서 몇 번째 화면인지(spIdx)와 직전 화면(spPrev)을 남깁니다.
+// 앱 안의 ‘뒤로’ 버튼은 이 값으로 브라우저 뒤로 가기를 쓸지, 상위 화면으로 대체 이동할지 정합니다.
+type NavState = { spIdx: number; spPrev?: string };
+const currentHash = () => location.hash.replace(/^#\/?/, '');
+const readNavState = (): NavState | null => {
+  const s = history.state as NavState | null;
+  return s && typeof s.spIdx === 'number' ? s : null;
+};
+let navIdx = readNavState()?.spIdx ?? 0;
+let lastHash = currentHash();
+if (!readNavState()) history.replaceState({ ...(history.state || {}), spIdx: navIdx }, '');
+window.addEventListener('hashchange', () => {
+  const s = readNavState();
+  if (s) navIdx = s.spIdx; // 뒤로·앞으로 이동이거나 replace로 바꾼 항목
+  else {
+    // 새로 쌓인 항목(링크·navigate·주소창 입력)
+    navIdx += 1;
+    history.replaceState({ ...(history.state || {}), spIdx: navIdx, spPrev: lastHash }, '');
+  }
+  lastHash = currentHash();
+});
+export const navigate = (page: string, opts: { replace?: boolean } = {}) => {
+  if (opts.replace) {
+    // 현재 기록 항목을 바꿉니다(회차 이동 등). 뒤로 가기가 회차마다 쌓이지 않습니다.
+    const prev = readNavState();
+    history.replaceState({ spIdx: navIdx, spPrev: prev?.spPrev }, '', '#/' + page);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    return;
+  }
   location.hash = '/' + page;
+};
+// 앱 안에서 들어온 화면이면 브라우저 뒤로 가기를, 바로 들어온 화면(딥링크)이면 상위 화면으로 이동합니다.
+export const goBack = (fallback: string) => {
+  if (navIdx > 0) history.back();
+  else navigate(fallback, { replace: true });
+};
+// 직전 화면이 정확히 target일 때만 뒤로 가기를 쓰고, 아니면 target으로 현재 항목을 바꿉니다.
+export const backTo = (target: string) => {
+  if (navIdx > 0 && readNavState()?.spPrev === target) history.back();
+  else navigate(target, { replace: true });
+};
+// 로그인 후 돌아올 곳. 앱 안의 해시 경로만 허용합니다.
+const safeNext = (s?: string) => {
+  if (!s) return '';
+  try {
+    const v = decodeURIComponent(s);
+    return /^[a-z][\w\-/]*$/i.test(v) && !/^login\b/.test(v) ? v : '';
+  } catch {
+    return '';
+  }
+};
+export const loginWithReturn = (next?: string) => {
+  const target = next ?? currentHash();
+  navigate('login' + (target && !/^login\b/.test(target) ? '/' + encodeURIComponent(target) : ''));
+};
+// 썸네일 A/B: 카드에서 작품을 열면 어떤 후보 이미지를 보고 눌렀는지 한 번만 서버에 알립니다.
+const THUMB_KEY = 'sp:thumb:';
+const rememberThumb = (d: ViewerDrama) => {
+  if (!d.thumb_id) return;
+  try {
+    sessionStorage.setItem(THUMB_KEY + d.id, d.thumb_id);
+  } catch {
+    /* 저장소를 못 쓰면 집계만 빠집니다. */
+  }
+};
+const consumeThumb = (id: string) => {
+  try {
+    const t = sessionStorage.getItem(THUMB_KEY + id);
+    if (t) sessionStorage.removeItem(THUMB_KEY + id);
+    return t || '';
+  } catch {
+    return '';
+  }
+};
+// 다음 회차 자동 재생 표시. 끝난 회차에서 넘어온 경우에만(1분 이내) 새 회차를 바로 재생합니다.
+const AUTOPLAY_KEY = 'sp:autoplay';
+const markAutoplay = (id: string, n: number) => {
+  try {
+    sessionStorage.setItem(AUTOPLAY_KEY, JSON.stringify({ key: `${id}/${n}`, at: Date.now() }));
+  } catch {
+    /* 자동 재생 표시를 못 남기면 일시정지 상태로 열립니다. */
+  }
+};
+const takeAutoplay = (id: string, n: number) => {
+  try {
+    const raw = sessionStorage.getItem(AUTOPLAY_KEY);
+    if (!raw) return false;
+    const v = JSON.parse(raw) as { key: string; at: number };
+    if (v.key !== `${id}/${n}`) return false;
+    sessionStorage.removeItem(AUTOPLAY_KEY);
+    return Date.now() - v.at < 60000;
+  } catch {
+    return false;
+  }
+};
+// 서버가 새로 내려 주는 필드(api.ts 타입에 아직 없는 것)
+type ViewerDrama = Drama & {
+  thumb_id?: string;
+  hashtags?: string;
+  trailer?: string;
+  subtitle_style?: string;
+};
+type ViewerEpisode = Detail['episodes'][number] & {
+  thumbnail?: string;
+  review_status?: 'approved' | 'draft' | 'pending' | 'rejected' | 'scheduled';
+  publish_at?: string | null;
+};
+type ViewerDetail = Omit<Detail, 'episodes'> &
+  Omit<ViewerDrama, keyof Drama> & { episodes: ViewerEpisode[] };
+const tagsOf = (d: { hashtags?: string }) =>
+  (d.hashtags || '')
+    .split(',')
+    .map((t) => t.trim().replace(/^#+/, ''))
+    .filter(Boolean);
+const reviewLabel: Record<string, string> = {
+  draft: '작성 중',
+  pending: '검수 대기',
+  rejected: '반려',
+  scheduled: '예약 공개',
+};
+const subtitleClass = (raw?: string) => {
+  if (!raw) return '';
+  try {
+    const s = JSON.parse(raw) as { size?: string; background?: string };
+    const size = ['s', 'm', 'l', 'xl'].includes(s.size || '') ? s.size : '';
+    const bg = ['none', 'box', 'shadow'].includes(s.background || '') ? s.background : '';
+    return [size && 'sub-size-' + size, bg && 'sub-bg-' + bg].filter(Boolean).join(' ');
+  } catch {
+    return '';
+  }
 };
 const genres = ['전체', '로맨스', '스릴러', '판타지', '코미디', '청춘'];
 const roleLabel = { admin: '슈퍼관리자', pd: '업로더 · PD', viewer: '시청자' };
@@ -91,11 +234,17 @@ export function Poster({ d, rank, onClick }: { d: Drama; rank?: number; onClick?
   return (
     <button
       className="poster-card"
-      onClick={onClick || (() => navigate('drama/' + d.id))}
+      onClick={
+        onClick ||
+        (() => {
+          rememberThumb(d);
+          navigate('drama/' + d.id);
+        })
+      }
       aria-label={d.title + ' 작품 보기'}
     >
       <div className="poster">
-        <img src={d.image} alt={d.title + ' 드라마 포스터'} loading="lazy" />
+        <img src={asset(d.image)} alt={d.title + ' 드라마 포스터'} loading="lazy" />
         <span className={'badge ' + (d.badge === 'NEW' ? 'new' : '')}>{d.badge}</span>
         <span className="poster-wordmark">SHORTPING ORIGINAL</span>
         <div className={'poster-title art-' + d.id}>{d.title}</div>
@@ -121,6 +270,7 @@ export default function App() {
       androidUrl: null as string | null,
       iosUrl: null as string | null,
       homeAppearance: defaultHomeAppearance,
+      homeLayout: defaultHomeLayout as HomeLayout,
       subscriptionPrice: 7900,
       subscriptionDays: 30,
       defaultFreeEpisodes: 3,
@@ -144,8 +294,9 @@ export default function App() {
   const reloadLibrary = useCallback(async () => {
     try {
       setLib(await api<Library>('/library'));
-    } catch {
-      setLib(emptyLibrary);
+    } catch (e) {
+      // 일시적인 네트워크 오류로 찜·지갑이 사라져 보이지 않게, 로그인이 풀린 경우에만 비웁니다.
+      if ((e as ApiError).code === 'unauthorized') setLib(emptyLibrary);
     }
   }, []);
   const reloadCatalog = useCallback(async () => setDramas(await api<Drama[]>('/dramas')), []);
@@ -163,19 +314,38 @@ export default function App() {
       api<Drama[]>('/dramas'),
       api<Channel[]>('/channels').catch(() => [] as Channel[]),
     ])
-      .then(([u, c, d, ch]) => {
+      .then(async ([u, c, d, ch]) => {
         setUser(u.user);
-        setConfig(c);
+        setConfig((cur) => ({ ...cur, ...c, homeLayout: c.homeLayout || defaultHomeLayout }));
         setDramas(d);
         setChannels(ch);
-        if (u.user) void reloadLibrary();
+        // 라이브러리(시청 기록·주문)까지 받은 뒤 화면을 열어야 딥링크 진입 시 이어보기가 동작합니다.
+        if (u.user) await reloadLibrary();
       })
       .catch((e) => setLoadError(e.message))
       .finally(() => setReady(true));
   }, [reloadLibrary]);
   useEffect(() => {
+    // 다른 기기에서 로그아웃하거나 비밀번호를 바꿔 세션이 끝나면 로그인 화면으로 보냅니다.
     const fn = () => {
-      setRoute(readRoute());
+      setUser((current) => {
+        if (current) {
+          setLib(emptyLibrary);
+          setToast('로그인이 만료되었어요. 다시 로그인해 주세요.');
+          loginWithReturn();
+        }
+        return null;
+      });
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, fn);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, fn);
+  }, []);
+  useEffect(() => {
+    const fn = () => {
+      const next = readRoute();
+      setRoute(next);
+      // 검색어는 검색·탐색 화면에서만 유효합니다. 홈으로 돌아오면 피드가 검색어로 걸러지지 않게 합니다.
+      if (!['search', 'explore'].includes(next.page)) setQuery('');
       window.scrollTo({ top: 0, behavior: 'instant' });
     };
     window.addEventListener('hashchange', fn);
@@ -186,11 +356,19 @@ export default function App() {
     const t = setTimeout(() => setToast(''), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+  // 추천 배너 자동 넘김: 관리자 설정(0 = 기본 6.5초, -1 = 끄기, 그 밖은 초)
+  const heroSetting = config.homeLayout?.hero || defaultHomeLayout.hero;
+  const heroCount =
+    heroSetting.mode === 'manual' && heroSetting.ids.some((id) => dramas.some((d) => d.id === id))
+      ? heroSetting.ids.filter((id) => dramas.some((d) => d.id === id)).length
+      : Math.min(3, dramas.length);
   useEffect(() => {
-    if (route.page !== 'home') return;
-    const t = setInterval(() => setHeroIndex((i) => (i + 1) % 3), 6500);
+    const n = heroCount;
+    const every = heroSetting.interval > 0 ? heroSetting.interval * 1000 : 6500;
+    if (route.page !== 'home' || n < 2 || heroSetting.interval < 0) return;
+    const t = setInterval(() => setHeroIndex((i) => (i + 1) % n), every);
     return () => clearInterval(t);
-  }, [route.page]);
+  }, [route.page, heroCount, heroSetting.interval]);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -207,7 +385,9 @@ export default function App() {
       const r = await api<{ user: User }>('/auth/demo', 'POST', { role });
       setUser(r.user);
       await reloadLibrary();
-      navigate(role === 'viewer' ? 'home' : 'studio');
+      const next = safeNext(readRoute().page === 'login' ? readRoute().id : '');
+      if (next) backTo(next);
+      else navigate(role === 'viewer' ? 'home' : 'studio');
       notify(roleLabel[role] + '로 로그인했어요.');
     } catch (e) {
       notify((e as Error).message);
@@ -228,7 +408,7 @@ export default function App() {
   };
   const favorite = async (d: Drama) => {
     if (!user) {
-      navigate('login');
+      loginWithReturn();
       return;
     }
     try {
@@ -242,7 +422,8 @@ export default function App() {
   };
   const buy = (d: Purchase) => {
     if (!user) {
-      navigate('login');
+      // 로그인 후 보던 회차(또는 작품)로 돌아옵니다.
+      loginWithReturn();
       return;
     }
     setCheckout(d);
@@ -265,7 +446,7 @@ export default function App() {
       if (checkout === 'subscription') {
         await api('/checkout', 'POST', {
           kind: 'subscription',
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: uuid(),
         });
         await reloadLibrary();
         setCheckout(null);
@@ -278,7 +459,7 @@ export default function App() {
             dramaId: checkout.drama.id,
             episode: checkout.episode,
             all: !checkout.episode,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: uuid(),
           },
         );
         await reloadLibrary();
@@ -309,11 +490,30 @@ export default function App() {
         '숏핑의 Android · iOS 앱은 출시 준비 중이에요. 지금은 모바일 브라우저에서 이용할 수 있고, 브라우저 메뉴의 ‘홈 화면에 추가’로 더 편하게 만나보세요.',
       );
   };
-  const hero = dramas.find((d) => d.id === ['midnight', 'spring', 'moon'][heroIndex]) || dramas[0];
+  // 히어로 배너는 조회수 상위 3편(서버가 views 순으로 정렬해 줌). 시드 작품 ID에 의존하지 않습니다.
+  // 관리자가 '직접 편성'으로 고른 작품이 있으면 그 순서대로, 없으면 조회수 상위 3편
+  const homeLayout = config.homeLayout || defaultHomeLayout;
+  const pickedHeroes =
+    homeLayout.hero.mode === 'manual'
+      ? homeLayout.hero.ids.map((id) => dramas.find((d) => d.id === id)).filter((d): d is Drama => !!d)
+      : [];
+  const heroes = pickedHeroes.length ? pickedHeroes : dramas.slice(0, 3);
+  const heroPos = heroIndex % Math.max(1, heroes.length);
+  // 관리자가 정한 링크 열기: https 주소는 새 창, 그 밖은 앱 안 화면(예: membership, drama/작품ID)
+  const openHomeLink = (link: string) => {
+    if (/^https:\/\//.test(link)) window.open(link, '_blank', 'noopener,noreferrer');
+    else if (link) navigate(link.replace(/^#?\/?/, ''));
+  };
+  const hero = heroes[heroPos] || dramas[0];
+  // 해시태그로도 찾을 수 있게 합니다. ‘#로맨스’처럼 #을 붙여 입력해도 됩니다.
+  const needle = query.trim().toLowerCase().replace(/^#+/, '');
   const filtered = dramas.filter(
     (d) =>
       (genre === '전체' || d.genre === genre) &&
-      (!query || `${d.title} ${d.genre} ${d.tagline}`.includes(query)),
+      (!needle ||
+        `${d.title} ${d.genre} ${d.tagline} ${tagsOf(d as ViewerDrama).join(' ')}`
+          .toLowerCase()
+          .includes(needle)),
   );
   const feedItems =
     feed === '신작'
@@ -326,7 +526,8 @@ export default function App() {
       new Date(b.published_at || b.created_at).getTime() -
       new Date(a.published_at || a.created_at).getTime(),
   );
-  const freePicks = dramas.filter((d) => !!d.free || d.free_episodes >= 5);
+  // 무료 추천: 전 회차 무료이거나 기본 무료 회차보다 더 많이 풀어 둔 작품
+  const freePicks = dramas.filter((d) => !!d.free || d.free_episodes > config.defaultFreeEpisodes);
   const featuredChannels = channels.filter((c) => c.featured);
   const followedChannels = channels.filter((c) => lib.channels.includes(c.id));
   const activeNav =
@@ -338,8 +539,19 @@ export default function App() {
           ? 'channels'
           : route.page;
   const managing = route.page === 'studio' && !!user && user.role !== 'viewer';
+  // PC 여백: 관리자가 정한 배경 사진·초점·어둡기와 카피 글자 색을 CSS 변수로 넘깁니다(빈 값이면 기본 색).
+  const homeStyle = { ...defaultHomeStyle, ...(config.homeAppearance.style || {}) };
+  const copyColor = (k: CopyKey) => (homeStyle.colors?.[k] ? { [`--copy-${k}`]: homeStyle.colors[k] } : {});
   const siteStyle = {
-    '--home-wallpaper': `url("${config.homeAppearance.image}")`,
+    '--home-wallpaper': `url("${asset(config.homeAppearance.image)}")`,
+    '--home-focus': homeStyle.focus,
+    '--home-shade': String(Math.min(80, Math.max(0, Number(homeStyle.shade) || 0)) / 100),
+    ...copyColor('eyebrow'),
+    ...copyColor('headline'),
+    ...copyColor('highlight'),
+    ...copyColor('description'),
+    ...copyColor('caption'),
+    ...copyColor('copyright'),
   } as CSSProperties;
   return (
     <div className={managing ? 'site-layout management-layout' : 'site-layout'} style={siteStyle}>
@@ -349,7 +561,7 @@ export default function App() {
         <a href="#/home" className="rail-brand">
           <Brand />
         </a>
-        <div className="rail-copy">
+        <div className={`rail-copy copy-${homeStyle.size}${homeStyle.box ? ' boxed' : ''}${homeStyle.shadow ? '' : ' no-shadow'}`}>
           <span className="eyebrow">
             <span /> {config.homeAppearance.eyebrow}
           </span>
@@ -380,7 +592,7 @@ export default function App() {
           </span>
           <span className="art-spark">✳</span>
         </div>
-        <div className="rail-caption">
+        <div className={'rail-caption' + (homeStyle.shadow ? '' : ' no-shadow')}>
           <span className="green-dot" /> {config.homeAppearance.caption}
         </div>
         <small className="rail-copyright">{config.homeAppearance.copyright}</small>
@@ -398,19 +610,23 @@ export default function App() {
               <button aria-label="검색" onClick={() => navigate('search')}>
                 <Search size={21} />
               </button>
-              <button
-                className="notification-button"
-                aria-label="알림"
-                onClick={() =>
-                  info(
-                    '숏핑에서 온 소식',
-                    '숏핑에 오신 것을 환영해요! 모든 작품의 첫 3개 회차를 무료로 만나보세요. 새로운 이야기가 매일 당신을 기다립니다.',
-                  )
-                }
-              >
-                <Bell size={20} />
-                <i />
-              </button>
+              {user ? (
+                <NotificationBell key={user.id} />
+              ) : (
+                <button
+                  className="notification-button"
+                  aria-label="알림"
+                  onClick={() =>
+                    info(
+                      '숏핑에서 온 소식',
+                      `숏핑에 오신 것을 환영해요! 작품마다 첫 ${config.defaultFreeEpisodes}개 회차 안팎을 무료로 만나보세요. 새로운 이야기가 매일 당신을 기다립니다.`,
+                    )
+                  }
+                >
+                  <Bell size={20} />
+                  <i />
+                </button>
+              )}
               {user && (
                 <button
                   className="wallet-chip"
@@ -449,6 +665,17 @@ export default function App() {
           <>
             {route.page === 'home' && (
               <>
+                {homeLayout.notice && (
+                  <button
+                    type="button"
+                    className={'home-notice tone-' + homeLayout.notice.tone + (homeLayout.notice.link ? '' : ' static')}
+                    onClick={() => homeLayout.notice?.link && openHomeLink(homeLayout.notice.link)}
+                  >
+                    <Megaphone size={15} />
+                    <span>{homeLayout.notice.text}</span>
+                    {homeLayout.notice.link && <ChevronRight size={15} />}
+                  </button>
+                )}
                 <nav className="feed-tabs">
                   <a className="desktop-feed-brand" href="#/home" aria-label="숏핑 홈">
                     <Brand small />
@@ -457,6 +684,7 @@ export default function App() {
                     <button
                       key={t}
                       className={feed === t ? 'active' : ''}
+                      aria-pressed={feed === t}
                       onClick={() => {
                         setFeed(t);
                         setGenre('전체');
@@ -474,7 +702,7 @@ export default function App() {
                   <section className={'hero hero-' + hero.id} key={hero.id}>
                     <img
                       className="hero-image"
-                      src={hero.image}
+                      src={asset(hero.image)}
                       alt={hero.title + ' 메인 포스터'}
                     />
                     <div className="hero-shade" />
@@ -485,15 +713,15 @@ export default function App() {
                       <span className="hero-age">15</span>
                     </div>
                     <div className="hero-content">
-                      <span className="hero-kicker">오늘의 발견 · 숏핑 독점 공개</span>
+                      <span className="hero-kicker">{homeLayout.hero.kicker || '오늘의 발견 · 숏핑 독점 공개'}</span>
                       <p>{hero.tagline}</p>
                       <h2>{hero.title}</h2>
                       <div className="hero-meta">
                         <span>{hero.genre}</span>
                         <i />
-                        12부작
+                        {hero.episode_count ? `${hero.episode_count}부작` : '연재 중'}
                         <i />
-                        <span>첫 3화 무료</span>
+                        <span>{hero.free ? '전 회차 무료' : `첫 ${hero.free_episodes}화 무료`}</span>
                       </div>
                       <div className="hero-actions">
                         <button
@@ -507,6 +735,7 @@ export default function App() {
                             'hero-save ' + (lib.favorites.includes(hero.id) ? 'saved' : '')
                           }
                           aria-label="메인 작품 찜하기"
+                          aria-pressed={lib.favorites.includes(hero.id)}
                           onClick={() => favorite(hero)}
                         >
                           {lib.favorites.includes(hero.id) ? (
@@ -519,21 +748,22 @@ export default function App() {
                     </div>
                     <div className="hero-pagination">
                       <div>
-                        {[0, 1, 2].map((i) => (
+                        {heroes.map((_, i) => (
                           <button
-                            className={heroIndex === i ? 'active' : ''}
+                            className={heroPos === i ? 'active' : ''}
                             aria-label={`추천 작품 ${i + 1}`}
+                            aria-current={heroPos === i ? 'true' : undefined}
                             key={i}
                             onClick={() => setHeroIndex(i)}
                           />
                         ))}
                       </div>
                       <span>
-                        0{heroIndex + 1}
-                        <i>/ 03</i>
+                        {String(heroPos + 1).padStart(2, '0')}
+                        <i>/ {String(heroes.length).padStart(2, '0')}</i>
                         <button
                           aria-label="다음 추천 작품"
-                          onClick={() => setHeroIndex((heroIndex + 1) % 3)}
+                          onClick={() => setHeroIndex((heroPos + 1) % Math.max(1, heroes.length))}
                         >
                           <ChevronRight size={15} />
                         </button>
@@ -545,6 +775,7 @@ export default function App() {
                   {genres.map((g) => (
                     <button
                       className={genre === g ? 'active' : ''}
+                      aria-pressed={genre === g}
                       key={g}
                       onClick={() => setGenre(g)}
                     >
@@ -552,122 +783,152 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                {lib.history.length > 0 && feed === '추천' && genre === '전체' && (
-                  <section className="continue-section">
-                    <SectionTitle title="멈춘 곳부터, 이어보기" />
-                    <div className="continue-row">
-                      {lib.history.slice(0, 3).map((h) => {
-                        const d = dramas.find((x) => x.id === h.drama_id);
-                        return d ? (
-                          <button
-                            key={d.id}
-                            className="continue-card"
-                            onClick={() => navigate('watch/' + d.id + '/' + h.episode)}
-                          >
-                            <img src={d.image} alt="" />
-                            <div>
-                              <strong>{d.title}</strong>
-                              <span>{h.episode}화 이어보기</span>
-                            </div>
-                            <CirclePlay size={25} />
-                          </button>
-                        ) : null;
-                      })}
-                    </div>
-                  </section>
-                )}
-                {channels.length > 0 && feed === '추천' && genre === '전체' && (
-                  <section className="content-section">
-                    <SectionTitle
-                      title="지금 주목할 방송국"
-                      subtitle="PD가 직접 운영하는 방송국에서 골라 보기"
-                      eyebrow="SHORTPING CHANNELS"
-                      icon={<Radio size={19} className="lime" />}
-                      onMore={() => navigate('channels')}
-                    />
-                    <FeaturedChannels
-                      channels={featuredChannels.length ? featuredChannels : channels}
-                    />
-                  </section>
-                )}
-                <section className="content-section">
-                  <SectionTitle
-                    title={
-                      feed === '신작'
-                        ? '새로운 이야기, 새로운 설렘'
-                        : feed === '완결'
-                          ? '기다림 없이, 정주행'
-                          : genre !== '전체'
-                            ? genre + '에 빠져볼 시간'
-                            : '지금 가장 핫한 숏핑'
-                    }
-                    eyebrow={feed === '추천' ? 'TRENDING NOW' : undefined}
-                    icon={<Flame size={21} className="lime" />}
-                    onMore={() => navigate('explore')}
-                  />
-                  <div className="poster-grid">
-                    {feedItems.slice(0, 4).map((d, i) => (
-                      <Poster
-                        key={d.id}
-                        d={d}
-                        rank={feed === '추천' || feed === '인기' ? i + 1 : undefined}
-                      />
-                    ))}
-                  </div>
-                  {feedItems.length === 0 && (
-                    <Empty
-                      title="새로운 이야기를 준비 중이에요"
-                      text="다른 장르의 작품도 만나보세요."
-                    />
-                  )}
-                </section>
-                <button className="membership-banner" onClick={() => navigate('membership')}>
-                  <div className="banner-icon">
-                    <Crown size={24} />
-                  </div>
-                  <div>
-                    <span>취향껏, 마음껏, 끊김 없이.</span>
-                    <strong>숏핑 패스로 모든 이야기를 만나세요</strong>
-                  </div>
-                  <ChevronRight size={21} />
-                  <span className="banner-orbit" />
-                </button>
-                <section className="content-section">
-                  <SectionTitle
-                    title={genre === '전체' ? '오늘부터 정주행 각' : '이런 이야기는 어때요?'}
-                    subtitle="한 번 시작하면 멈출 수 없는 이야기"
-                    onMore={() => navigate('explore')}
-                  />
-                  <div className="poster-grid">
-                    {(genre === '전체'
-                      ? dramas.slice(4, 8)
-                      : dramas.filter((d) => d.genre !== genre).slice(0, 4)
-                    ).map((d) => (
-                      <Poster key={d.id} d={d} />
-                    ))}
-                  </div>
-                </section>
-                {feed === '추천' && genre === '전체' && (
-                  <>
-                    <section className="content-section">
-                      <SectionTitle
-                        title="새로 올라온 이야기"
-                        subtitle="가장 최근 공개된 숏핑 오리지널"
-                        eyebrow="JUST ARRIVED"
-                        icon={<Sparkles size={19} className="lime" />}
-                        onMore={() => setFeed('신작')}
-                      />
-                      <div className="poster-row">
-                        {newest.slice(0, 6).map((d) => (
-                          <Poster key={d.id} d={d} />
-                        ))}
-                      </div>
-                    </section>
-                    {freePicks.length > 0 && (
+                {homeLayout.sections.map((sec) => {
+                  // 기본 화면(추천 · 전체)에서만 관리자 편성(숨김 · 제목)을 적용하고,
+                  // 장르 · 탭을 고른 결과 목록은 항상 보여 줍니다.
+                  const home = feed === '추천' && genre === '전체';
+                  if (!sec.visible && (home || sec.id !== 'trending')) return null;
+                  const title = (fallback: string) => (home && sec.title) || fallback;
+                  const subtitle = (fallback?: string) => (home && sec.subtitle) || fallback;
+                  let node: React.ReactNode = null;
+                  if (sec.id === 'continue' && home && lib.history.length > 0)
+                    node = (
+                      <section className="continue-section">
+                        <SectionTitle title={title('멈춘 곳부터, 이어보기')} subtitle={subtitle()} />
+                        <div className="continue-row">
+                          {lib.history.slice(0, 3).map((h) => {
+                            const d = dramas.find((x) => x.id === h.drama_id);
+                            return d ? (
+                              <button
+                                key={d.id}
+                                className="continue-card"
+                                onClick={() => navigate('watch/' + d.id + '/' + h.episode)}
+                              >
+                                <img src={asset(d.image)} alt="" />
+                                <div>
+                                  <strong>{d.title}</strong>
+                                  <span>{h.episode}화 이어보기</span>
+                                </div>
+                                <CirclePlay size={25} />
+                              </button>
+                            ) : null;
+                          })}
+                        </div>
+                      </section>
+                    );
+                  else if (sec.id === 'curated' && home) {
+                    const picks = homeLayout.curated.ids
+                      .map((id) => dramas.find((d) => d.id === id))
+                      .filter((d): d is Drama => !!d);
+                    if (picks.length)
+                      node = (
+                        <section className="content-section">
+                          <SectionTitle
+                            title={title('에디터가 고른 이야기')}
+                            subtitle={subtitle('숏핑 에디터가 직접 골랐어요')}
+                            eyebrow="EDITOR'S PICK"
+                            icon={<Star size={19} className="lime" />}
+                          />
+                          <div className="poster-row">
+                            {picks.map((d) => (
+                              <Poster key={d.id} d={d} />
+                            ))}
+                          </div>
+                        </section>
+                      );
+                  } else if (sec.id === 'channels' && home && channels.length > 0)
+                    node = (
                       <section className="content-section">
                         <SectionTitle
-                          title="무료로 먼저 만나보세요"
-                          subtitle="첫 화부터 부담 없이 시작하는 작품"
+                          title={title('지금 주목할 방송국')}
+                          subtitle={subtitle('PD가 직접 운영하는 방송국에서 골라 보기')}
+                          eyebrow="SHORTPING CHANNELS"
+                          icon={<Radio size={19} className="lime" />}
+                          onMore={() => navigate('channels')}
+                        />
+                        <FeaturedChannels channels={featuredChannels.length ? featuredChannels : channels} />
+                      </section>
+                    );
+                  else if (sec.id === 'trending')
+                    node = (
+                      <section className="content-section">
+                        <SectionTitle
+                          title={
+                            feed === '신작'
+                              ? '새로운 이야기, 새로운 설렘'
+                              : feed === '완결'
+                                ? '기다림 없이, 정주행'
+                                : genre !== '전체'
+                                  ? genre + '에 빠져볼 시간'
+                                  : title('지금 가장 핫한 숏핑')
+                          }
+                          subtitle={subtitle()}
+                          eyebrow={feed === '추천' ? 'TRENDING NOW' : undefined}
+                          icon={<Flame size={21} className="lime" />}
+                          onMore={() => navigate('explore')}
+                        />
+                        <div className="poster-grid">
+                          {feedItems.slice(0, 4).map((d, i) => (
+                            <Poster key={d.id} d={d} rank={feed === '추천' || feed === '인기' ? i + 1 : undefined} />
+                          ))}
+                        </div>
+                        {feedItems.length === 0 && (
+                          <Empty title="새로운 이야기를 준비 중이에요" text="다른 장르의 작품도 만나보세요." />
+                        )}
+                      </section>
+                    );
+                  else if (sec.id === 'membership')
+                    node = (
+                      <button className="membership-banner" onClick={() => navigate('membership')}>
+                        <div className="banner-icon">
+                          <Crown size={24} />
+                        </div>
+                        <div>
+                          <span>{subtitle('취향껏, 마음껏, 끊김 없이.')}</span>
+                          <strong>{title('숏핑 패스로 모든 이야기를 만나세요')}</strong>
+                        </div>
+                        <ChevronRight size={21} />
+                        <span className="banner-orbit" />
+                      </button>
+                    );
+                  else if (sec.id === 'binge')
+                    node = (
+                      <section className="content-section">
+                        <SectionTitle
+                          title={genre === '전체' ? title('오늘부터 정주행 각') : '이런 이야기는 어때요?'}
+                          subtitle={subtitle('한 번 시작하면 멈출 수 없는 이야기')}
+                          onMore={() => navigate('explore')}
+                        />
+                        <div className="poster-grid">
+                          {(genre === '전체' ? dramas.slice(4, 8) : dramas.filter((d) => d.genre !== genre).slice(0, 4)).map((d) => (
+                            <Poster key={d.id} d={d} />
+                          ))}
+                        </div>
+                      </section>
+                    );
+                  else if (sec.id === 'newest' && home)
+                    node = (
+                      <section className="content-section">
+                        <SectionTitle
+                          title={title('새로 올라온 이야기')}
+                          subtitle={subtitle('가장 최근 공개된 숏핑 오리지널')}
+                          eyebrow="JUST ARRIVED"
+                          icon={<Sparkles size={19} className="lime" />}
+                          onMore={() => setFeed('신작')}
+                        />
+                        <div className="poster-row">
+                          {newest.slice(0, 6).map((d) => (
+                            <Poster key={d.id} d={d} />
+                          ))}
+                        </div>
+                      </section>
+                    );
+                  else if (sec.id === 'free' && home && freePicks.length > 0)
+                    node = (
+                      <section className="content-section">
+                        <SectionTitle
+                          title={title('무료로 먼저 만나보세요')}
+                          subtitle={subtitle('첫 화부터 부담 없이 시작하는 작품')}
                           eyebrow="FREE TO START"
                           icon={<Ticket size={19} className="lime" />}
                           onMore={() => navigate('explore')}
@@ -678,12 +939,13 @@ export default function App() {
                           ))}
                         </div>
                       </section>
-                    )}
-                    {followedChannels.length > 0 && (
+                    );
+                  else if (sec.id === 'followed' && home && followedChannels.length > 0)
+                    node = (
                       <section className="content-section">
                         <SectionTitle
-                          title="구독 중인 방송국의 새 소식"
-                          subtitle="내가 구독한 방송국의 작품"
+                          title={title('구독 중인 방송국의 새 소식')}
+                          subtitle={subtitle('내가 구독한 방송국의 작품')}
                           onMore={() => navigate('channels')}
                         />
                         <div className="poster-row">
@@ -695,21 +957,31 @@ export default function App() {
                             ))}
                         </div>
                       </section>
-                    )}
-                  </>
-                )}
-                <section className="editorial-banner">
-                  <span>SHORT STORIES, BIG FEELINGS.</span>
-                  <h3>
-                    당신의 다음 이야기는
-                    <br />
-                    어떤 장르인가요?
-                  </h3>
-                  <button onClick={() => navigate('explore')}>
-                    나만의 드라마 찾기 <ArrowRight size={15} />
-                  </button>
-                  <Clapperboard className="editorial-icon" size={96} />
-                </section>
+                    );
+                  else if (sec.id === 'editorial') {
+                    const ed = homeLayout.editorial;
+                    const [first, ...rest] = (ed.title || '당신의 다음 이야기는\\n어떤 장르인가요?').split('\\n');
+                    node = (
+                      <section className="editorial-banner">
+                        <span>{ed.eyebrow || 'SHORT STORIES, BIG FEELINGS.'}</span>
+                        <h3>
+                          {first}
+                          {rest.map((line, i) => (
+                            <span key={i}>
+                              <br />
+                              {line}
+                            </span>
+                          ))}
+                        </h3>
+                        <button onClick={() => openHomeLink(ed.link || 'explore')}>
+                          {ed.button || '나만의 드라마 찾기'} <ArrowRight size={15} />
+                        </button>
+                        <Clapperboard className="editorial-icon" size={96} />
+                      </section>
+                    );
+                  }
+                  return node ? <Fragment key={sec.id}>{node}</Fragment> : null;
+                })}
                 <Footer info={info} />
               </>
             )}
@@ -724,7 +996,7 @@ export default function App() {
                     autoFocus={route.page === 'search'}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="작품명, 장르로 찾아보세요"
+                    placeholder="작품명, 장르, #해시태그로 찾아보세요"
                   />
                   {query && (
                     <button onClick={() => setQuery('')} aria-label="검색어 지우기">
@@ -737,6 +1009,7 @@ export default function App() {
                     <button
                       key={g}
                       className={genre === g ? 'active' : ''}
+                      aria-pressed={genre === g}
                       onClick={() => setGenre(g)}
                     >
                       {g}
@@ -782,6 +1055,11 @@ export default function App() {
                 buy={buy}
                 notify={notify}
                 pass={config.subscriptionPrice}
+                onTag={(tag) => {
+                  setGenre('전체');
+                  setQuery(tag);
+                  navigate('search');
+                }}
               />
             )}
             {route.page === 'watch' && (
@@ -906,7 +1184,10 @@ export default function App() {
                 onLogin={async (u) => {
                   setUser(u);
                   await reloadLibrary();
-                  navigate(u.role === 'viewer' ? 'home' : 'studio');
+                  // 결제창·찜 등에서 로그인하러 왔다면 보던 화면으로 돌아갑니다.
+                  const next = safeNext(route.id);
+                  if (next) backTo(next);
+                  else navigate(u.role === 'viewer' ? 'home' : 'studio');
                   notify('숏핑에 오신 것을 환영해요.');
                 }}
                 info={info}
@@ -1026,7 +1307,7 @@ export default function App() {
                                 className="continue-card"
                                 onClick={() => navigate('watch/' + d.id + '/' + h.episode)}
                               >
-                                <img src={d.image} alt="" />
+                                <img src={asset(d.image)} alt="" />
                                 <div>
                                   <strong>{d.title}</strong>
                                   <span>{h.episode}화 이어보기</span>
@@ -1116,9 +1397,12 @@ export default function App() {
                                   : o.kind === 'ping_charge'
                                     ? `${pings(o.pings || 0)}` +
                                       (o.bonus_pings ? ` + 보너스 ${pings(o.bonus_pings)}` : '')
-                                    : o.kind === 'ping_episode' || o.kind === 'episode'
-                                      ? `${o.title} ${o.episode}화`
-                                      : `${o.title} 전체`}
+                                    : o.kind === 'lama_charge'
+                                      ? `${lama(o.pings || 0)}` +
+                                        (o.bonus_pings ? ` + 보너스 ${lama(o.bonus_pings)}` : '')
+                                      : o.kind === 'ping_episode' || o.kind === 'episode'
+                                        ? `${o.title} ${o.episode}화`
+                                        : `${o.title || '작품'} 전체`}
                               </strong>
                               <span>
                                 {new Date(o.created_at).toLocaleString('ko-KR')} ·{' '}
@@ -1185,7 +1469,7 @@ export default function App() {
             {route.page === 'support' && <Support user={user} notify={notify} />}
             {route.page === 'settings' && (
               <div className="page-content">
-                <button className="back-link" onClick={() => navigate('my')}>
+                <button className="back-link" onClick={() => goBack('my')}>
                   <ArrowLeft size={16} />
                   마이페이지
                 </button>
@@ -1229,6 +1513,11 @@ export default function App() {
                   onAppearance={(homeAppearance: HomeAppearance) =>
                     setConfig((current) => ({ ...current, homeAppearance }))
                   }
+                  onHomeLayout={() =>
+                    void api<typeof config>('/config')
+                      .then((c) => setConfig((cur) => ({ ...cur, homeLayout: c.homeLayout || defaultHomeLayout })))
+                      .catch(() => {})
+                  }
                 />
                 </Suspense>
               ) : (
@@ -1245,6 +1534,7 @@ export default function App() {
               'search',
               'drama',
               'watch',
+              'pings',
               'channels',
               'channel',
               'membership',
@@ -1275,6 +1565,7 @@ export default function App() {
               <button
                 key={id}
                 className={activeNav === id ? 'active' : ''}
+                aria-current={activeNav === id ? 'page' : undefined}
                 onClick={() => navigate(id)}
               >
                 <Icon size={22} strokeWidth={activeNav === id ? 2.3 : 1.7} />
@@ -1301,6 +1592,7 @@ export default function App() {
                   <small>{roleLabel[user.role]}</small>
                 </span>
               </button>
+              <NotificationBell key={user.id} align="rail" />
               <button onClick={logout} aria-label="사이드바 로그아웃">
                 <LogOut size={18} />
               </button>
@@ -1393,7 +1685,7 @@ export default function App() {
             <CirclePlay size={20} />
           </div>
           <p>
-            <strong>첫 3화는 무료로</strong>
+            <strong>첫 {config.defaultFreeEpisodes}화는 무료로</strong>
             <span>나에게 맞는 이야기를 먼저 만나세요</span>
           </p>
         </div>
@@ -1486,7 +1778,7 @@ export default function App() {
                 close={() => !busy && setCheckout(null)}
               >
                 <div className="checkout-product">
-                  <img src={d.image} alt="" />
+                  <img src={asset(d.image)} alt="" />
                   <div>
                     <h3>{checkout.episode ? `${d.title} ${checkout.episode}화` : d.title}</h3>
                     <p>
@@ -1870,6 +2162,7 @@ function DramaPage({
   buy,
   notify,
   pass,
+  onTag,
 }: {
   id: string;
   user: User | null;
@@ -1878,11 +2171,15 @@ function DramaPage({
   buy: (d: Purchase) => void;
   notify: (s: string) => void;
   pass: number;
+  onTag: (tag: string) => void;
 }) {
-  const [d, setD] = useState<Detail | null>(null),
-    [error, setError] = useState('');
+  const [d, setD] = useState<ViewerDetail | null>(null),
+    [error, setError] = useState(''),
+    [trailerOpen, setTrailerOpen] = useState(false);
   useEffect(() => {
-    api<Detail>('/dramas/' + id)
+    // 카드의 썸네일 후보(A/B)를 보고 들어왔다면 한 번만 클릭으로 집계합니다.
+    const t = consumeThumb(id);
+    api<ViewerDetail>('/dramas/' + id + (t ? '?t=' + encodeURIComponent(t) : ''))
       .then(setD)
       .catch((e) => setError(e.message));
   }, [id]);
@@ -1906,14 +2203,22 @@ function DramaPage({
   return (
     <>
       <div className="detail-cover">
-        <img src={d.image} alt={d.title + ' 포스터'} />
+        <img src={asset(d.image)} alt={d.title + ' 포스터'} />
         <div className="detail-shade" />
-        <button className="back-button" aria-label="뒤로" onClick={() => navigate('home')}>
+        <button className="back-button" aria-label="뒤로" onClick={() => goBack('home')}>
           <ArrowLeft />
         </button>
         <span className="detail-original">SHORTPING ORIGINAL</span>
         <h1>{d.title}</h1>
       </div>
+      {trailerOpen && d.trailer && (
+        <TrailerModal
+          src={asset(`/api/dramas/${encodeURIComponent(d.id)}/trailer`)}
+          title={d.title}
+          poster={asset(d.image)}
+          close={() => setTrailerOpen(false)}
+        />
+      )}
       <div className="page-content detail-body">
         <span className="detail-tag">
           {d.badge} · 숏핑 오리지널
@@ -1933,6 +2238,15 @@ function DramaPage({
           </span>
         </div>
         <p className="synopsis">{d.synopsis}</p>
+        {tagsOf(d).length > 0 && (
+          <div className="viewer-hashtags" aria-label="해시태그">
+            {tagsOf(d).map((t) => (
+              <button key={t} onClick={() => onTag(t)} aria-label={`#${t} 검색하기`}>
+                #{t}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="detail-actions">
           <button
             className="primary"
@@ -1948,6 +2262,12 @@ function DramaPage({
             <Bookmark size={18} />
             {lib.favorites.includes(d.id) ? '찜 완료' : '찜하기'}
           </button>
+          {d.trailer && (
+            <button className="secondary viewer-trailer-button" onClick={() => setTrailerOpen(true)}>
+              <Clapperboard size={18} />
+              예고편
+            </button>
+          )}
         </div>
         <div className="episode-heading">
           <h3>
@@ -1959,17 +2279,38 @@ function DramaPage({
               : `첫 ${Math.min(d.free_episodes, d.episode_count)}화 무료`}
           </span>
         </div>
-        <div className="episode-grid">
-          {d.episodes.map((e) => (
-            <button
-              key={e.id}
-              className={e.locked ? 'locked' : e.owned ? 'owned' : ''}
-              onClick={() => navigate('watch/' + d.id + '/' + e.number)}
-            >
-              <span>{e.number}</span>
-              {e.locked ? <LockKeyhole size={12} /> : <Play size={11} />}
-            </button>
-          ))}
+        <div className={'episode-grid' + (d.episodes.some((e) => e.thumbnail) ? ' with-thumbs' : '')}>
+          {d.episodes.map((e) => {
+            // 작품 주인·관리자에게만 공개 전 회차가 내려옵니다. 상태를 작은 칩으로 알려 줍니다.
+            const status =
+              e.review_status && e.review_status !== 'approved'
+                ? reviewLabel[e.review_status] || e.review_status
+                : '';
+            return (
+              <button
+                key={e.id}
+                className={
+                  (e.locked ? 'locked' : e.owned ? 'owned' : '') +
+                  (e.thumbnail ? ' has-thumb' : '') +
+                  (status ? ' unreleased' : '')
+                }
+                aria-label={`${e.number}화${e.locked ? ' (잠김)' : e.owned ? ' (열림)' : ''}${status ? ' · ' + status : ''}`}
+                title={
+                  status && e.review_status === 'scheduled' && e.publish_at
+                    ? `${new Date(e.publish_at).toLocaleString('ko-KR')} 공개 예정`
+                    : undefined
+                }
+                onClick={() => navigate('watch/' + d.id + '/' + e.number)}
+              >
+                {e.thumbnail && <img className="episode-thumb" src={asset(e.thumbnail)} alt="" loading="lazy" />}
+                <span>{e.number}</span>
+                {status && (
+                  <em className={'episode-status ' + e.review_status}>{status}</em>
+                )}
+                {e.locked ? <LockKeyhole size={12} /> : <Play size={11} />}
+              </button>
+            );
+          })}
         </div>
         <div className="purchase-options">
           {!d.entitled && d.locked_count > 0 && (
@@ -2019,11 +2360,17 @@ function DramaPage({
         </p>
         <button
           className="text-link"
-          onClick={() => {
-            navigator.clipboard
-              .writeText(location.href)
-              .then(() => notify('작품 링크를 복사했어요.'))
-              .catch(() => notify('브라우저 주소창에서 링크를 복사해 주세요.'));
+          onClick={async () => {
+            const url = `${location.origin}/share/drama/${encodeURIComponent(d.id)}`;
+            try {
+              if (navigator.share) await navigator.share({ title: `${d.title} | 숏핑`, text: d.tagline, url });
+              else {
+                await navigator.clipboard.writeText(url);
+                notify('작품 링크를 복사했어요.');
+              }
+            } catch (error) {
+              if ((error as DOMException).name !== 'AbortError') notify('공유하지 못했어요. 다시 시도해 주세요.');
+            }
           }}
         >
           작품 링크 공유하기
@@ -2055,19 +2402,29 @@ function WatchPage({
   pass: number;
   setUser: (u: User) => void;
 }) {
-  const [d, setD] = useState<Detail | null>(null),
+  const [d, setD] = useState<ViewerDetail | null>(null),
     [error, setError] = useState(''),
     [episodesOpen, setEpisodesOpen] = useState(false),
-    [videoError, setVideoError] = useState(false),
+    [videoError, setVideoError] = useState<VideoProblem | null>(null),
+    [needTap, setNeedTap] = useState(false),
     [autoBusy, setAutoBusy] = useState(false);
   const video = useRef<HTMLVideoElement>(null),
     lastSave = useRef(0),
+    lastPos = useRef(0),
+    played = useRef(false),
+    saved = useRef<{ pos: number; reloaded: boolean } | null>(null),
     autoTried = useRef(false);
+  const playSrc = '/api/play/' + id + '/' + number;
+  const loadDetail = useCallback(
+    () =>
+      api<ViewerDetail>('/dramas/' + id)
+        .then(setD)
+        .catch((e) => setError(e.message)),
+    [id],
+  );
   useEffect(() => {
-    api<Detail>('/dramas/' + id)
-      .then(setD)
-      .catch((e) => setError(e.message));
-  }, [id]);
+    void loadDetail();
+  }, [loadDetail]);
   const current = d?.episodes.find((e) => e.number === number);
   // 자동 열기: 사용자가 켜 두었고 핑이 충분하면 잠긴 회차를 바로 엽니다(화면마다 한 번만 시도).
   useEffect(() => {
@@ -2078,7 +2435,7 @@ function WatchPage({
     api<{ pings: number; wallet: { total: number } }>('/pings/unlock', 'POST', {
       dramaId: d.id,
       episode: number,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: uuid(),
     })
       .then(async (r) => {
         notify(`자동 열기로 ${number}화에 ${pings(r.pings)}을 썼어요. 남은 핑 ${pings(r.wallet.total)}`);
@@ -2099,17 +2456,102 @@ function WatchPage({
       notify((e as Error).message);
     }
   };
-  const save = async (force = false) => {
-    if (!user || !video.current || !d) return;
-    const t = video.current.currentTime;
-    if (!force && Date.now() - lastSave.current < 7000) return;
-    lastSave.current = Date.now();
-    try {
-      await api('/history', 'POST', { dramaId: id, episode: number, progress: t });
-      if (force) await reloadLibrary();
-    } catch {
-      /* A transient save failure should not interrupt playback. */
+  // 시청 위치 저장. keepalive 요청이라 화면을 떠나거나 탭을 닫는 중에도 전송됩니다.
+  // 같은 위치를 두 번 보내지 않습니다(끝날 때 pause·ended가 연달아 오는 경우 등).
+  const persist = (reload = false) => {
+    if (!user || !d || !played.current) return;
+    const t = video.current ? video.current.currentTime : lastPos.current;
+    const prev = saved.current;
+    if (prev && Math.abs(prev.pos - t) < 0.5) {
+      if (reload && !prev.reloaded) {
+        prev.reloaded = true;
+        void reloadLibrary();
+      }
+      return;
     }
+    saved.current = { pos: t, reloaded: reload };
+    lastSave.current = Date.now();
+    fetch(apiUrl('/history'), {
+      method: 'POST',
+      credentials: fetchCredentials,
+      keepalive: true,
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dramaId: id, episode: number, progress: t }),
+    })
+      .then(() => (reload ? reloadLibrary() : undefined))
+      .catch(() => {
+        /* 일시적인 저장 실패로 재생을 끊지 않습니다. */
+      });
+  };
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  useEffect(() => {
+    const onHide = () => persistRef.current();
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') persistRef.current();
+    };
+    window.addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+      // 화면을 떠날 때(뒤로·다른 회차·다른 메뉴) 마지막 위치를 남기고 이어보기 목록을 새로 받습니다.
+      persistRef.current(true);
+    };
+  }, []);
+  const startPlayback = () => {
+    const v = video.current;
+    if (!v) return;
+    v.play()
+      .then(() => setNeedTap(false))
+      .catch((e: DOMException) => {
+        // iOS 등 자동 재생이 막힌 환경에서는 크게 누를 수 있는 재생 버튼을 보여 줍니다.
+        if (e?.name !== 'AbortError') setNeedTap(true);
+      });
+  };
+  const diagnose = async () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setVideoError(videoProblems.network);
+      return;
+    }
+    let status = -1;
+    try {
+      // 처음 바이트가 아닌 구간을 요청해 시청 기록이 따로 남지 않게 합니다.
+      const r = await fetch(asset(playSrc), {
+        headers: { ...authHeaders(), Range: 'bytes=1-1' },
+        credentials: fetchCredentials,
+        cache: 'no-store',
+      });
+      status = r.status;
+      void r.body?.cancel().catch(() => {});
+    } catch {
+      status = -1;
+    }
+    const owner = !!user && (user.role === 'admin' || user.id === d?.owner_id);
+    setVideoError(
+      status === 403
+        ? videoProblems.forbidden
+        : status === 401
+          ? videoProblems.login
+          : status === 404
+            ? owner
+              ? videoProblems.missingOwner
+              : videoProblems.missing
+            : status === 429 || status === -1 || status >= 500
+              ? videoProblems.busy
+              : videoProblems.decode,
+    );
+  };
+  const retryVideo = async () => {
+    const kind = videoError?.kind;
+    setVideoError(null);
+    if (kind === 'forbidden' || kind === 'login') {
+      // 권한이 바뀌었을 수 있으니 회차 정보와 라이브러리를 다시 받아 잠금 화면을 제대로 보여 줍니다.
+      await Promise.all([loadDetail(), reloadLibrary()]);
+      if (kind === 'login') loginWithReturn();
+      return;
+    }
+    video.current?.load();
   };
   if (error)
     return (
@@ -2132,20 +2574,21 @@ function WatchPage({
       <Empty
         title="회차를 찾을 수 없어요"
         text="전체 회차에서 다시 선택해 주세요."
-        action={() => navigate('drama/' + id)}
+        action={() => navigate('drama/' + id, { replace: true })}
         label="작품으로"
       />
     );
+  // 회차 사이 이동은 기록을 쌓지 않고 현재 항목을 바꿉니다. 뒤로 가면 회차를 보기 전 화면으로 돌아갑니다.
+  const goEpisode = (n: number) => navigate('watch/' + id + '/' + n, { replace: true });
+  const next = d.episodes.find((e) => e.number === number + 1);
+  const autoNext =
+    user?.auto_next !== false &&
+    !!next &&
+    (!next.locked || (!!user?.auto_unlock && lib.wallet.total >= d.episode_pings));
   return (
     <div className="watch-page">
       <div className="watch-top">
-        <button
-          onClick={() => {
-            void save(true);
-            navigate('drama/' + id);
-          }}
-          aria-label="작품으로 돌아가기"
-        >
+        <button onClick={() => goBack('drama/' + id)} aria-label="작품으로 돌아가기">
           <ArrowLeft />
         </button>
         <div>
@@ -2156,16 +2599,17 @@ function WatchPage({
         </div>
         <button
           aria-label="찜하기"
+          aria-pressed={lib.favorites.includes(id)}
           className={lib.favorites.includes(id) ? 'lime' : ''}
           onClick={() => favorite(d)}
         >
           <Bookmark />
         </button>
       </div>
-      <div className="video-stage">
+      <div className={'video-stage ' + subtitleClass(d.subtitle_style)}>
         {ep.locked ? (
           <>
-            <img className="locked-poster" src={d.image} alt="" />
+            <img className="locked-poster" src={asset(d.image)} alt="" />
             <div className="paywall">
               <LockKeyhole size={32} />
               <h2>{autoBusy ? '회차를 여는 중이에요' : '이야기는 계속돼요'}</h2>
@@ -2213,48 +2657,62 @@ function WatchPage({
           <>
             <video
               ref={video}
-              src={'/api/play/' + id + '/' + number}
-              poster={d.image}
+              src={asset(playSrc)}
+              poster={asset(d.image)}
               controls
               playsInline
               preload="metadata"
-              onError={() => setVideoError(true)}
+              onError={() => void diagnose()}
               onLoadedMetadata={() => {
+                const v = video.current;
+                if (!v) return;
                 const h = lib.history.find((x) => x.drama_id === id && x.episode === number);
-                if (video.current && h && h.progress < video.current.duration - 2)
-                  video.current.currentTime = h.progress;
+                if (h && h.progress < v.duration - 2) v.currentTime = h.progress;
+                // 앞 회차가 끝나서 넘어온 경우에만 이어서 재생합니다.
+                if (takeAutoplay(id, number)) startPlayback();
               }}
-              onTimeUpdate={() => void save()}
-              onPause={() => void save(true)}
+              onPlay={() => {
+                played.current = true;
+                setNeedTap(false);
+              }}
+              onTimeUpdate={() => {
+                const v = video.current;
+                if (!v) return;
+                lastPos.current = v.currentTime;
+                if (Date.now() - lastSave.current >= 7000) persist();
+              }}
+              onPause={() => {
+                // 끝까지 본 경우는 onEnded에서 한 번만 저장합니다.
+                if (video.current?.ended) return;
+                persist(true);
+              }}
               onEnded={() => {
-                void save(true);
-                const next = d.episodes.find((e) => e.number === number + 1);
+                persist(true);
                 // 잠긴 다음 회차는 자동 열기를 켜고 핑이 충분할 때만 이어서 이동합니다.
-                if (
-                  user?.auto_next !== false &&
-                  next &&
-                  (!next.locked ||
-                    (user?.auto_unlock && lib.wallet.total >= d.episode_pings))
-                )
-                  navigate('watch/' + id + '/' + (number + 1));
+                if (autoNext) {
+                  markAutoplay(id, number + 1);
+                  goEpisode(number + 1);
+                }
               }}
             >
               {ep.has_subtitles ? (
-                <track kind="subtitles" srcLang="ko" label="한국어" default src={`/api/subtitles/${id}/${number}`} />
+                <track kind="subtitles" srcLang="ko" label="한국어" default src={asset(`/api/subtitles/${id}/${number}`)} />
               ) : null}
             </video>
+            {needTap && !videoError && (
+              <button className="viewer-play-overlay" onClick={startPlayback} aria-label={`${number}화 재생`}>
+                <span>
+                  <Play size={34} fill="currentColor" />
+                </span>
+                재생
+              </button>
+            )}
             {videoError && (
-              <div className="video-error">
-                <h3>영상이 아직 준비되지 않았어요</h3>
-                <p>PD 스튜디오에서 회차 영상을 등록할 수 있어요.</p>
-                <button
-                  className="secondary"
-                  onClick={() => {
-                    setVideoError(false);
-                    video.current?.load();
-                  }}
-                >
-                  다시 시도
+              <div className="video-error" role="alert">
+                <h3>{videoError.title}</h3>
+                <p>{videoError.text}</p>
+                <button className="secondary" onClick={() => void retryVideo()}>
+                  {videoError.action}
                 </button>
               </div>
             )}
@@ -2265,27 +2723,15 @@ function WatchPage({
         )}
       </div>
       <div className="watch-controls">
-        <button
-          disabled={number <= 1}
-          onClick={() => {
-            void save(true);
-            navigate('watch/' + id + '/' + (number - 1));
-          }}
-        >
+        <button disabled={number <= 1} onClick={() => goEpisode(number - 1)}>
           <ChevronLeft size={20} />
           이전 화
         </button>
-        <button onClick={() => setEpisodesOpen(!episodesOpen)}>
+        <button onClick={() => setEpisodesOpen(!episodesOpen)} aria-expanded={episodesOpen}>
           <Clapperboard size={18} />
           전체 회차 <ChevronDown size={15} />
         </button>
-        <button
-          disabled={number >= d.episode_count}
-          onClick={() => {
-            void save(true);
-            navigate('watch/' + id + '/' + (number + 1));
-          }}
-        >
+        <button disabled={number >= d.episode_count} onClick={() => goEpisode(number + 1)}>
           다음 화<ChevronRight size={20} />
         </button>
       </div>
@@ -2297,7 +2743,9 @@ function WatchPage({
               <button
                 className={e.number === number ? 'selected' : ''}
                 key={e.id}
-                onClick={() => navigate('watch/' + id + '/' + e.number)}
+                aria-label={`${e.number}화${e.locked ? ' (잠김)' : ''}${e.number === number ? ' · 지금 보는 회차' : ''}`}
+                aria-current={e.number === number ? 'true' : undefined}
+                onClick={() => goEpisode(e.number)}
               >
                 {e.number}
                 {e.locked && <LockKeyhole size={12} />}
@@ -2309,11 +2757,71 @@ function WatchPage({
       <div className="watch-description">
         <b>{ep.title}</b>
         <p>{d.tagline}</p>
-        <span>자동으로 다음 회차가 재생됩니다.</span>
+        <span>
+          {(() => {
+            // 끝나면 실제로 무엇이 일어나는지(onEnded와 같은 조건)를 그대로 안내합니다.
+            if (!next) return '마지막 회차예요.';
+            if (user?.auto_next === false) return '다음 회차 자동 재생이 꺼져 있어요.';
+            if (!next.locked) return '자동으로 다음 회차가 재생됩니다.';
+            if (autoNext)
+              return `다음 회차는 자동 열기로 ${pings(d.episode_pings)}을 써서 이어 재생돼요.`;
+            return '다음 회차는 잠겨 있어요. 핑으로 열면 이어서 볼 수 있어요.';
+          })()}
+        </span>
       </div>
     </div>
   );
 }
+type VideoProblem = {
+  kind: 'forbidden' | 'login' | 'missing' | 'busy' | 'network' | 'decode';
+  title: string;
+  text: string;
+  action: string;
+};
+const videoProblems: Record<string, VideoProblem> = {
+  forbidden: {
+    kind: 'forbidden',
+    title: '이 회차를 볼 권한이 없어요',
+    text: '숏핑 패스 기간이 끝났거나 회차 권한이 바뀌었을 수 있어요. 다시 확인해 볼게요.',
+    action: '권한 다시 확인',
+  },
+  login: {
+    kind: 'login',
+    title: '로그인이 필요해요',
+    text: '로그인이 만료되었어요. 다시 로그인하면 이어서 볼 수 있어요.',
+    action: '로그인하기',
+  },
+  missing: {
+    kind: 'missing',
+    title: '영상을 준비하고 있어요',
+    text: '이 회차 영상이 아직 등록되지 않았어요. 잠시 후 다시 확인해 주세요.',
+    action: '다시 시도',
+  },
+  missingOwner: {
+    kind: 'missing',
+    title: '영상이 아직 준비되지 않았어요',
+    text: 'PD 스튜디오에서 회차 영상을 등록할 수 있어요.',
+    action: '다시 시도',
+  },
+  busy: {
+    kind: 'busy',
+    title: '영상을 불러오지 못했어요',
+    text: '요청이 많거나 연결이 잠시 불안정해요. 잠시 후 다시 시도해 주세요.',
+    action: '다시 시도',
+  },
+  network: {
+    kind: 'network',
+    title: '인터넷 연결이 끊겼어요',
+    text: '연결 상태를 확인한 뒤 다시 시도해 주세요.',
+    action: '다시 시도',
+  },
+  decode: {
+    kind: 'decode',
+    title: '영상을 재생하지 못했어요',
+    text: '이 기기에서 재생할 수 없는 형식이거나 일시적인 문제예요. 잠시 후 다시 시도해 주세요.',
+    action: '다시 시도',
+  },
+};
 function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
   const [tab, setTab] = useState('찜한 작품');
   const owned = lib.episodes.reduce<Record<string, number[]>>((acc, e) => {
@@ -2332,7 +2840,12 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
     <>
       <div className="library-tabs">
         {['찜한 작품', '최근 시청', '소장 작품', '연 회차'].map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
+          <button
+            key={t}
+            className={tab === t ? 'active' : ''}
+            aria-pressed={tab === t}
+            onClick={() => setTab(t)}
+          >
             {t}
             {t === '연 회차' && lib.episodes.length > 0 && <i>{lib.episodes.length}</i>}
           </button>
@@ -2345,7 +2858,7 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
             if (!d) return null;
             return (
               <div className="owned-row" key={id}>
-                <img src={d.image} alt="" />
+                <img src={asset(d.image)} alt="" />
                 <div>
                   <strong>{d.title}</strong>
                   <small>

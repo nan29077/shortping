@@ -517,7 +517,8 @@ function Policy({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
     { id: 'app_store', fee: form.app_store_fee_rate },
     { id: 'google_play', fee: form.google_play_fee_rate },
   ].map(({ id, fee }) => {
-    const unitNet = (10000 * (100 - fee)) / 100 / (10000 / form.ping_unit_won);
+    // 입력을 지우는 중(0)에는 0으로 나누지 않도록 최소 1원으로 계산합니다.
+    const unitNet = (10000 * (100 - fee)) / 100 / (10000 / Math.max(1, Number(form.ping_unit_won) || 1));
     const gross = Math.floor(unitNet * form.default_episode_pings);
     const platform = Math.round((gross * form.platform_fee_rate) / 100);
     return { id, fee, gross, platform, pd: gross - platform, store: Math.round((10000 * fee) / 100) };
@@ -684,7 +685,15 @@ function Rates({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run 
                               platform_fee_rate: Number(value),
                             }),
                           `${r.name} 분배 비율을 저장했어요.`,
-                        ).then((ok) => ok && setEdits({ ...edits, [r.id]: '' }))
+                        ).then((ok) => {
+                          // 저장 후에는 편집값을 지워 입력창이 서버 값(rate)을 다시 보여 주게 합니다.
+                          if (!ok) return;
+                          setEdits((prev) => {
+                            const next = { ...prev };
+                            delete next[r.id];
+                            return next;
+                          });
+                        })
                       }
                     >
                       저장

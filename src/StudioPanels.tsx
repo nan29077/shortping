@@ -1,10 +1,28 @@
 import { useState } from 'react';
 import { ArrowRight, CheckCircle2, Download, Search } from 'lucide-react';
-import { isPingSpend, orderKindLabel, orderRevenue, localDay, won, type Order, type Drama, type User } from './api';
+import {
+  isPingSpend,
+  orderKindLabel,
+  orderRevenue,
+  localDay,
+  won,
+  type Order,
+  type Drama,
+  type User,
+} from './api';
 import { Empty } from './App';
+import EpisodeReviewQueue from './serial/EpisodeReviewQueue';
 import type { StudioData } from './Studio';
 
 const date = (value: string) => new Date(value).toLocaleString('ko-KR');
+// 작품이 없는 주문(충전·구독)의 이름. 라마 충전 주문은 충전량을 pings 칸에 담아 둡니다.
+const orderTitle = (o: Order) =>
+  o.title ||
+  (o.kind === 'ping_charge'
+    ? `${o.pings || 0}핑 충전`
+    : o.kind === 'lama_charge'
+      ? `${Number(o.pings || 0).toLocaleString('ko-KR')}라마 충전`
+      : '숏핑 패스');
 export function downloadCsv(name: string, rows: (string | number)[][]) {
   // Quoting alone does not prevent spreadsheet formula execution.
   const safe = (value: string | number) => {
@@ -37,67 +55,76 @@ export function StudioInsights({ data, admin = false }: { data: StudioData; admi
     };
   });
   const max = Math.max(...days.map((d) => d.amount), 1);
+  // 연재 중인 작품에 새 회차 검수 요청이 있으면 관리자 대시보드에서 바로 처리할 수 있게 보여 줍니다.
+  const pendingEpisodes = data.dramas.reduce(
+    (n, d) => n + Number((d as Drama & { pending_episodes?: number }).pending_episodes || 0),
+    0,
+  );
   const statuses = [
     ['published', '공개 중'],
     ['pending', '심사 대기'],
     ['draft', '임시저장'],
     ['rejected', '반려'],
+    ['hidden', '노출 중단'],
   ];
   return (
-    <div className="insights-grid">
-      <section className="management-panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">LAST 7 DAYS</span>
-            <h3>최근 7일 테스트 매출</h3>
-          </div>
-          <strong className="lime">{won(days.reduce((n, d) => n + d.amount, 0))}</strong>
-        </div>
-        <div
-          className="revenue-chart"
-          role="img"
-          aria-label={days.map((d) => `${d.label} ${won(d.amount)}`).join(', ')}
-        >
-          {days.map((d) => (
-            <div className="chart-column" key={d.label}>
-              <small>{won(d.amount)}</small>
-              <div className="chart-track">
-                <span style={{ height: `${Math.max(3, (d.amount / max) * 100)}%` }} />
-              </div>
-              <span>{d.label}</span>
+    <>
+      <div className="insights-grid">
+        <section className="management-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">LAST 7 DAYS</span>
+              <h3>최근 7일 테스트 매출</h3>
             </div>
-          ))}
-        </div>
-        <p className="panel-footnote">실제 청구되지 않은 테스트 결제 · 브라우저 현지 날짜 기준</p>
-      </section>
-      <section className="management-panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">CONTENT PIPELINE</span>
-            <h3>작품 진행 현황</h3>
+            <strong className="lime">{won(days.reduce((n, d) => n + d.amount, 0))}</strong>
           </div>
-          <span className="tag-outline">{data.dramas.length}편</span>
-        </div>
-        <div className="pipeline-list">
-          {statuses.map(([status, label]) => {
-            const n = data.dramas.filter((d) => d.status === status).length;
-            return (
-              <div key={status}>
-                <span>
-                  <i className={'pipeline-dot ' + status} />
-                  {label}
-                </span>
-                <div>
-                  <i style={{ width: `${(n / Math.max(1, data.dramas.length)) * 100}%` }} />
+          <div
+            className="revenue-chart"
+            role="img"
+            aria-label={days.map((d) => `${d.label} ${won(d.amount)}`).join(', ')}
+          >
+            {days.map((d) => (
+              <div className="chart-column" key={d.label}>
+                <small>{won(d.amount)}</small>
+                <div className="chart-track">
+                  <span style={{ height: `${Math.max(3, (d.amount / max) * 100)}%` }} />
                 </div>
-                <strong>{n}</strong>
+                <span>{d.label}</span>
               </div>
-            );
-          })}
-        </div>
-        <p className="panel-footnote">회차 업로드 → 심사 요청 → 관리자 승인 → 공개</p>
-      </section>
-    </div>
+            ))}
+          </div>
+          <p className="panel-footnote">실제 청구되지 않은 테스트 결제 · 브라우저 현지 날짜 기준</p>
+        </section>
+        <section className="management-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">CONTENT PIPELINE</span>
+              <h3>작품 진행 현황</h3>
+            </div>
+            <span className="tag-outline">{data.dramas.length}편</span>
+          </div>
+          <div className="pipeline-list">
+            {statuses.map(([status, label]) => {
+              const n = data.dramas.filter((d) => d.status === status).length;
+              return (
+                <div key={status}>
+                  <span>
+                    <i className={'pipeline-dot ' + status} />
+                    {label}
+                  </span>
+                  <div>
+                    <i style={{ width: `${(n / Math.max(1, data.dramas.length)) * 100}%` }} />
+                  </div>
+                  <strong>{n}</strong>
+                </div>
+              );
+            })}
+          </div>
+          <p className="panel-footnote">회차 업로드 → 심사 요청 → 관리자 승인 → 공개</p>
+        </section>
+      </div>
+      {admin && pendingEpisodes > 0 && <EpisodeReviewQueue />}
+    </>
   );
 }
 
@@ -110,7 +137,9 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
   const filtered = orders.filter(
     (o) =>
       (kind === 'all' || kind === o.kind) &&
-      `${o.id} ${o.title || '숏핑 패스 구독'}`.toLowerCase().includes(query.toLowerCase()) &&
+      `${o.id} ${orderTitle(o)} ${orderKindLabel(o.kind)}`
+        .toLowerCase()
+        .includes(query.toLowerCase()) &&
       (!from || localDay(new Date(o.created_at)) >= from) &&
       (!until || localDay(new Date(o.created_at)) <= until),
   );
@@ -134,7 +163,7 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
               ['주문번호', '작품', '유형', '결제액(원)', '사용 핑', '판매액(원)', '주문일'],
               ...filtered.map((o) => [
                 o.id,
-                o.title || '숏핑 패스',
+                orderTitle(o),
                 orderKindLabel(o.kind),
                 o.amount,
                 isPingSpend(o) ? o.pings || 0 : '',
@@ -173,6 +202,7 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
           <option value="ping_episode">회차 열기</option>
           <option value="ping_title">작품 전체 열기</option>
           {admin && <option value="ping_charge">핑 충전</option>}
+          {admin && <option value="lama_charge">라마 충전</option>}
           <option value="subscription">구독</option>
         </select>
       </div>
@@ -231,7 +261,7 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
                 {filtered.slice(current * 15, current * 15 + 15).map((o) => (
                   <tr key={o.id}>
                     <td>
-                      <strong>{o.title || (o.kind === 'ping_charge' ? `${o.pings || 0}핑 충전` : '숏핑 패스')}</strong>
+                      <strong>{orderTitle(o)}</strong>
                       <small>{o.id}</small>
                     </td>
                     <td>{orderKindLabel(o.kind)}</td>
@@ -239,7 +269,8 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
                     <td className="nowrap">
                       {isPingSpend(o) ? (
                         <>
-                          {o.pings}핑<small className="sale-value">{won(Number(o.sale_value || 0))}</small>
+                          {o.pings}핑
+                          <small className="sale-value">{won(Number(o.sale_value || 0))}</small>
                         </>
                       ) : (
                         won(o.amount)
@@ -279,18 +310,37 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
   );
 }
 
-const actionLabel = (action: string) =>
-  action === 'pending'
-    ? '작품 심사 요청'
-    : action === 'published'
-      ? '작품 공개 승인'
-      : action === 'rejected'
-        ? '작품 반려'
-        : action === 'support:replied'
-          ? '문의 답변 등록'
-          : action.startsWith('user:')
-            ? '회원 권한 · 상태 변경'
-            : action;
+// 감사 기록(audit_logs.action)을 사람이 읽는 문구로 바꿉니다. 모르는 값은 원문을 그대로 보여 줍니다.
+export const actionLabel = (action: string) => {
+  const exact: Record<string, string> = {
+    pending: '작품 심사 요청',
+    published: '작품 공개 승인',
+    rejected: '작품 반려',
+    'support:replied': '문의 답변 등록',
+    'settlement:closed': '구독 매출 월 마감',
+    'payout:requested': '출금 신청',
+    'payout:lama': '정산 수익 라마 전환',
+    'user:sessions-cleared': '회원 강제 로그아웃',
+    'home-appearance:updated': '홈 화면 꾸미기 변경',
+  };
+  if (exact[action]) return exact[action];
+  const prefix: [string, string][] = [
+    ['user:', '회원 권한 · 상태 변경'],
+    ['settings:updated', '운영 설정 변경'],
+    ['payout:', '출금 처리'],
+    ['pings:', '핑 지급 · 회수'],
+    ['ping-product:', '핑 충전 상품 관리'],
+    ['pd-rate:', 'PD 분배 비율 변경'],
+    ['lama:', '라마 지급 · 회수'],
+    ['lama-product:', '라마 충전 상품 관리'],
+    ['tax:', '세무 정보 검증'],
+    ['storage:cleanup', '미사용 파일 정리'],
+    ['channel:', '방송국 노출 설정'],
+    ['drama:pricing', '작품 판매 설정 변경'],
+    ['ai', 'AI 운영 설정 변경'],
+  ];
+  return prefix.find(([p]) => action.startsWith(p))?.[1] || action;
+};
 export function StudioAudit({
   logs,
   dramas,
@@ -376,7 +426,7 @@ export function StudioSubscriptions({
             {subscriptions.filter((s) => !active(s)).length}명
           </p>
         </div>
-        <span className="tag-outline">30일 이용권</span>
+        <span className="tag-outline">숏핑 패스</span>
       </div>
       <div className="management-toolbar">
         <label className="management-search">
@@ -505,7 +555,7 @@ export function StudioGuide({ admin, onCreate }: { admin: boolean; onCreate: () 
         ['작품 정보 등록', '제목, 한 줄 소개, 시놉시스, 장르, 가격과 포스터를 입력합니다.'],
         [
           '회차 업로드',
-          'H.264 MP4 파일을 1화부터 등록합니다. 파일당 최대 250MB·60분이며 영상 길이는 자동 측정됩니다. 기존 회차의 수정 버튼으로 제목·영상을 교체할 수 있습니다.',
+          'H.264 MP4 파일을 1화부터 등록합니다. 파일당 최대 500MB·60분이며 영상 길이는 자동 측정됩니다. 기존 회차의 수정 버튼으로 제목·영상을 교체할 수 있습니다.',
         ],
         [
           '심사 요청과 공개',
@@ -536,8 +586,8 @@ export function StudioGuide({ admin, onCreate }: { admin: boolean; onCreate: () 
         <ArrowRight size={17} />
       </button>
       <p className="panel-footnote">
-        PD는 본인 작품과 개별 구매 매출만 확인합니다. 구독 매출 배분과 실제 정산은 별도 연동
-        예정입니다.
+        PD는 본인 작품의 핑 매출과 매월 마감되는 숏핑 패스(구독) 배분액을 정산 현황에서 확인합니다.
+        실제 계좌 지급은 지급대행 연동 전까지 관리자가 처리합니다.
       </p>
     </section>
   );

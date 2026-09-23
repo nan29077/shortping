@@ -8,11 +8,15 @@
     "build": "tsc -b && vite build",
     "start": "node --env-file-if-exists=.env server/index.mjs --production",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "simulate": "node --no-warnings scripts/simulate.mjs",
     "mobile:sync": "npm run build && cap sync",
     "mobile:android": "cap add android",
-    "mobile:ios": "cap add ios"
+    "mobile:ios": "cap add ios",
+    "worker": "node --env-file-if-exists=.env server/worker.mjs",
+    "test:pg": "node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
+    "@capacitor/app": "^7.1.2",
     "@capacitor/core": "^7.4.0",
     "@fontsource-variable/noto-sans-kr": "^5.3.0",
     "@fontsource-variable/noto-serif-kr": "^5.3.0",

@@ -22,8 +22,12 @@ export function breakdown(amount, settings) {
 }
 // Individual sellers are withheld 3.3% (3% income + 0.3% local). Registered businesses
 // issue a tax invoice instead and receive VAT on top of the settled amount.
+// 사업자 기준(부가세 가산)은 관리자가 사업자 정보를 확인(verified)한 뒤에만 적용합니다.
+// 확인 전에는 개인 기준(원천징수)으로 계산해 자가 신고만으로 더 받는 일을 막습니다.
+export const isVerifiedBusiness = (profile) =>
+  profile?.business_type === 'business' && Number(profile?.verified) === 1;
 export function taxFor(amount, profile, settings) {
-  if (profile?.business_type === 'business') {
+  if (isVerifiedBusiness(profile)) {
     const vat = Math.round((amount * settings.vat_rate) / 100);
     return { vat, incomeTax: 0, localTax: 0, payable: amount + vat, businessType: 'business' };
   }
@@ -150,25 +154,33 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
       )
     )?.total || 0,
   );
-  // 시청 기록은 (회원, 작품)당 한 줄에 "가장 최근에 연 회차"만 남습니다. 그대로 합산하면 지난달에
-  // 이미 정산한 회차가 이번 달에 또 잡히므로, 마지막 정산 시점을 표시해 두고 늘어난 만큼만 셉니다.
-  const rows = await db.all(
-    `SELECT h.user_id, h.drama_id, h.episode, d.owner_id AS pd_id, COALESCE(m.episode,0) AS settled
-     FROM history h JOIN dramas d ON d.id=h.drama_id
-     LEFT JOIN settlement_watch_marks m ON m.user_id=h.user_id AND m.drama_id=h.drama_id
-     WHERE h.updated_at<?`,
-    [end],
-  );
-  const counted = rows
-    .map((r) => ({ ...r, weight: Math.max(0, Number(r.episode) - Number(r.settled)) }))
-    .filter((r) => r.weight > 0);
+  // 구독 풀은 그 달에 구독 덕분에 실제로 재생된 회차 수(회원·작품·회차별 1회)로 나눕니다.
+  // 기록은 재생 서버가 남기며(무료 회차·구매 회차·작품 소유자·관리자 제외) 화면이 보낸 값은 쓰지 않습니다.
+  const counted = (
+    await db.all(
+      `SELECT v.drama_id, d.owner_id AS pd_id, COUNT(*) AS weight
+       FROM subscription_views v JOIN dramas d ON d.id=v.drama_id
+       WHERE v.period=? AND v.user_id<>d.owner_id
+       GROUP BY v.drama_id, d.owner_id`,
+      [period],
+    )
+  ).map((r) => ({ ...r, weight: Number(r.weight) }));
   const weights = new Map();
   for (const row of counted)
     weights.set(row.pd_id, (weights.get(row.pd_id) || 0) + row.weight);
   const total = [...weights.values()].reduce((n, w) => n + w, 0);
-  if (!pool || !total)
-    return { period, pool, shares: [], reason: pool ? '시청 기록 없음' : '구독 매출 없음' };
   const stamp = iso();
+  if (!pool || !total) {
+    // 배분할 것이 없어도 마감 기록은 남겨, 다음 달 마감 순서 검사가 막히지 않게 합니다.
+    await db.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [
+      randomUUID(),
+      actorId,
+      'settlement:closed',
+      period,
+      stamp,
+    ]);
+    return { period, pool, shares: [], reason: pool ? '시청 기록 없음' : '구독 매출 없음' };
+  }
   const ordered = [...weights.entries()].sort((a, b) => b[1] - a[1]);
   const amounts = ordered.map(([, weight]) => Math.floor((pool * weight) / total));
   // 절사로 남은 금액은 가장 많이 시청된 방송국에 더해 풀 전액이 빠짐없이 배분되게 합니다.
@@ -201,11 +213,6 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
     );
     shares.push({ pd_id: pdId, weight, gross, net });
   }
-  for (const row of counted)
-    await db.run(
-      'INSERT INTO settlement_watch_marks (user_id,drama_id,episode,period) VALUES (?,?,?,?) ON CONFLICT(user_id,drama_id) DO UPDATE SET episode=excluded.episode,period=excluded.period',
-      [row.user_id, row.drama_id, row.episode, period],
-    );
   await db.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [
     randomUUID(),
     actorId,
@@ -220,6 +227,8 @@ export async function requestPayout(db, { pdId, profile, settings }) {
     throw error(400, '출금 계좌를 먼저 등록해 주세요.');
   if (profile.business_type === 'business' && !profile.business_no)
     throw error(400, '사업자등록번호를 먼저 등록해 주세요.');
+  if (profile.business_type === 'business' && !isVerifiedBusiness(profile))
+    throw error(409, '사업자 정보 확인 중입니다. 관리자 확인 후 출금할 수 있어요. 급하면 개인으로 바꿔 신청해 주세요.');
   return db.transaction(async () => {
     // 같은 PD의 출금 신청이 동시에 들어와도 한 번만 처리되도록 사용자 행을 잠급니다.
     if (db.engine === 'postgresql')
@@ -304,16 +313,23 @@ export async function convertToLama(db, { pdId, profile, settings, credit }) {
 }
 export async function processPayout(db, { payoutId, action, actorId, memo = '' }) {
   return db.transaction(async () => {
-    const payout = await db.get('SELECT * FROM payouts WHERE id=?', [payoutId]);
+    // 두 관리자가 같은 출금을 동시에 처리해도 한 번만 반영되도록 행을 잠그고 상태 조건으로 갱신합니다.
+    const payout = await db.get(
+      'SELECT * FROM payouts WHERE id=?' + (db.engine === 'postgresql' ? ' FOR UPDATE' : ''),
+      [payoutId],
+    );
     if (!payout) throw error(404, '출금 요청을 찾을 수 없습니다.');
+    if (payout.method === 'lama') throw error(409, '라마 전환 내역은 처리할 수 없습니다.');
     if (['paid', 'rejected'].includes(payout.status))
       throw error(409, '이미 처리된 출금 요청입니다.');
     if (action === 'rejected' && !memo.trim()) throw error(400, '반려 사유를 입력해 주세요.');
     const stamp = iso();
-    await db.run(
-      'UPDATE payouts SET status=?,memo=?,processed_at=?,processed_by=? WHERE id=?',
+    const changed = await db.run(
+      "UPDATE payouts SET status=?,memo=?,processed_at=?,processed_by=? WHERE id=? AND status IN ('requested','approved')",
       [action, memo, action === 'approved' ? null : stamp, actorId, payoutId],
     );
+    if (Number(changed?.rowCount ?? changed?.changes ?? 1) === 0)
+      throw error(409, '이미 처리된 출금 요청입니다.');
     if (action === 'paid')
       await db.run("UPDATE settlement_entries SET status='paid' WHERE payout_id=?", [payoutId]);
     if (action === 'rejected')

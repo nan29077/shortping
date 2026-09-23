@@ -16,10 +16,61 @@ import {
   type Capability,
 } from './api';
 import { Empty, Modal } from './App';
+import './serial/serial.css';
 
 type Run = (fn: () => Promise<unknown>, message?: string) => Promise<unknown>;
 const n = (v: unknown) => Number(v) || 0;
-const countryLabel: Record<string, string> = { US: '미국', CN: '중국', KR: '한국', EU: '유럽', JP: '일본' };
+
+// ── 작업 종류(기능) · api.ts의 Capability(5종)에 새 기능 3종을 더해 씁니다 ─────────
+export type AdminCap = Capability | 'music' | 'sfx' | 'lipsync';
+export const ADMIN_CAPS: AdminCap[] = [
+  'text',
+  'image',
+  'tts',
+  'video',
+  'stt',
+  'music',
+  'sfx',
+  'lipsync',
+];
+// 배경음악·효과음·입 모양 맞추기는 최고관리자가 라마 가격(고정 단가)을 정해야 PD에게 열립니다.
+export const PRICE_REQUIRED: AdminCap[] = ['music', 'sfx', 'lipsync'];
+const extraCapLabel: Record<string, string> = {
+  music: '배경음악',
+  sfx: '효과음',
+  lipsync: '입 모양 맞추기',
+};
+export const capLabel = (c: string, server?: Record<string, string>) =>
+  (capabilityLabel as Record<string, string>)[c] || extraCapLabel[c] || server?.[c] || c;
+export const capUnit: Record<AdminCap, string> = {
+  text: 'per_1k_tokens',
+  image: 'per_image',
+  video: 'per_second',
+  tts: 'per_1k_chars',
+  stt: 'per_minute',
+  music: 'per_second',
+  sfx: 'per_second',
+  lipsync: 'per_second',
+};
+export const needsPrice = (m: { capability: string; price_lama: number | string }) =>
+  PRICE_REQUIRED.includes(m.capability as AdminCap) && !(Number(m.price_lama) > 0);
+export function PriceMissingChip() {
+  return (
+    <span
+      className="serial-chip warn ai-price-warn"
+      title="라마 고정 단가를 정해야 PD가 쓸 수 있어요"
+    >
+      가격 미설정 · PD에게 ‘준비 중’으로 보여요
+    </span>
+  );
+}
+const countryLabel: Record<string, string> = {
+  US: '미국',
+  CN: '중국',
+  KR: '한국',
+  EU: '유럽',
+  JP: '일본',
+};
 
 // ── 일별 원가·매출 차트 + 모델 상태표 ───────────────────────────
 export function Analytics() {
@@ -42,7 +93,15 @@ export function Analytics() {
     H = 180,
     pad = 28;
   const bw = series.length ? (W - pad) / series.length : 0;
-  const totals = series.reduce((a, s) => ({ cost: a.cost + n(s.cost_won), rev: a.rev + n(s.lama) * 10, jobs: a.jobs + n(s.jobs), failed: a.failed + n(s.failed) }), { cost: 0, rev: 0, jobs: 0, failed: 0 });
+  const totals = series.reduce(
+    (a, s) => ({
+      cost: a.cost + n(s.cost_won),
+      rev: a.rev + n(s.lama) * 10,
+      jobs: a.jobs + n(s.jobs),
+      failed: a.failed + n(s.failed),
+    }),
+    { cost: 0, rev: 0, jobs: 0, failed: 0 },
+  );
   const h = hover !== null ? series[hover] : null;
   const y = (v: number) => H - 20 - (v / max) * (H - 36);
   return (
@@ -51,7 +110,8 @@ export function Analytics() {
         <div>
           <h3>일별 AI 원가 · 라마 매출</h3>
           <p>
-            최근 {days}일 · 원가 {won(totals.cost)} · 매출 {won(totals.rev)} · 작업 {totals.jobs}건 (실패 {totals.failed})
+            최근 {days}일 · 원가 {won(totals.cost)} · 매출 {won(totals.rev)} · 작업 {totals.jobs}건
+            (실패 {totals.failed})
           </p>
         </div>
         <div className="segmented">
@@ -72,9 +132,19 @@ export function Analytics() {
             <span>
               <i className="rev" /> 라마 매출
             </span>
-            <span className="chart-readout">{h ? `${h.day} · 원가 ${won(n(h.cost_won))} · 매출 ${won(n(h.lama) * 10)} · 작업 ${h.jobs}건${h.failed ? ` (실패 ${h.failed})` : ''}` : '막대에 올려 보면 날짜별 값이 보여요'}</span>
+            <span className="chart-readout">
+              {h
+                ? `${h.day} · 원가 ${won(n(h.cost_won))} · 매출 ${won(n(h.lama) * 10)} · 작업 ${h.jobs}건${h.failed ? ` (실패 ${h.failed})` : ''}`
+                : '막대에 올려 보면 날짜별 값이 보여요'}
+            </span>
           </div>
-          <svg className="ai-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`최근 ${days}일 일별 AI 원가와 라마 매출 막대 차트`} onMouseLeave={() => setHover(null)}>
+          <svg
+            className="ai-chart"
+            viewBox={`0 0 ${W} ${H}`}
+            role="img"
+            aria-label={`최근 ${days}일 일별 AI 원가와 라마 매출 막대 차트`}
+            onMouseLeave={() => setHover(null)}
+          >
             {[0, 0.5, 1].map((t) => (
               <g key={t}>
                 <line x1={pad} x2={W} y1={y(max * t)} y2={y(max * t)} className="grid" />
@@ -89,10 +159,28 @@ export function Analytics() {
               return (
                 <g key={s.day} onMouseEnter={() => setHover(i)} onClick={() => setHover(i)}>
                   <rect x={x} y={0} width={bw} height={H} fill="transparent" />
-                  <rect className="bar cost" x={x + 1} y={y(n(s.cost_won))} width={w} height={H - 20 - y(n(s.cost_won))} rx={2} />
-                  <rect className="bar rev" x={x + 1 + w} y={y(n(s.lama) * 10)} width={w} height={H - 20 - y(n(s.lama) * 10)} rx={2} />
-                  {s.failed > 0 && <circle cx={x + bw / 2} cy={H - 8} r={2.5} className="fail-dot" />}
-                  {(i === 0 || i === series.length - 1 || (series.length > 10 && i % Math.ceil(series.length / 6) === 0)) && (
+                  <rect
+                    className="bar cost"
+                    x={x + 1}
+                    y={y(n(s.cost_won))}
+                    width={w}
+                    height={H - 20 - y(n(s.cost_won))}
+                    rx={2}
+                  />
+                  <rect
+                    className="bar rev"
+                    x={x + 1 + w}
+                    y={y(n(s.lama) * 10)}
+                    width={w}
+                    height={H - 20 - y(n(s.lama) * 10)}
+                    rx={2}
+                  />
+                  {s.failed > 0 && (
+                    <circle cx={x + bw / 2} cy={H - 8} r={2.5} className="fail-dot" />
+                  )}
+                  {(i === 0 ||
+                    i === series.length - 1 ||
+                    (series.length > 10 && i % Math.ceil(series.length / 6) === 0)) && (
                     <text x={x + bw / 2} y={H - 2} textAnchor="middle" className="axis">
                       {s.day.slice(5)}
                     </text>
@@ -123,12 +211,21 @@ export function Analytics() {
                       <td>
                         <strong>{m.label}</strong>
                         <small>
-                          {m.provider} {m.country ? `· ${countryLabel[m.country] || m.country}` : ''} · {capabilityLabel[m.capability] || m.capability}
+                          {m.provider}{' '}
+                          {m.country ? `· ${countryLabel[m.country] || m.country}` : ''} ·{' '}
+                          {capLabel(m.capability)}
                         </small>
                       </td>
                       <td>{m.jobs}</td>
                       <td>
-                        <span className={'health ' + (m.success_rate >= 95 ? 'good' : m.success_rate >= 80 ? 'mid' : 'bad')}>{m.success_rate}%</span>
+                        <span
+                          className={
+                            'health ' +
+                            (m.success_rate >= 95 ? 'good' : m.success_rate >= 80 ? 'mid' : 'bad')
+                          }
+                        >
+                          {m.success_rate}%
+                        </span>
                       </td>
                       <td>{m.avg_seconds === null ? '-' : m.avg_seconds + '초'}</td>
                       <td>{m.retries}</td>
@@ -149,18 +246,31 @@ export function Analytics() {
 }
 
 // ── 공급사 모델 목록 불러오기 → 바로 등록 ─────────────────────────
-export function DiscoverModal({ provider, data, run, close }: { provider: AiProviderView; data: AdminAi; run: Run; close: () => void }) {
+export function DiscoverModal({
+  provider,
+  data,
+  run,
+  close,
+}: {
+  provider: AiProviderView;
+  data: AdminAi;
+  run: Run;
+  close: () => void;
+}) {
   const [list, setList] = useState<{ id: string; added: boolean }[] | null>(null);
   const [err, setErr] = useState('');
   const [q, setQ] = useState('');
-  const caps = (data.catalog[provider.kind]?.capabilities || ['text']) as Capability[];
-  const [cap, setCap] = useState<Capability>(caps[0]);
+  const caps = (data.catalog[provider.kind]?.capabilities || ['text']) as AdminCap[];
+  const [cap, setCap] = useState<AdminCap>(caps[0]);
   const [cost, setCost] = useState('');
   const [tier, setTier] = useState('standard');
   const load = async () => {
     setErr('');
     try {
-      const r = await api<{ models: { id: string; added: boolean }[] }>(`/admin/ai/providers/${provider.id}/discover`, 'POST');
+      const r = await api<{ models: { id: string; added: boolean }[] }>(
+        `/admin/ai/providers/${provider.id}/discover`,
+        'POST',
+      );
       setList(r.models);
     } catch (e) {
       setErr((e as Error).message);
@@ -182,26 +292,37 @@ export function DiscoverModal({ provider, data, run, close }: { provider: AiProv
           cost_usd: Number(cost),
           price_lama: 0,
           tags: [],
-          max_seconds: 10,
+          max_seconds: cap === 'music' ? 180 : cap === 'sfx' || cap === 'lipsync' ? 30 : 10,
           image_input: cap === 'video',
           active: true,
           priority: 50,
           notes: '모델 목록에서 추가',
         }),
-      `${id} 모델을 추가했어요. ‘모델 · 가격’에서 태그·가격을 다듬어 주세요.`,
+      PRICE_REQUIRED.includes(cap)
+        ? `${id} 모델을 추가했어요. ${capLabel(cap)} 모델은 ‘모델 · 가격’에서 라마 고정 단가를 정해야 PD에게 열려요.`
+        : `${id} 모델을 추가했어요. ‘모델 · 가격’에서 태그·가격을 다듬어 주세요.`,
     );
     if (r) setList((l) => l && l.map((m) => (m.id === id ? { ...m, added: true } : m)));
   };
   return (
     <Modal title={`${provider.name} 모델 불러오기`} close={close}>
-      <p className="muted">공급사 API에서 쓸 수 있는 모델 ID를 불러왔어요. 작업 종류와 원가를 정한 뒤 ‘추가’를 누르세요. 원가는 공급사 가격표로 꼭 확인하세요.</p>
+      <p className="muted">
+        공급사 API에서 쓸 수 있는 모델 ID를 불러왔어요. 작업 종류와 원가를 정한 뒤 ‘추가’를
+        누르세요. 원가는 공급사 가격표로 꼭 확인하세요.
+      </p>
+      {PRICE_REQUIRED.includes(cap) && (
+        <div className="info-box">
+          {capLabel(cap)} 모델은 추가한 뒤 ‘모델 · 가격’에서 라마 고정 단가를 정해야 PD에게 열려요.
+          그 전에는 ‘준비 중’으로 보여요.
+        </div>
+      )}
       <div className="form-columns">
         <label>
           작업
-          <select value={cap} onChange={(e) => setCap(e.target.value as Capability)}>
+          <select value={cap} onChange={(e) => setCap(e.target.value as AdminCap)}>
             {caps.map((c) => (
               <option key={c} value={c}>
-                {capabilityLabel[c]}
+                {capLabel(c, data.capabilities)}
               </option>
             ))}
           </select>
@@ -218,7 +339,14 @@ export function DiscoverModal({ provider, data, run, close }: { provider: AiProv
         </label>
         <label>
           원가 USD (단위당)
-          <input type="number" step="0.0001" min={0} value={cost} placeholder="필수" onChange={(e) => setCost(e.target.value)} />
+          <input
+            type="number"
+            step="0.0001"
+            min={0}
+            value={cost}
+            placeholder="필수"
+            onChange={(e) => setCost(e.target.value)}
+          />
         </label>
       </div>
       <label className="search-field">
@@ -241,7 +369,11 @@ export function DiscoverModal({ provider, data, run, close }: { provider: AiProv
             {m.added ? (
               <span className="status-chip neutral">등록됨</span>
             ) : (
-              <button className="secondary compact" disabled={cost === '' || Number(cost) < 0} onClick={() => void add(m.id)}>
+              <button
+                className="secondary compact"
+                disabled={cost === '' || Number(cost) < 0}
+                onClick={() => void add(m.id)}
+              >
                 <Plus size={13} /> 추가
               </button>
             )}
@@ -255,10 +387,16 @@ export function DiscoverModal({ provider, data, run, close }: { provider: AiProv
 
 // ── 라우팅 규칙: 작업 × 품질 등급별로 먼저 쓸 모델 순서 ───────────────
 export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run }) {
-  const caps: Capability[] = ['text', 'image', 'tts', 'video'];
+  const caps: AdminCap[] = ['text', 'image', 'tts', 'video', 'music', 'sfx', 'lipsync'];
   const tiers = ['draft', 'standard', 'premium'];
-  const [edit, setEdit] = useState<{ capability: Capability; tier: string; ids: string[]; active: boolean } | null>(null);
-  const rule = (c: string, t: string) => data.routes.find((r) => r.capability === c && r.tier === t);
+  const [edit, setEdit] = useState<{
+    capability: AdminCap;
+    tier: string;
+    ids: string[];
+    active: boolean;
+  } | null>(null);
+  const rule = (c: string, t: string) =>
+    data.routes.find((r) => r.capability === c && r.tier === t);
   const label = (id: string) => data.models.find((m) => m.id === id);
   return (
     <section className="management-panel">
@@ -266,8 +404,9 @@ export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; r
         <div>
           <h3>라우팅 규칙</h3>
           <p>
-            PD가 ‘자동 선택’을 고르면 여기서 정한 순서대로 모델을 써요. 앞 모델이 실패·일시 차단·예산 초과면 다음 모델로 넘어가고, 규칙이
-            없으면 품질 등급 → 장면 태그 → 우선순위 → 가격 순으로 자동으로 골라요.
+            PD가 ‘자동 선택’을 고르면 여기서 정한 순서대로 모델을 써요. 앞 모델이 실패·일시
+            차단·예산 초과면 다음 모델로 넘어가고, 규칙이 없으면 품질 등급 → 장면 태그 → 우선순위 →
+            가격 순으로 자동으로 골라요.
           </p>
         </div>
       </div>
@@ -285,19 +424,31 @@ export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; r
             {caps.map((c) => (
               <tr key={c}>
                 <td>
-                  <strong>{capabilityLabel[c]}</strong>
+                  <strong>{capLabel(c, data.capabilities)}</strong>
+                  {PRICE_REQUIRED.includes(c) && <small>가격을 정한 모델만 PD에게 열려요</small>}
                 </td>
                 {tiers.map((t) => {
                   const r = rule(c, t);
                   const ids = r ? r.model_ids.split(',').filter(Boolean) : [];
                   return (
                     <td key={t}>
-                      <button className={'route-cell' + (r && !r.active ? ' off' : '')} onClick={() => setEdit({ capability: c, tier: t, ids, active: r ? !!r.active : true })}>
+                      <button
+                        className={'route-cell' + (r && !r.active ? ' off' : '')}
+                        onClick={() =>
+                          setEdit({ capability: c, tier: t, ids, active: r ? !!r.active : true })
+                        }
+                      >
                         {ids.length ? (
                           <ol>
-                            {ids.map((id) => (
-                              <li key={id}>{label(id)?.label || '삭제된 모델'}</li>
-                            ))}
+                            {ids.map((id) => {
+                              const m = label(id);
+                              return (
+                                <li key={id}>
+                                  {m?.label || '삭제된 모델'}
+                                  {m && needsPrice(m) ? ' (가격 미설정)' : ''}
+                                </li>
+                              );
+                            })}
                           </ol>
                         ) : (
                           <span className="muted">자동</span>
@@ -313,23 +464,63 @@ export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; r
         </table>
       </div>
       {edit && (
-        <Modal title={`${capabilityLabel[edit.capability]} · ${tierLabel[edit.tier]} 규칙`} close={() => !busy && setEdit(null)}>
+        <Modal
+          title={`${capLabel(edit.capability, data.capabilities)} · ${tierLabel[edit.tier]} 규칙`}
+          close={() => !busy && setEdit(null)}
+        >
           <p className="muted">위에 있는 모델부터 써요. 비우고 저장하면 자동 선택으로 돌아가요.</p>
+          {PRICE_REQUIRED.includes(edit.capability) && (
+            <div className="info-box">
+              라마 가격을 정하지 않은 모델은 규칙에 넣어도 PD에게 열리지 않아요(‘준비 중’). ‘모델 ·
+              가격’에서 고정 단가를 먼저 정해 주세요.
+            </div>
+          )}
           <ol className="route-edit">
             {edit.ids.map((id, i) => {
               const m = label(id);
               return (
                 <li key={id}>
                   <span>
-                    <b>{i + 1}</b> {m?.label || '삭제된 모델'} <small>{m ? `${m.provider_name}${data.providers.find((p) => p.id === m.provider_id)?.country === 'CN' ? ' · 중국' : ''}` : ''}</small>
+                    <b>{i + 1}</b> {m?.label || '삭제된 모델'}{' '}
+                    {m && needsPrice(m) && <PriceMissingChip />}{' '}
+                    <small>
+                      {m
+                        ? `${m.provider_name}${data.providers.find((p) => p.id === m.provider_id)?.country === 'CN' ? ' · 중국' : ''}`
+                        : ''}
+                    </small>
                   </span>
-                  <button aria-label="위로" disabled={i === 0} onClick={() => setEdit({ ...edit, ids: edit.ids.map((x, j) => (j === i - 1 ? id : j === i ? edit.ids[i - 1] : x)) })}>
+                  <button
+                    aria-label="위로"
+                    disabled={i === 0}
+                    onClick={() =>
+                      setEdit({
+                        ...edit,
+                        ids: edit.ids.map((x, j) =>
+                          j === i - 1 ? id : j === i ? edit.ids[i - 1] : x,
+                        ),
+                      })
+                    }
+                  >
                     <ArrowUp size={13} />
                   </button>
-                  <button aria-label="아래로" disabled={i === edit.ids.length - 1} onClick={() => setEdit({ ...edit, ids: edit.ids.map((x, j) => (j === i + 1 ? id : j === i ? edit.ids[i + 1] : x)) })}>
+                  <button
+                    aria-label="아래로"
+                    disabled={i === edit.ids.length - 1}
+                    onClick={() =>
+                      setEdit({
+                        ...edit,
+                        ids: edit.ids.map((x, j) =>
+                          j === i + 1 ? id : j === i ? edit.ids[i + 1] : x,
+                        ),
+                      })
+                    }
+                  >
                     <ArrowDown size={13} />
                   </button>
-                  <button aria-label="빼기" onClick={() => setEdit({ ...edit, ids: edit.ids.filter((x) => x !== id) })}>
+                  <button
+                    aria-label="빼기"
+                    onClick={() => setEdit({ ...edit, ids: edit.ids.filter((x) => x !== id) })}
+                  >
                     <X size={13} />
                   </button>
                 </li>
@@ -340,27 +531,47 @@ export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; r
             모델 추가
             <select
               value=""
-              onChange={(e) => e.target.value && edit.ids.length < 10 && setEdit({ ...edit, ids: [...edit.ids, e.target.value] })}
+              onChange={(e) =>
+                e.target.value &&
+                edit.ids.length < 10 &&
+                setEdit({ ...edit, ids: [...edit.ids, e.target.value] })
+              }
             >
               <option value="">모델 고르기</option>
               {data.models
-                .filter((m) => m.capability === edit.capability && m.active && !edit.ids.includes(m.id))
+                .filter(
+                  (m) => m.capability === edit.capability && m.active && !edit.ids.includes(m.id),
+                )
                 .map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.label} · {m.provider_name} · {tierLabel[m.tier]} · {lama(m.lama_per_unit)}
+                    {m.label} · {m.provider_name} · {tierLabel[m.tier]} ·{' '}
+                    {needsPrice(m) ? '가격 미설정' : lama(m.lama_per_unit)}
                   </option>
                 ))}
             </select>
           </label>
           <label className="check-row">
-            <input type="checkbox" checked={edit.active} onChange={(e) => setEdit({ ...edit, active: e.target.checked })} />
+            <input
+              type="checkbox"
+              checked={edit.active}
+              onChange={(e) => setEdit({ ...edit, active: e.target.checked })}
+            />
             <span>이 규칙 사용</span>
           </label>
           <button
             className="primary full"
             disabled={busy}
             onClick={async () => {
-              const r = await run(() => api('/admin/ai/routes', 'PUT', { capability: edit.capability, tier: edit.tier, model_ids: edit.ids, active: edit.active }), edit.ids.length ? '라우팅 규칙을 저장했어요.' : '자동 선택으로 되돌렸어요.');
+              const r = await run(
+                () =>
+                  api('/admin/ai/routes', 'PUT', {
+                    capability: edit.capability,
+                    tier: edit.tier,
+                    model_ids: edit.ids,
+                    active: edit.active,
+                  }),
+                edit.ids.length ? '라우팅 규칙을 저장했어요.' : '자동 선택으로 되돌렸어요.',
+              );
               if (r) setEdit(null);
             }}
           >
@@ -372,8 +583,19 @@ export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; r
   );
 }
 
-const apStatus: Record<string, string> = { running: '자동 제작 중', paused: '자동 제작 멈춤', done: '자동 제작 완료', stopped: '자동 제작 중지' };
-const dramaStatus: Record<string, string> = { draft: '임시저장', pending: '심사 대기', published: '공개 중', rejected: '반려', hidden: '노출 중단' };
+const apStatus: Record<string, string> = {
+  running: '빠른 제작 중',
+  paused: '빠른 제작 멈춤',
+  done: '빠른 제작 완료',
+  stopped: '빠른 제작 중지',
+};
+const dramaStatus: Record<string, string> = {
+  draft: '임시저장',
+  pending: '심사 대기',
+  published: '공개 중',
+  rejected: '반려',
+  hidden: '노출 중단',
+};
 // ── 모든 PD의 스튜디오 프로젝트 ────────────────────────────────
 export function ProjectsTab() {
   const [rows, setRows] = useState<AiProjectRow[] | null>(null);
@@ -386,7 +608,15 @@ export function ProjectsTab() {
   useEffect(() => {
     void load();
   }, []);
-  const shown = useMemo(() => (rows || []).filter((r) => !q || `${r.title} ${r.owner_name} ${r.owner_email}`.toLowerCase().includes(q.toLowerCase())), [rows, q]);
+  const shown = useMemo(
+    () =>
+      (rows || []).filter(
+        (r) =>
+          !q ||
+          `${r.title} ${r.owner_name} ${r.owner_email}`.toLowerCase().includes(q.toLowerCase()),
+      ),
+    [rows, q],
+  );
   const ap = (raw: string) => {
     try {
       return raw ? (JSON.parse(raw) as { status: string; message: string }) : null;
@@ -399,7 +629,9 @@ export function ProjectsTab() {
       <div className="panel-heading">
         <div>
           <h3>프로젝트 모니터</h3>
-          <p>PD들이 숏핑 스튜디오에서 만들고 있는 프로젝트와 사용 라마·원가, 자동 제작 상태를 봐요.</p>
+          <p>
+            PD들이 숏핑 스튜디오에서 만들고 있는 프로젝트와 사용 라마·원가, 빠른 제작 상태를 봐요.
+          </p>
         </div>
         <button className="secondary compact" onClick={() => void load()}>
           <RefreshCw size={14} /> 새로고침
@@ -411,7 +643,10 @@ export function ProjectsTab() {
       </label>
       {err && <p className="danger">{err}</p>}
       {rows && !rows.length ? (
-        <Empty title="아직 스튜디오 프로젝트가 없어요" text="PD가 숏핑 스튜디오에서 프로젝트를 만들면 여기에 보여요." />
+        <Empty
+          title="아직 스튜디오 프로젝트가 없어요"
+          text="PD가 숏핑 스튜디오에서 프로젝트를 만들면 여기에 보여요."
+        />
       ) : (
         <div className="table-scroll">
           <table className="management-table">
@@ -450,11 +685,16 @@ export function ProjectsTab() {
                     </td>
                     <td>
                       {a && (
-                        <span className={'status-chip ' + (a.status === 'running' ? '' : 'neutral')} title={a.message}>
+                        <span
+                          className={'status-chip ' + (a.status === 'running' ? '' : 'neutral')}
+                          title={a.message}
+                        >
                           <Bot size={11} /> {apStatus[a.status] || a.status}
                         </span>
                       )}
-                      {r.drama_status && <small>작품: {dramaStatus[r.drama_status] || r.drama_status}</small>}
+                      {r.drama_status && (
+                        <small>작품: {dramaStatus[r.drama_status] || r.drama_status}</small>
+                      )}
                     </td>
                     <td className="nowrap">{moment(r.updated_at)}</td>
                   </tr>
@@ -482,7 +722,10 @@ export function SafetyTab() {
       <div className="panel-heading">
         <div>
           <h3>안전 기록</h3>
-          <p>금칙어(딥페이크·실존 인물·미성년 선정성 등, 정책 탭의 추가 금칙어 포함)에 걸려 시작 전에 막힌 요청이에요. 라마는 쓰이지 않았어요.</p>
+          <p>
+            금칙어(딥페이크·실존 인물·미성년 선정성 등, 정책 탭의 추가 금칙어 포함)에 걸려 시작 전에
+            막힌 요청이에요. 라마는 쓰이지 않았어요.
+          </p>
         </div>
       </div>
       {err && <p className="danger">{err}</p>}

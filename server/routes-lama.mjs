@@ -13,6 +13,8 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
     const bonus = Number(settings.lama_signup_bonus || 0);
     if (bonus <= 0) return;
     await db.transaction(async () => {
+      // 여러 화면이 동시에 지갑을 열어도 체험 라마는 한 번만 지급합니다.
+      await db.lockUser(userId);
       if (await db.get("SELECT id FROM lama_ledger WHERE user_id=? AND type='welcome' LIMIT 1", [userId])) return;
       await creditLama(db, { userId, type: 'welcome', bonus, memo: '숏핑 스튜디오 체험 라마' });
     });
@@ -47,7 +49,8 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
     if (!demo) fail(503, '결제 서비스 연동 준비 중입니다.');
     const b = z.object({ productId: z.string().min(1).max(80), idempotencyKey: z.string().uuid() }).parse(req.body);
     const settings = await loadSettings(db);
-    const result = await db.transaction(async () => {
+    const tx = async () => {
+      await db.lockUser(req.user.id);
       const existing = await db.get('SELECT * FROM orders WHERE idempotency_key=?', [b.idempotencyKey]);
       if (existing) {
         if (existing.user_id !== req.user.id || existing.kind !== 'lama_charge') fail(409, '중복 요청입니다.');
@@ -62,7 +65,14 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
       );
       const wallet = await creditLama(db, { userId: req.user.id, type: 'charge', paid: product.lama, bonus: product.bonus_lama, orderId: id, memo: product.name });
       return { id, amount: product.price, lama: product.lama, bonus: product.bonus_lama, wallet };
-    });
+    };
+    let result;
+    try {
+      result = await db.transaction(tx);
+    } catch (e) {
+      if (!db.isUnique(e)) throw e;
+      result = await db.transaction(tx);
+    }
     res.json(result);
   });
   // 정산 수익(출금 가능 전액)을 라마로 바꿉니다. 세금 규칙은 출금과 같습니다.

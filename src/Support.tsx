@@ -84,6 +84,15 @@ export default function Support({
           onSubmit={async (e) => {
             e.preventDefault();
             if (busy) return;
+            // 서버와 같은 기준(앞뒤 공백 제외)으로 먼저 확인합니다.
+            if (title.trim().length < 2) {
+              notify('제목을 2자 이상 입력해 주세요.');
+              return;
+            }
+            if (body.trim().length < 10) {
+              notify('문의 내용을 공백을 제외하고 10자 이상 입력해 주세요.');
+              return;
+            }
             setBusy(true);
             try {
               await api('/support', 'POST', { category, title, body });
@@ -129,7 +138,10 @@ export default function Support({
               placeholder="10자 이상 입력해 주세요. 비밀번호나 카드번호는 포함하지 마세요."
             />
           </label>
-          <small className="muted">{body.length.toLocaleString()} / 5,000</small>
+          <small className="muted">
+            {body.trim().length.toLocaleString()} / 5,000
+            {body.length > 0 && body.trim().length < 10 && ' · 10자 이상 입력해 주세요'}
+          </small>
           <button className="primary full" disabled={busy}>
             <Send size={16} />
             {busy ? '접수 중…' : '문의 접수하기'}

@@ -31,6 +31,8 @@ export const settingDefaults = {
   ai_allow_cn: 1, // 중국 공급사(Kling·Hailuo·Wan·Seedance·DeepSeek 등) 사용 허용
   ai_breaker_failures: 5, // 공급사 연속 실패가 이 횟수면 잠시 자동 제외
   ai_breaker_cooldown_min: 10, // 자동 제외 시간(분)
+  // 어디에서도 쓰지 않는 업로드 파일을 만든 뒤 며칠 지나면 지울지(일). 0이면 자동 정리를 하지 않습니다.
+  media_retention_days: 91,
   payout_notice:
     '출금은 영업일 기준 3일 이내에 지급됩니다. 지급대행 연동 후 자동 이체로 전환됩니다.',
   home_theme: 'cinematic',
@@ -40,6 +42,8 @@ export const settingDefaults = {
   home_description: '다양한 장르의 숏폼 드라마를\n언제 어디서나 만나보세요.',
   home_caption: '오늘의 장면이 내일의 취향이 됩니다.',
   home_copyright: '© 2026 SHORTPING',
+  home_style: '', // PC 여백 글자 색·크기·배경(JSON, server/home-layout.mjs)
+  home_layout: '', // 메인 화면 구성: 추천 배너·섹션 순서·에디터 추천·공지 띠(JSON)
 };
 const numeric = new Set(
   Object.entries(settingDefaults)

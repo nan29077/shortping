@@ -20,6 +20,9 @@ export const MOCK_MODELS = [
   ['mock-video-cinema', 'video', '가짜 영상 시네마 (개발용)', 'premium', 20, 'dialogue,closeup,cinematic,lipsync'],
   ['mock-voice', 'tts', '가짜 음성 (개발용)', 'standard', 20, 'korean'],
   ['mock-stt', 'stt', '가짜 자막 인식 (개발용)', 'standard', 10, 'korean'],
+  ['mock-music', 'music', '가짜 배경음악 (개발용)', 'standard', 0.2, 'emotion'],
+  ['mock-sfx', 'sfx', '가짜 효과음 (개발용)', 'standard', 0.5, 'scene'],
+  ['mock-lipsync', 'lipsync', '가짜 입 모양 (개발용)', 'standard', 1, 'lipsync,dialogue'],
 ];
 export async function seedMock(db) {
   const stamp = new Date().toISOString();
@@ -30,7 +33,7 @@ export async function seedMock(db) {
   for (const [id, capability, label, tier, price, tags] of MOCK_MODELS)
     await db.run(
       'INSERT INTO ai_models (id,provider_id,capability,model_id,label,tier,unit,cost_usd,price_lama,tags,max_seconds,image_input,active,priority,created_at,updated_at) VALUES (?,?,?,?,?,?,?,0,?,?,?,1,1,50,?,?) ON CONFLICT(id) DO NOTHING',
-      [id, 'mock', capability, id, label, tier, unitOf[capability], price, tags, 10, stamp, stamp],
+      [id, 'mock', capability, id, label, tier, unitOf[capability], price, tags, capability === 'music' ? 180 : capability === 'lipsync' || capability === 'sfx' ? 30 : 10, stamp, stamp],
     );
 }
 
@@ -93,7 +96,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
         ),
       },
       jobs: await db.all(
-        'SELECT j.id,j.user_id,j.kind,j.capability,j.status,j.requested_model,j.tier,j.estimate_lama,j.charged_lama,j.cost_won,j.error,j.attempts,j.created_at,j.finished_at,j.billed,u.name AS user_name,m.label AS model_label,p.name AS provider_name FROM ai_jobs j JOIN users u ON u.id=j.user_id LEFT JOIN ai_models m ON m.id=j.model_ref LEFT JOIN ai_providers p ON p.id=j.provider_id ORDER BY j.created_at DESC LIMIT 150',
+        "SELECT j.id,j.user_id,j.kind,j.capability,j.status,j.requested_model,j.tier,j.estimate_lama,j.charged_lama,j.cost_won,j.error,j.error_detail,j.attempts,j.created_at,j.finished_at,j.billed,u.name AS user_name,m.label AS model_label,p.name AS provider_name FROM ai_jobs j JOIN users u ON u.id=j.user_id LEFT JOIN ai_models m ON m.id=j.model_ref LEFT JOIN ai_providers p ON p.id=j.provider_id ORDER BY j.created_at DESC LIMIT 150",
       ),
       limits: await db.all(
         "SELECT u.id,u.name,u.email,u.role,l.daily_lama,l.monthly_lama,COALESCE(l.blocked,0) AS blocked FROM users u LEFT JOIN ai_user_limits l ON l.user_id=u.id WHERE u.role IN ('pd','admin') ORDER BY u.name",
@@ -113,7 +116,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
     secret: z.string().trim().max(2000).optional(),
     clear_key: z.boolean().optional(),
     max_concurrency: z.number().int().min(0).max(100).default(0),
-    monthly_budget_won: z.number().int().min(0).max(10000000000).default(0),
+    monthly_budget_won: z.number().int().min(0).max(2000000000).default(0),
   });
   app.post('/api/admin/ai/providers', roles('admin'), async (req, res) => {
     const b = providerSchema.parse(req.body);
@@ -196,7 +199,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
   app.put('/api/admin/ai/routes', roles('admin'), async (req, res) => {
     const b = z
       .object({
-        capability: z.enum(['text', 'image', 'video', 'tts', 'stt']),
+        capability: z.enum(['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync']),
         tier: z.enum(['draft', 'standard', 'premium']),
         model_ids: z.array(z.string().min(1).max(80)).max(10),
         active: z.boolean().default(true),
@@ -218,7 +221,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
   // 가격 일괄 조정: 자동 계산으로 되돌리거나, 현재 라마 가격에 배율을 곱해 고정 단가로 만듭니다.
   app.post('/api/admin/ai/models/bulk', roles('admin'), async (req, res) => {
     const b = z
-      .object({ action: z.enum(['auto', 'multiply']), factor: z.number().min(0.1).max(10).default(1), capability: z.enum(['all', 'text', 'image', 'video', 'tts', 'stt']).default('all') })
+      .object({ action: z.enum(['auto', 'multiply']), factor: z.number().min(0.1).max(10).default(1), capability: z.enum(['all', 'text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync']).default('all') })
       .parse(req.body);
     const settings = await loadSettings(db);
     const rows = await db.all(
@@ -325,14 +328,14 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
   });
   const modelSchema = z.object({
     provider_id: z.string().min(1),
-    capability: z.enum(['text', 'image', 'video', 'tts', 'stt']),
+    capability: z.enum(['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync']),
     model_id: z.string().trim().min(1).max(200),
     label: z.string().trim().min(1).max(60),
     tier: z.enum(['draft', 'standard', 'premium']),
     cost_usd: z.number().min(0).max(1000),
     price_lama: z.number().min(0).max(1000000).default(0),
     tags: z.array(z.enum(TAGS)).max(10).default([]),
-    max_seconds: z.number().int().min(1).max(60).default(10),
+    max_seconds: z.number().int().min(1).max(600).default(10),
     image_input: z.boolean().default(false),
     active: z.boolean().default(true),
     priority: z.number().int().min(0).max(100).default(50),

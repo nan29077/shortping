@@ -12,7 +12,8 @@ import {
   Users,
 } from 'lucide-react';
 import { api, count, type Channel, type ChannelDetail, type Library, type User } from './api';
-import { Empty, Poster, navigate } from './App';
+import { Empty, Poster, goBack, navigate } from './App';
+import { asset } from './platform';
 
 // 방송국 분위기 프리셋. PD가 고르면 대표 색과 배경 톤이 함께 바뀝니다.
 export const channelThemes = [
@@ -39,7 +40,7 @@ export function ChannelBanner({ channel, tall = false }: { channel: BannerSource
         <>
           <img
             className="channel-hero-backdrop"
-            src={channel.banner}
+            src={asset(channel.banner)}
             alt=""
             aria-hidden="true"
           />
@@ -47,7 +48,7 @@ export function ChannelBanner({ channel, tall = false }: { channel: BannerSource
             className={
               'channel-hero-image ' + (channel.banner_fit === 'cover' ? 'cover' : 'contain')
             }
-            src={channel.banner}
+            src={asset(channel.banner)}
             alt=""
           />
         </>
@@ -65,7 +66,7 @@ export function ChannelLogo({ channel, size = 46 }: { channel: Partial<Channel>;
       className="channel-logo"
       style={{ width: size, height: size, borderColor: channel.accent || '#c4f562' }}
     >
-      {src ? <img src={src} alt="" /> : <Radio size={size * 0.46} />}
+      {src ? <img src={asset(src)} alt="" /> : <Radio size={size * 0.46} />}
     </span>
   );
 }
@@ -111,7 +112,7 @@ export function ChannelCard({ channel }: { channel: Channel }) {
         <div className="channel-card-shelf">
           {posters.map((image, i) => (
             <span className="channel-card-thumb" key={image + i}>
-              <img src={image} alt="" loading="lazy" />
+              <img src={asset(image)} alt="" loading="lazy" />
             </span>
           ))}
           {more > 0 && (
@@ -198,7 +199,11 @@ export function ChannelListPage({ channels }: { channels: Channel[] }) {
         ))}
       </div>
       {!filtered.length && (
-        <Empty title="아직 공개된 방송국이 없어요" text="PD가 방송국을 열면 이곳에 표시됩니다." />
+        query.trim() ? (
+          <Empty title="검색 결과가 없어요" text="다른 방송국 이름이나 PD 이름으로 찾아보세요." />
+        ) : (
+          <Empty title="아직 공개된 방송국이 없어요" text="PD가 방송국을 열면 이곳에 표시됩니다." />
+        )
       )}
     </div>
   );
@@ -266,15 +271,15 @@ export function ChannelPage({
     }
   };
   const share = async () => {
-    const url = `${location.origin}/#/channel/${channel.slug || channel.id}`;
+    const url = `${location.origin}/share/channel/${encodeURIComponent(channel.id)}`;
     try {
-      if (navigator.share) await navigator.share({ title: channel.name, url });
+      if (navigator.share) await navigator.share({ title: `${channel.name} 방송국 | 숏핑`, text: channel.tagline, url });
       else {
         await navigator.clipboard.writeText(url);
         notify('방송국 주소를 복사했어요.');
       }
-    } catch {
-      notify('주소를 복사하지 못했어요.');
+    } catch (error) {
+      if ((error as DOMException).name !== 'AbortError') notify('공유하지 못했어요. 다시 시도해 주세요.');
     }
   };
   return (
@@ -282,7 +287,7 @@ export function ChannelPage({
       <button
         className="back-button floating"
         aria-label="뒤로"
-        onClick={() => navigate('channels')}
+        onClick={() => goBack('channels')}
       >
         <ArrowLeft size={19} />
       </button>

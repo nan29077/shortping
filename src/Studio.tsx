@@ -37,6 +37,7 @@ import {
   Sparkles,
   Cpu,
   Gem,
+  HardDrive,
 } from 'lucide-react';
 import {
   api,
@@ -58,6 +59,7 @@ import {
   StudioSubscriptions,
   StudioOperations,
   StudioGuide,
+  actionLabel,
 } from './StudioPanels';
 import Support from './Support';
 import AccountSettings, { Avatar } from './AccountSettings';
@@ -68,11 +70,13 @@ import AdminMembers from './AdminMembers';
 import AdminPoints from './AdminPoints';
 import AdminAiPanel from './AdminAi';
 import AdminLamaPanel from './AdminLama';
+import AdminStorage from './AdminStorage';
 import LamaWalletPanel from './Lama';
 import AiStudio from './studio/AiStudio';
 import ProductionGuide from './studio/Guide';
 import './studio/creator.css';
 import { ActivityChip, StudioOverviewCard } from './studio/Activity';
+import NotificationBell from './viewer/NotificationBell';
 import {
   AdminChannelsPanel,
   AdminPricingPanel,
@@ -80,6 +84,7 @@ import {
   AdminSettlementPanel,
   AdminTaxPanel,
 } from './AdminSettlement';
+import { asset } from './platform';
 
 export type StudioData = {
   dramas: Drama[];
@@ -106,6 +111,7 @@ const statusLabel: Record<string, string> = {
   pending: '심사 대기',
   draft: '임시저장',
   rejected: '반려',
+  hidden: '노출 중단',
 };
 const initialForm = {
   title: '',
@@ -130,6 +136,7 @@ export default function Studio({
   onUser,
   reloadLibrary,
   onAppearance,
+  onHomeLayout,
   reloadChannels,
 }: {
   user: User;
@@ -141,6 +148,7 @@ export default function Studio({
   onUser: (user: User) => void;
   reloadLibrary: () => Promise<void>;
   onAppearance: (appearance: Appearance) => void;
+  onHomeLayout: () => void;
   reloadChannels: () => Promise<void>;
 }) {
   const [data, setData] = useState<StudioData | null>(null),
@@ -211,6 +219,7 @@ export default function Studio({
           name: '설정 · 기록',
           items: [
             { id: 'policy', name: '요금 · 정산 정책', icon: SlidersHorizontal },
+            { id: 'storage', name: '저장 공간 정리', icon: HardDrive },
             { id: 'audit', name: '운영 기록', icon: ScrollText },
             { id: 'guide', name: '운영 가이드', icon: BookOpen },
             { id: 'settings', name: '내 계정', icon: UserCog },
@@ -318,6 +327,7 @@ export default function Studio({
         <div>
           <span className="environment-pill">{demo ? '테스트 운영' : '서비스 운영'}</span>
           <ActivityChip go={() => setTab('ai')} />
+          <NotificationBell key={user.id} className="studio-bell" />
           <button onClick={() => navigate('home')}>
             <Eye size={16} />
             시청자 화면
@@ -496,17 +506,13 @@ export default function Studio({
                       <ShieldCheck size={16} />
                       <span>
                         {l.name} ·{' '}
-                        {reviewStatus[l.action]
-                          ? reviewStatus[l.action]
-                          : l.action === 'support:replied'
-                            ? '문의 답변 등록'
-                            : '회원 권한 변경'}
+                        {reviewStatus[l.action] || actionLabel(l.action)}
                       </span>
                       <small>{new Date(l.created_at).toLocaleDateString('ko-KR')}</small>
                     </div>
                   ))
                 ) : (
-                  <p className="muted">작품 심사와 회원 권한 변경 이력이 기록됩니다.</p>
+                  <p className="muted">작품 심사·회원 관리·정산·운영 설정 변경 이력이 기록됩니다.</p>
                 )}
               </div>
             )}
@@ -539,6 +545,7 @@ export default function Studio({
                 ['published', '공개 중'],
                 ['draft', '임시저장'],
                 ['rejected', '반려'],
+                ['hidden', '노출 중단'],
               ].map(([v, t]) => (
                 <button
                   className={filter === v ? 'active' : ''}
@@ -614,6 +621,12 @@ export default function Studio({
                         <span className="muted">관리자가 작품을 검토하고 있어요.</span>
                       ))}
                     {d.status === 'published' && (
+                      <button onClick={() => setEpisodeEditor(d)}>
+                        <FileVideo size={14} />
+                        회차 관리 · 새 회차
+                      </button>
+                    )}
+                    {d.status === 'published' && (
                       <button onClick={() => navigate('drama/' + d.id)}>
                         공개 페이지 보기
                         <ArrowRight size={14} />
@@ -672,6 +685,7 @@ export default function Studio({
         {tab === 'lama' && <LamaWalletPanel notify={notify} />}
         {tab === 'ai-admin' && admin && <AdminAiPanel notify={notify} />}
         {tab === 'lama-admin' && admin && <AdminLamaPanel notify={notify} />}
+        {tab === 'storage' && admin && <AdminStorage notify={notify} />}
         {tab === 'orders' && <StudioOrders orders={data.orders} admin={admin} />}
         {tab === 'support' && admin && <Support user={user} managing notify={notify} />}
         {tab === 'subscriptions' && admin && (
@@ -681,7 +695,7 @@ export default function Studio({
           <StudioAudit logs={data.logs} dramas={data.dramas} users={data.users} />
         )}
         {tab === 'operations' && admin && <StudioOperations operations={data.operations} />}
-        {tab === 'home' && admin && <HomeAppearance notify={notify} onAppearance={onAppearance} />}
+        {tab === 'home' && admin && <HomeAppearance notify={notify} onAppearance={onAppearance} onHomeLayout={onHomeLayout} />}
         {tab === 'guide' && <StudioGuide admin={admin} onCreate={() => setChooser(true)} />}
         {tab === 'settings' && (
           <AccountSettings
@@ -788,9 +802,9 @@ const sourceOf = (d: Drama) => {
 function ContentRow({ d, onClick }: { d: Drama; onClick: () => void }) {
   return (
     <button className="content-row" onClick={onClick}>
-      <img src={d.image} alt="" />
+      <img src={asset(d.image)} alt="" />
       <div>
-        <span className={'status ' + d.status}>{statusLabel[d.status]}</span>
+        <span className={'status ' + d.status}>{statusLabel[d.status] || d.status}</span>
         {sourceOf(d) !== 'upload' && (
           <span className="source-chip studio">{sourceOf(d) === 'studio' ? 'AI 제작' : '혼합'}</span>
         )}
@@ -956,7 +970,7 @@ function DramaEditor({
           시청자는 잠긴 회차를 핑으로 한 편씩 열거나, 할인된 가격으로 작품 전체를 열 수 있어요.
         </p>
         <label>작품 포스터</label>
-        <img className="editor-poster-preview" src={f.image} alt="선택한 작품 포스터 미리보기" />
+        <img className="editor-poster-preview" src={asset(f.image)} alt="선택한 작품 포스터 미리보기" />
         <div className="poster-picker">
           {['hero', 'spring', 'shadow', 'moon'].map((i) => (
             <button
@@ -965,7 +979,7 @@ function DramaEditor({
               className={f.image === `/images/${i}.webp` ? 'selected' : ''}
               onClick={() => setF({ ...f, image: `/images/${i}.webp` })}
             >
-              <img src={'/images/' + i + '.webp'} alt={i + ' 포스터 선택'} />
+              <img src={asset('/images/' + i + '.webp')} alt={i + ' 포스터 선택'} />
               {f.image === `/images/${i}.webp` && <Check size={20} />}
             </button>
           ))}

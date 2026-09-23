@@ -70,6 +70,16 @@ npm run mobile:ios        # macOS/Xcode 환경에서 iOS 프로젝트 생성
 npm run mobile:sync       # 웹 빌드 후 생성된 네이티브 프로젝트와 동기화
 ```
 
+### 모바일 앱 연결(토큰 로그인)
+
+앱은 화면 파일을 앱 안에 담고, 운영 서버와 **로그인 토큰(Bearer)** 으로 통신합니다. 웹은 지금처럼 쿠키로 로그인합니다.
+
+- 앱 빌드 시 운영 서버 주소를 넣어 주세요: `VITE_API_ORIGIN=https://운영주소 npm run mobile:sync`
+- 로그인 · 가입 응답에 토큰이 담기고(요청 머리글 `X-Client: app`일 때만), 앱은 이후 요청에 `Authorization: Bearer 토큰`을 붙입니다.
+- `<video>`·`<audio>`·자막처럼 머리글을 붙일 수 없는 주소에는 로그인 세션에 묶인 6시간짜리 미디어 토큰(`?mt=`)을 붙입니다. 로그아웃하면 함께 무효가 됩니다.
+- 서버는 앱 출처(`capacitor://localhost`, `https://localhost`)에 쿠키 없이 CORS를 허용합니다. 추가 출처는 `APP_CLIENT_ORIGINS`로 넣어요.
+- 안드로이드 뒤로 가기 버튼: 열린 창을 먼저 닫고, 없으면 이전 화면으로, 첫 화면이면 앱을 닫습니다.
+
 실행에 이미 생성된 WebP·아이콘·티저가 포함되어 있어 FFmpeg 재설치는 필요 없습니다. `prepare-assets` 재실행에는 ffmpeg-static 바이너리가 필요합니다.
 
 ## 구조

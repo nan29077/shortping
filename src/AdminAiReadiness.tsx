@@ -9,7 +9,8 @@ import {
   Search,
   ShieldCheck,
 } from 'lucide-react';
-import { api, capabilityLabel, won, type AdminAi } from './api';
+import { api, won, type AdminAi } from './api';
+import { ADMIN_CAPS, capLabel, needsPrice, PRICE_REQUIRED, type AdminCap } from './AdminAiExtra';
 
 export default function AiReadiness({
   data,
@@ -44,7 +45,9 @@ export default function AiReadiness({
   const models = data.models.filter(
     (m) => m.active && verified.some((p) => p.id === m.provider_id),
   );
-  const capabilities = ['text', 'image', 'tts', 'video', 'stt'] as const;
+  const capabilities = ADMIN_CAPS;
+  // 새 기능(배경음악·효과음·입 모양)은 라마 가격이 정해진 모델만 PD에게 열려요.
+  const unpriced = models.filter((m) => needsPrice(m));
   const rows = real.filter(
     (p) =>
       (country === 'all' || (country === 'cn' ? p.country === 'CN' : p.country !== 'CN')) &&
@@ -75,7 +78,8 @@ export default function AiReadiness({
       text: '기본 제작 모델 준비',
       done: ['text', 'image', 'tts'].every((c) => models.some((m) => m.capability === c)),
       tab: 'routes' as const,
-      detail: '기획·이미지·음성 모델부터 준비하세요. 영상과 자동 자막은 추가로 연결할 수 있어요.',
+      detail:
+        '기획·이미지·음성 모델부터 준비하세요. 영상과 자동 자막은 추가로 연결할 수 있어요. 배경음악·효과음·입 모양 맞추기는 라마 가격까지 정해야 PD에게 열려요.',
     },
   ];
   return (
@@ -194,25 +198,49 @@ export default function AiReadiness({
             </p>
           </div>
         </div>
+        {enabled && unpriced.length > 0 && (
+          <div className="info-box warn-box">
+            가격이 정해지지 않은{' '}
+            {unpriced
+              .map((m) => capLabel(m.capability, data.capabilities))
+              .filter((v, i, a) => a.indexOf(v) === i)
+              .join('·')}{' '}
+            모델 {unpriced.length}개는 PD에게 ‘준비 중’으로 보여요. ‘모델 · 가격’에서 라마 고정
+            단가를 정하면 열려요.
+          </div>
+        )}
         <div className="ai-capability-grid">
-          {capabilities.map((c) => {
+          {capabilities.map((c: AdminCap) => {
             const list = models.filter((m) => m.capability === c);
+            const priced = PRICE_REQUIRED.includes(c) ? list.filter((m) => !needsPrice(m)) : list;
+            const waiting = list.length > 0 && !priced.length;
             return (
               <button key={c} onClick={() => go('models')}>
                 <Cpu size={20} />
-                <strong>{capabilityLabel[c]}</strong>
-                <span className={'status-chip ' + (!enabled || !list.length ? 'neutral' : '')}>
+                <strong>{capLabel(c, data.capabilities)}</strong>
+                <span
+                  className={
+                    waiting
+                      ? 'serial-chip warn'
+                      : 'status-chip ' + (!enabled || !list.length ? 'neutral' : '')
+                  }
+                >
                   {!enabled
                     ? '운영 중지'
-                    : list.length
-                      ? `${list.length}개 연결 확인`
-                      : '연결 준비 필요'}
+                    : waiting
+                      ? '가격 미설정 · PD에게 ‘준비 중’으로 보여요'
+                      : priced.length
+                        ? `${priced.length}개 연결 확인${priced.length < list.length ? ` · 가격 미설정 ${list.length - priced.length}개` : ''}`
+                        : '연결 준비 필요'}
                 </span>
                 <small>
-                  {list
+                  {(priced.length ? priced : list)
                     .slice(0, 2)
                     .map((m) => m.label)
-                    .join(' · ') || '모델 · 가격에서 설정하세요'}
+                    .join(' · ') ||
+                    (PRICE_REQUIRED.includes(c)
+                      ? '모델을 연결하고 라마 가격을 정하면 PD에게 열려요'
+                      : '모델 · 가격에서 설정하세요')}
                 </small>
               </button>
             );

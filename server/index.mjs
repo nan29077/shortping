@@ -10,8 +10,10 @@ import {
   scryptSync,
   timingSafeEqual,
   createHash,
+  createHmac,
 } from 'node:crypto';
-import { mkdirSync, openSync, readSync, closeSync, unlinkSync, existsSync } from 'node:fs';
+import { mkdirSync, openSync, readSync, closeSync, unlinkSync, existsSync, readFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { openDb, migrate } from './db.mjs';
 import { seed, hashPassword } from './seed.mjs';
@@ -22,6 +24,7 @@ import {
   platformRateFor,
   recordPingSale,
   refreshEntries,
+  periodOf,
 } from './settlement.mjs';
 import {
   channelFeeRate,
@@ -36,11 +39,17 @@ import { studioRoutes } from './routes-studio.mjs';
 import { adminRoutes } from './routes-admin.mjs';
 import { uploadRoutes } from './routes-upload.mjs';
 import { lamaRoutes } from './routes-lama.mjs';
+import { EDITABLE_EPISODE, episodeEditable, serialRoutes } from './routes-serial.mjs';
+import { applyThumbs, thumbClick } from './thumbs.mjs';
+import { notify } from './notify.mjs';
 import { createAiEngine } from './ai/engine.mjs';
+import { createRenderWorker } from './ai/render-worker.mjs';
 import { adminAiRoutes, seedMock } from './ai/routes-admin-ai.mjs';
 import { studioAiRoutes } from './ai/routes-studio-ai.mjs';
 import { allowLocalDownloads } from './ai/http.mjs';
 import { appearanceFromSettings } from './home-appearance.mjs';
+import { layoutOf } from './home-layout.mjs';
+import { homeShare, injectHomeTags, sharePage, socialOrigin } from './social.mjs';
 
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
 const demo = !production && process.env.ENABLE_DEMO !== 'false';
@@ -69,6 +78,9 @@ await backfillEntries(db, startupSettings);
 const app = express();
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY_HOPS) app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS));
+else if (production)
+  // 로드밸런서·CDN 뒤에서 이 값이 없으면 모든 요청이 프록시 IP 하나로 보여, 요청 제한이 전체 사용자 공용이 됩니다.
+  console.warn('[숏핑] TRUST_PROXY_HOPS가 설정되지 않았습니다. 프록시(ALB·Cloudflare) 뒤라면 1 이상으로 지정하세요.');
 app.use(
   helmet({
     contentSecurityPolicy: production
@@ -85,14 +97,44 @@ app.use(
         }
       : false,
     crossOriginEmbedderPolicy: false,
+    // 앱(다른 출처의 화면)에서 포스터 · 영상을 불러올 수 있게 합니다. 보호된 영상은 로그인 · 미디어 토큰으로 따로 막습니다.
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
   }),
 );
 app.use(express.json({ limit: '256kb' }));
+// 모바일 앱(안드로이드 · iOS)은 앱 안의 화면(capacitor://localhost, https://localhost)에서 운영 서버로 요청합니다.
+// 앱은 쿠키 대신 Authorization: Bearer 토큰을 쓰므로, 이 출처에는 쿠키 없이(credentials 없이) CORS를 허용합니다.
+const appOrigins = new Set([
+  'capacitor://localhost',
+  'https://localhost',
+  'http://localhost',
+  ...String(process.env.APP_CLIENT_ORIGINS || '').split(',').map((x) => x.trim()).filter(Boolean),
+]);
+const bearerOf = (req) => {
+  const m = /^Bearer ([a-f0-9]{64})$/.exec(String(req.get('authorization') || ''));
+  return m ? m[1] : '';
+};
+app.use((req, res, next) => {
+  const o = req.get('origin');
+  if (o && appOrigins.has(o) && o !== origin && (req.path.startsWith('/api/') || req.path.startsWith('/uploads/'))) {
+    res.setHeader('Access-Control-Allow-Origin', o);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Client, Range');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+    res.setHeader('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+  }
+  next();
+});
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   if (
     !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
     req.get('origin') &&
+    // 앱 출처는 토큰(Bearer)이나 앱 머리글(X-Client: app, 로그인 요청)이 있는 요청만 받습니다.
+    // 이 머리글은 사전 확인(preflight)을 거쳐야 하고, 쿠키를 싣는 요청은 사전 확인에서 막히므로 쿠키 로그인을 도용할 수 없어요.
+    !(appOrigins.has(req.get('origin')) && (bearerOf(req) || req.get('x-client') === 'app')) &&
     ![origin, ...(production ? [] : [`http://127.0.0.1:${port}`])].includes(req.get('origin')) &&
     // 개발 모드에서만 Cloudflare Tunnel 외부 미리보기 주소 허용
     !(!production && /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(req.get('origin')))
@@ -109,6 +151,8 @@ app.use(
     limit: testing ? 20_000 : 240,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
+    // 영상 재생(구간 요청이 많음)·자막·스튜디오 미디어는 한 편을 볼 때도 요청이 수십 번 생겨 일반 한도에서 뺍니다.
+    skip: (req) => req.method === 'GET' && /^\/(play\/|dramas\/[^/]+\/trailer$|studio\/media\/|subtitles\/|studio\/ai\/episodes\/[^/]+\/subtitles$|studio\/ai\/voices\/sample\/)/.test(req.path),
   }),
 );
 const authLimiter = rateLimit({
@@ -144,15 +188,57 @@ const cookieToken = (req) => {
     .slice(11);
   return raw ? createHash('sha256').update(raw).digest('hex') : '';
 };
+// 지금 요청의 로그인 세션(앱은 Bearer 토큰, 웹은 쿠키). 둘 다 서버에는 해시로만 저장합니다.
+const sessionToken = (req) => {
+  const bearer = bearerOf(req);
+  return bearer ? createHash('sha256').update(bearer).digest('hex') : cookieToken(req);
+};
+// 미디어 토큰: 앱의 <video>·<audio>·<track>은 머리글(Authorization)을 보낼 수 없어서, 로그인 세션에 묶인
+// 짧은 서명 토큰을 주소(?mt=)에 붙여 재생 · 자막 · 스튜디오 미디어만 열어 줍니다. 로그아웃하면 함께 무효가 됩니다.
+const mediaSecret =
+  process.env.MEDIA_TOKEN_SECRET ||
+  (await (async () => {
+    const row = await db.get("SELECT value FROM platform_settings WHERE key='media_token_secret'");
+    if (row?.value) return row.value;
+    await db.run("INSERT INTO platform_settings (key,value,updated_at) VALUES ('media_token_secret',?,?) ON CONFLICT(key) DO NOTHING", [randomBytes(32).toString('hex'), now()]);
+    return (await db.get("SELECT value FROM platform_settings WHERE key='media_token_secret'")).value;
+  })());
+const MEDIA_TOKEN_TTL = 6 * 3600 * 1000;
+const mediaSign = (body) => createHmac('sha256', mediaSecret).update(body).digest('base64url');
+const makeMediaToken = (sessionHash) => {
+  const body = Buffer.from(JSON.stringify({ s: sessionHash.slice(0, 32), e: Date.now() + MEDIA_TOKEN_TTL })).toString('base64url');
+  return `${body}.${mediaSign(body)}`;
+};
+const MEDIA_PATHS = /^\/(play\/|dramas\/[^/]+\/trailer$|subtitles\/|studio\/media\/|studio\/ai\/episodes\/[^/]+\/subtitles$|studio\/ai\/voices\/sample\/)/;
+async function mediaUser(req) {
+  const raw = typeof req.query?.mt === 'string' ? req.query.mt : '';
+  if (!raw || !['GET', 'HEAD'].includes(req.method) || !MEDIA_PATHS.test(req.path)) return null;
+  const [body, sig] = raw.split('.');
+  if (!body || !sig) return null;
+  const want = mediaSign(body);
+  if (want.length !== sig.length || !timingSafeEqual(Buffer.from(want), Buffer.from(sig))) return null;
+  let claim;
+  try {
+    claim = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!claim || typeof claim.s !== 'string' || claim.s.length !== 32 || !(Number(claim.e) > Date.now())) return null;
+  return db.get(
+    'SELECT u.*,p.avatar,p.bio,p.auto_next,p.auto_unlock FROM users u JOIN sessions s ON s.user_id=u.id LEFT JOIN user_profiles p ON p.user_id=u.id WHERE substr(s.token,1,32)=? AND s.expires_at>? AND u.status=?',
+    [claim.s, now(), 'active'],
+  );
+}
 app.use('/api', async (req, res, next) => {
   try {
-    const token = cookieToken(req);
+    const token = sessionToken(req);
     req.user = token
       ? await db.get(
           'SELECT u.*,p.avatar,p.bio,p.auto_next,p.auto_unlock FROM users u JOIN sessions s ON s.user_id=u.id LEFT JOIN user_profiles p ON p.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?',
           [token, now(), 'active'],
         )
       : null;
+    if (!req.user && !token) req.user = (await mediaUser(req)) || null;
     next();
   } catch (e) {
     next(e);
@@ -168,7 +254,7 @@ const roles =
       : res.status(403).json({ error: '접근 권한이 없습니다.' });
 async function session(req, res, user) {
   await db.run('DELETE FROM sessions WHERE expires_at<?', [now()]);
-  const old = cookieToken(req);
+  const old = sessionToken(req);
   if (old) await db.run('DELETE FROM sessions WHERE token=?', [old]);
   const token = randomBytes(32).toString('hex');
   await db.run('INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)', [
@@ -177,14 +263,17 @@ async function session(req, res, user) {
     new Date(Date.now() + 7 * 86400000).toISOString(),
   ]);
   await db.run('UPDATE users SET last_login_at=? WHERE id=?', [now(), user.id]);
-  res.cookie('sp_session', token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: production,
-    maxAge: 7 * 86400000,
-    path: '/',
-  });
-  res.json({ user: publicUser({ ...user, ...(await ensureProfile(user.id)) }) });
+  // 앱(X-Client: app)은 쿠키를 쓰지 않으므로 로그인 토큰을 응답에 담아 줍니다(앱이 보관).
+  const isApp = req.get('x-client') === 'app';
+  if (!isApp)
+    res.cookie('sp_session', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: production,
+      maxAge: 7 * 86400000,
+      path: '/',
+    });
+  res.json({ user: publicUser({ ...user, ...(await ensureProfile(user.id)) }), ...(isApp ? { token } : {}) });
 }
 const credentials = z.object({
   email: z
@@ -206,8 +295,17 @@ app.get('/api/config', async (req, res) => {
     defaultEpisodePings: settings.default_episode_pings,
     titleUnlockDiscount: settings.title_unlock_discount,
     homeAppearance: appearanceFromSettings(settings),
+    homeLayout: publicLayout(settings),
   });
 });
+// 시청자에게 보내는 메인 화면 구성: 공지 띠는 켜져 있고 게시 기간 안일 때만 보냅니다.
+function publicLayout(settings) {
+  const layout = layoutOf(settings.home_layout);
+  const n = layout.notice;
+  const t = now();
+  const live = n.enabled && n.text && (!n.start || n.start <= t) && (!n.end || n.end > t);
+  return { ...layout, notice: live ? { text: n.text, link: n.link, tone: n.tone } : null };
+}
 app.get('/api/health', (req, res) => res.json({ ok: true, database: db.engine }));
 app.get('/api/auth/me', (req, res) => res.json({ user: publicUser(req.user) }));
 app.post('/api/auth/demo', authLimiter, async (req, res) => {
@@ -242,8 +340,13 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     fail(401, '이메일 또는 비밀번호를 확인해 주세요.');
   await session(req, res, user);
 });
+app.get('/api/auth/media-token', requireAuth, (req, res) => {
+  const token = sessionToken(req);
+  if (!token) fail(401, '로그인 후 이용해 주세요.');
+  res.json({ token: makeMediaToken(token), expires_at: new Date(Date.now() + MEDIA_TOKEN_TTL).toISOString() });
+});
 app.post('/api/auth/logout', async (req, res) => {
-  await db.run('DELETE FROM sessions WHERE token=?', [cookieToken(req)]);
+  await db.run('DELETE FROM sessions WHERE token=?', [sessionToken(req)]);
   res.clearCookie('sp_session', { path: '/' }).json({ ok: true });
 });
 app.patch('/api/account/profile', requireAuth, async (req, res) => {
@@ -303,13 +406,13 @@ app.get('/api/account/sessions', requireAuth, async (req, res) => {
     [req.user.id, now()],
   );
   res.json(
-    sessions.map((s) => ({ current: s.token === cookieToken(req), expires_at: s.expires_at })),
+    sessions.map((s) => ({ current: s.token === sessionToken(req), expires_at: s.expires_at })),
   );
 });
 app.post('/api/account/revoke-sessions', requireAuth, async (req, res) => {
   await db.run('DELETE FROM sessions WHERE user_id=? AND token<>?', [
     req.user.id,
-    cookieToken(req),
+    sessionToken(req),
   ]);
   res.json({ ok: true });
 });
@@ -333,7 +436,7 @@ app.post('/api/account/password', requireAuth, authLimiter, async (req, res) => 
     ]);
     await db.run('DELETE FROM sessions WHERE user_id=? AND token<>?', [
       req.user.id,
-      cookieToken(req),
+      sessionToken(req),
     ]);
   });
   res.json({ ok: true });
@@ -342,20 +445,29 @@ app.delete('/api/account/history', requireAuth, async (req, res) => {
   await db.run('DELETE FROM history WHERE user_id=?', [req.user.id]);
   res.json({ ok: true });
 });
+// 회차 공개 여부: 연재 중인 작품에 새로 올린 회차는 회차 단위 검수(pending)를 거쳐 승인(approved)돼야 보입니다.
+// 예약 공개 회차(scheduled)는 정한 시각이 되면 공개 처리기가 approved로 바꿉니다.
+const VISIBLE = "e.review_status='approved'";
 const catalogSql =
-  "SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_count, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.source='studio') AS studio_episodes FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id";
+  `SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND ${VISIBLE}) AS episode_count, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_total, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.source='studio') AS studio_episodes, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.review_status='pending') AS pending_episodes FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id`;
+// 작품 주인·관리자는 검수 중인 회차도 봅니다.
+const seesAll = (user, d) => !!user && (user.role === 'admin' || user.id === d.owner_id);
 app.get('/api/dramas', async (req, res) =>
-  res.json(await db.all(catalogSql + " WHERE d.status='published' ORDER BY d.views DESC")),
+  // 썸네일 A/B 비교 중인 작품은 시청자마다 정해진 후보 이미지를 보여 줍니다.
+  res.json(await applyThumbs(db, await db.all(catalogSql + " WHERE d.status='published' ORDER BY d.views DESC"), req.user?.id || req.ip)),
 );
 app.get('/api/dramas/:id', async (req, res) => {
   const d = await db.get(catalogSql + ' WHERE d.id=?', [req.params.id]);
   if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
     fail(404, '작품을 찾을 수 없습니다.');
   const entitled = await hasAccess(req.user, d);
+  if (typeof req.query.t === 'string') await thumbClick(db, d.id, req.query.t);
   const settings = await loadSettings(db);
   const owned = await ownedEpisodes(req.user, d.id);
   const episodes = await db.all(
-    "SELECT id,number,title,duration,source,CASE WHEN video='/demo/preview.mp4' THEN 1 ELSE 0 END AS is_demo,CASE WHEN subtitles<>'' THEN 1 ELSE 0 END AS has_subtitles FROM episodes WHERE drama_id=? ORDER BY number",
+    "SELECT id,number,title,duration,source,thumbnail,review_status,publish_at,CASE WHEN video='/demo/preview.mp4' THEN 1 ELSE 0 END AS is_demo,CASE WHEN subtitles<>'' THEN 1 ELSE 0 END AS has_subtitles FROM episodes e WHERE drama_id=?" +
+      (seesAll(req.user, d) ? '' : ` AND ${VISIBLE}`) +
+      ' ORDER BY number',
     [d.id],
   );
   const isLocked = (number) => !entitled && number > d.free_episodes && !owned.includes(number);
@@ -397,6 +509,28 @@ async function canWatch(user, d, number) {
     ))
   );
 }
+// 구독 풀 배분 근거: 무료 회차가 아니고, 작품 소유자·관리자가 아니며, 작품·회차를 따로 사지 않았고,
+// 지금 구독 중인 회원이 재생한 경우에만 그 달 기록을 한 번 남깁니다.
+async function recordSubscriptionView(user, d, number) {
+  if (!user || d.free || number <= d.free_episodes) return;
+  if (user.role === 'admin' || user.id === d.owner_id) return;
+  const stamp = now();
+  if (!(await db.get('SELECT user_id FROM subscriptions WHERE user_id=? AND expires_at>?', [user.id, stamp])))
+    return;
+  if (await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [user.id, d.id])) return;
+  if (
+    await db.get('SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? AND episode=?', [
+      user.id,
+      d.id,
+      number,
+    ])
+  )
+    return;
+  await db.run(
+    'INSERT INTO subscription_views (user_id,drama_id,episode,period,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING',
+    [user.id, d.id, number, periodOf(stamp), stamp],
+  );
+}
 async function hasAccess(user, d) {
   if (d.free) return true;
   if (!user) return false;
@@ -422,13 +556,27 @@ app.get('/api/play/:id/:number', async (req, res) => {
   if (!(await canWatch(req.user, d, number)))
     fail(403, '이 회차는 회차 구매, 작품 소장 또는 구독 후 시청할 수 있어요.');
   const e = await db.get('SELECT * FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
-  if (!e?.video) fail(404, '영상이 아직 등록되지 않았습니다.');
+  if (!e?.video || (e.review_status !== 'approved' && !seesAll(req.user, d))) fail(404, '영상이 아직 등록되지 않았습니다.');
+  // 첫 재생 요청(처음부터 받는 요청)일 때만 구독 시청 기록을 남깁니다.
+  if (!/^bytes=(?!0-)/.test(String(req.headers.range || '')))
+    await recordSubscriptionView(req.user, d, number).catch((err) =>
+      console.error('subscription view', err?.message),
+    );
   const file = e.video.startsWith('/demo/')
     ? path.resolve('public/demo/preview.mp4')
     : path.join(uploadDir, path.basename(e.video));
   res.sendFile(file, (err) => {
     if (err && !res.headersSent)
       res.status(404).json({ error: '영상 파일이 아직 준비되지 않았습니다.' });
+  });
+});
+// 예고편: 공개 작품의 예고편은 누구나 볼 수 있습니다(홍보용).
+app.get('/api/dramas/:id/trailer', async (req, res) => {
+  const d = await db.get('SELECT status,owner_id,trailer FROM dramas WHERE id=?', [req.params.id]);
+  if (!d || !d.trailer || !/^\/uploads\/[a-f0-9-]+\.mp4$/.test(d.trailer) || (d.status !== 'published' && !seesAll(req.user, d)))
+    fail(404, '예고편이 없어요.');
+  res.sendFile(path.join(uploadDir, path.basename(d.trailer)), (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: '예고편 파일을 찾을 수 없어요.' });
   });
 });
 app.get('/api/library', requireAuth, async (req, res) => {
@@ -483,7 +631,7 @@ app.post('/api/history', requireAuth, async (req, res) => {
   const d = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [b.dramaId]);
   if (!d) fail(404, '작품을 찾을 수 없습니다.');
   if (!(await canWatch(req.user, d, b.episode))) fail(403, '시청 권한이 없습니다.');
-  if (!(await db.get('SELECT id FROM episodes WHERE drama_id=? AND number=?', [d.id, b.episode])))
+  if (!(await db.get(`SELECT id FROM episodes e WHERE drama_id=? AND number=?${seesAll(req.user, d) ? '' : ' AND ' + VISIBLE}`, [d.id, b.episode])))
     fail(404, '회차를 찾을 수 없습니다.');
   await db.run(
     'INSERT INTO history (user_id,drama_id,episode,progress,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(user_id,drama_id) DO UPDATE SET episode=excluded.episode,progress=excluded.progress,updated_at=excluded.updated_at',
@@ -499,9 +647,8 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
   const b = z
     .object({ kind: z.literal('subscription'), idempotencyKey: z.string().uuid() })
     .parse(req.body);
-  const result = await db.transaction(async () => {
-    if (db.engine === 'postgresql')
-      await db.get('SELECT id FROM users WHERE id=? FOR UPDATE', [req.user.id]);
+  const result = await moneyTx(async () => {
+    await db.lockUser(req.user.id);
     const existing = await db.get('SELECT * FROM orders WHERE idempotency_key=?', [
       b.idempotencyKey,
     ]);
@@ -544,6 +691,15 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
 });
 
 // ── 핑(포인트) ─────────────────────────────────────────────────────────
+// 같은 멱등키가 거의 동시에 들어와 고유 키 충돌이 나면, 한 번 더 실행해 이미 만들어진 주문을 돌려줍니다.
+const moneyTx = async (fn) => {
+  try {
+    return await db.transaction(fn);
+  } catch (e) {
+    if (db.isUnique(e)) return db.transaction(fn);
+    throw e;
+  }
+};
 const orderShape = (o, extra = {}) => ({
   id: o.id,
   kind: o.kind,
@@ -579,7 +735,8 @@ app.post('/api/pings/charge', requireAuth, async (req, res) => {
     .object({ productId: z.string().min(1).max(80), idempotencyKey: z.string().uuid() })
     .parse(req.body);
   const settings = await loadSettings(db);
-  const result = await db.transaction(async () => {
+  const result = await moneyTx(async () => {
+    await db.lockUser(req.user.id);
     const existing = await db.get('SELECT * FROM orders WHERE idempotency_key=?', [
       b.idempotencyKey,
     ]);
@@ -647,7 +804,9 @@ app.post('/api/pings/unlock', requireAuth, async (req, res) => {
     })
     .parse(req.body);
   const settings = await loadSettings(db);
-  const result = await db.transaction(async () => {
+  const result = await moneyTx(async () => {
+    // 지갑·보유 회차 검사보다 먼저 회원을 잠가, 두 번 누르거나 두 탭에서 동시에 열어도 한 번만 결제됩니다.
+    await db.lockUser(req.user.id);
     const existing = await db.get('SELECT * FROM orders WHERE idempotency_key=?', [
       b.idempotencyKey,
     ]);
@@ -671,7 +830,7 @@ app.post('/api/pings/unlock', requireAuth, async (req, res) => {
     const perEpisode = episodePingsOf(drama, settings);
     const owned = await ownedEpisodes(req.user, drama.id);
     const numbers = (
-      await db.all('SELECT number FROM episodes WHERE drama_id=? ORDER BY number', [drama.id])
+      await db.all(`SELECT number FROM episodes e WHERE drama_id=? AND ${VISIBLE} ORDER BY number`, [drama.id])
     ).map((e) => Number(e.number));
     const locked = numbers.filter((n) => n > drama.free_episodes && !owned.includes(n));
     let pings, kind;
@@ -730,12 +889,16 @@ app.post('/api/pings/unlock', requireAuth, async (req, res) => {
   });
   res.json(result);
 });
+// 테스트 결제(데모)에서는 화면 안내대로 즉시 종료합니다. 실제 결제 환경에서는 자동 갱신만 끄고
+// 이미 결제한 기간이 끝날 때까지 이용권을 유지합니다(환불은 별도 절차).
 app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
-  await db.run('UPDATE subscriptions SET expires_at=?,auto_renew=0 WHERE user_id=?', [
-    now(),
-    req.user.id,
-  ]);
-  res.json({ ok: true });
+  if (demo)
+    await db.run('UPDATE subscriptions SET expires_at=?,auto_renew=0 WHERE user_id=?', [
+      now(),
+      req.user.id,
+    ]);
+  else await db.run('UPDATE subscriptions SET auto_renew=0 WHERE user_id=?', [req.user.id]);
+  res.json({ ok: true, immediate: demo });
 });
 app.get('/api/studio', roles('pd', 'admin'), async (req, res) => {
   const isAdmin = req.user.role === 'admin';
@@ -743,8 +906,12 @@ app.get('/api/studio', roles('pd', 'admin'), async (req, res) => {
     catalogSql + (isAdmin ? '' : ' WHERE d.owner_id=?') + ' ORDER BY d.created_at DESC',
     isAdmin ? [] : [req.user.id],
   );
+  // PD에게는 구매자 식별 정보(회원 ID·멱등키)를 보내지 않습니다.
   const orders = await db.all(
-    'SELECT o.*,d.title,(SELECT se.gross FROM settlement_entries se WHERE se.order_id=o.id) AS sale_value FROM orders o LEFT JOIN dramas d ON o.drama_id=d.id' +
+    (isAdmin
+      ? 'SELECT o.*'
+      : 'SELECT o.id,o.drama_id,o.kind,o.amount,o.status,o.created_at,o.channel,o.pings,o.bonus_pings') +
+      ',d.title,(SELECT se.gross FROM settlement_entries se WHERE se.order_id=o.id) AS sale_value FROM orders o LEFT JOIN dramas d ON o.drama_id=d.id' +
       (isAdmin ? '' : ' WHERE d.owner_id=?') +
       ' ORDER BY o.created_at DESC',
     isAdmin ? [] : [req.user.id],
@@ -1041,8 +1208,6 @@ app.get('/uploads/:file', (req, res) => {
 app.post('/api/studio/dramas/:id/episodes', roles('pd', 'admin'), async (req, res) => {
   await db.transaction(async () => {
     const d = await owned(req, true);
-    if (!['draft', 'rejected'].includes(d.status))
-      fail(409, '임시저장 또는 반려 상태에서 회차를 수정해 주세요.');
     const b = z
       .object({
         number: z.number().int().min(1).max(500),
@@ -1056,33 +1221,49 @@ app.post('/api/studio/dramas/:id/episodes', roles('pd', 'admin'), async (req, re
     await checkMedia(req, b.video);
     const metadata = await db.get('SELECT duration FROM media_metadata WHERE url=?', [b.video]);
     const duration = b.video === '/demo/preview.mp4' ? 12 : metadata?.duration || b.duration;
+    const existing = await db.get('SELECT * FROM episodes WHERE drama_id=? AND number=?', [d.id, b.number]);
+    if (d.status === 'published') {
+      // 연재 중인 작품: 공개된 회차는 그대로 두고, 새 회차(다음 번호)나 아직 공개 전인 회차만 올리고 고칩니다.
+      if (existing && !EDITABLE_EPISODE.includes(existing.review_status))
+        fail(409, existing.review_status === 'approved' ? '이미 공개된 회차는 바꿀 수 없어요. 새 회차로 올려 주세요.' : '검수 중이거나 공개 예약된 회차예요.');
+      const last = await db.get('SELECT MAX(number) AS n FROM episodes WHERE drama_id=?', [d.id]);
+      if (!existing && b.number !== Number(last?.n || 0) + 1) fail(409, `다음 회차(${Number(last?.n || 0) + 1}화)부터 순서대로 올려 주세요.`);
+    } else if (!['draft', 'rejected'].includes(d.status)) fail(409, '임시저장 또는 반려 상태에서 회차를 수정해 주세요.');
     await db.run(
-      'INSERT INTO episodes (id,drama_id,number,title,video,duration) VALUES (?,?,?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration',
-      [randomUUID(), d.id, b.number, b.title, b.video, duration],
+      'INSERT INTO episodes (id,drama_id,number,title,video,duration,review_status) VALUES (?,?,?,?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration',
+      [randomUUID(), d.id, b.number, b.title, b.video, duration, d.status === 'published' ? 'draft' : 'approved'],
     );
   });
   res.json({ ok: true });
 });
 app.delete('/api/studio/dramas/:id/episodes/:number', roles('pd', 'admin'), async (req, res) => {
+  let subtitleFile = '';
   await db.transaction(async () => {
     const d = await owned(req, true);
-    if (!['draft', 'rejected'].includes(d.status))
-      fail(409, '임시저장 또는 반려 상태에서 회차를 삭제해 주세요.');
     const number = z.coerce.number().int().min(1).parse(req.params.number);
+    // 연재 중인 작품은 아직 공개 전인 마지막 회차만 지울 수 있어요.
+    const target = await db.get('SELECT review_status FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
+    if (!(['draft', 'rejected'].includes(d.status) || (d.status === 'published' && target && ['draft', 'rejected', 'pending', 'scheduled'].includes(target.review_status))))
+      fail(409, '임시저장 또는 반려 상태에서 회차를 삭제해 주세요. 연재 중인 작품은 공개 전 회차만 지울 수 있어요.');
     const last = await db.get('SELECT MAX(number) AS number FROM episodes WHERE drama_id=?', [
       d.id,
     ]);
-    if (last?.number !== number)
+    if (Number(last?.number) !== number)
       fail(409, '회차 순서를 유지하기 위해 마지막 회차부터 삭제해 주세요.');
+    const e = await db.get('SELECT subtitles FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
     await db.run('DELETE FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
+    subtitleFile = e?.subtitles || '';
   });
+  // 회차와 함께 그 회차의 자막 파일도 지웁니다(파일 이름은 형식 검사 후 사용).
+  if (/^[a-f0-9-]+\.vtt$/.test(subtitleFile))
+    await rm(path.join(uploadDir, 'subtitles', subtitleFile), { force: true }).catch(() => {});
   res.json({ ok: true });
 });
 app.post('/api/admin/dramas/:id/review', roles('admin'), async (req, res) => {
   const b = z
     .object({ status: z.enum(['published', 'rejected']), note: z.string().max(1000).default('') })
     .parse(req.body);
-  await db.transaction(async () => {
+  const reviewed = await db.transaction(async () => {
     const d = await owned(req, true);
     if (d.status !== 'pending') fail(409, '심사 대기 중인 작품만 처리할 수 있어요.');
     if (b.status === 'rejected' && !b.note.trim()) fail(400, '반려 사유를 입력해 주세요.');
@@ -1094,8 +1275,22 @@ app.post('/api/admin/dramas/:id/review', roles('admin'), async (req, res) => {
       'UPDATE dramas SET status=?,review_note=?,published_at=COALESCE(published_at,?) WHERE id=?',
       [b.status, b.note, b.status === 'published' ? now() : null, d.id],
     );
+    // 작품 전체 승인 시 함께 심사한 회차는 모두 공개합니다(공개 예약이 있는 회차는 예약대로).
+    if (b.status === 'published')
+      await db.run(
+        "UPDATE episodes SET review_status=CASE WHEN publish_at IS NOT NULL AND publish_at>? THEN 'scheduled' ELSE 'approved' END WHERE drama_id=? AND review_status IN ('draft','pending','rejected')",
+        [now(), d.id],
+      );
     await contentEvent(req, d.id, b.status, b.note.trim());
+    return d;
   });
+  // PD에게 검수 결과 알림(알림 저장에 실패해도 검수 결과에는 영향 없음)
+  await notify(db, reviewed.owner_id, {
+    kind: 'drama_review',
+    title: b.status === 'published' ? `${reviewed.title} 검수가 승인됐어요` : `${reviewed.title} 검수가 반려됐어요`,
+    body: b.status === 'published' ? '시청자가 지금 볼 수 있어요.' : b.note.trim(),
+    link: 'studio/contents',
+  }).catch(() => {});
   res.json({ ok: true });
 });
 app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
@@ -1174,20 +1369,64 @@ const routeContext = {
   canWatch,
   registerMediaFile,
   contentIssues,
+  episodeEditable,
 };
 studioRoutes(routeContext);
 adminRoutes(routeContext);
 uploadRoutes(routeContext);
 lamaRoutes(routeContext);
+serialRoutes(routeContext);
 // 숏핑 스튜디오(AI 제작): 개발 환경에서는 키 없이 쓰는 가짜 AI를 함께 등록합니다.
 allowLocalDownloads(!production);
 if (demo) await seedMock(db);
 const aiEngine = createAiEngine({ db, uploadDir, demo });
+// 회차·예고편 합성 대기열. COMPOSE_WORKER=external이면 별도 작업 프로세스(npm run worker)가 처리합니다.
+const renderer = createRenderWorker({ db, uploadDir });
 adminAiRoutes({ ...routeContext, engine: aiEngine });
-studioAiRoutes({ ...routeContext, engine: aiEngine });
+studioAiRoutes({ ...routeContext, engine: aiEngine, renderer });
 await aiEngine.start();
+if (process.env.COMPOSE_WORKER !== 'external') {
+  await renderer.recover();
+  renderer.start();
+}
 // Confirmed sales become withdrawable on their own schedule, so refresh on a timer too.
 setInterval(() => void refreshEntries(db).catch(() => {}), 60 * 60 * 1000).unref();
+const shareBase = (req) => socialOrigin(req, origin, production);
+// 공유 링크의 대상이 없거나 비공개가 되면 JSON 대신 안내 페이지를 보여 줍니다(카톡·문자에서 열었을 때).
+const shareMissing = (req, res, what) => {
+  const base = shareBase(req);
+  res.status(404).set('Cache-Control', 'no-store').type('html').send(sharePage({
+    title: `찾을 수 없는 ${what}이에요 | 숏핑`,
+    description: `공개가 끝났거나 주소가 바뀐 ${what}이에요. 숏핑에서 다른 이야기를 만나 보세요.`,
+    url: `${base}/`,
+    image: `${base}/images/share-shortping.jpg`,
+    destination: `${base}/#/home`,
+  }));
+};
+app.get('/share/drama/:id', async (req, res) => {
+  const drama = await db.get("SELECT id,title,tagline,synopsis,genre FROM dramas WHERE id=? AND status='published'", [req.params.id]);
+  if (!drama) return shareMissing(req, res, '작품');
+  const base = shareBase(req);
+  res.set('Cache-Control', 'no-store').type('html').send(sharePage({
+    title: `${drama.title} | 숏핑`,
+    description: `${drama.genre} · ${drama.tagline || drama.synopsis || '지금 숏핑에서 만나보세요.'}`.slice(0, 160),
+    url: `${base}/share/drama/${encodeURIComponent(drama.id)}`,
+    image: `${base}/images/share-shortping.jpg`,
+    destination: `${base}/#/drama/${encodeURIComponent(drama.id)}`,
+  }));
+});
+app.get('/share/channel/:id', async (req, res) => {
+  const channel = await db.get("SELECT id,name,tagline,description FROM channels WHERE (id=? OR slug=?) AND status='active'", [req.params.id, req.params.id]);
+  if (!channel) return shareMissing(req, res, '방송국');
+  const base = shareBase(req);
+  res.set('Cache-Control', 'no-store').type('html').send(sharePage({
+    title: `${channel.name} 방송국 | 숏핑`,
+    description: (channel.tagline || channel.description || 'PD의 새로운 이야기를 숏핑에서 만나보세요.').slice(0, 160),
+    url: `${base}/share/channel/${encodeURIComponent(channel.id)}`,
+    image: `${base}/images/share-shortping.jpg`,
+    destination: `${base}/#/channel/${encodeURIComponent(channel.id)}`,
+  }));
+});
 app.use('/api', (req, res) => res.status(404).json({ error: '요청을 찾을 수 없습니다.' }));
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
@@ -1198,7 +1437,7 @@ app.use((err, req, res, next) => {
     });
   if (err instanceof multer.MulterError)
     return res.status(400).json({ error: '업로드 제한을 확인해 주세요. 영상은 최대 500MB입니다.' });
-  console.error(err.message);
+  console.error(err.message, err.detail ? '\n' + err.detail : '');
   res.status(err.status || 500).json({
     error: err.status ? err.message : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
     // 핑 부족처럼 화면이 다음 행동(충전하러 가기)을 정할 수 있는 오류는 코드와 수치를 함께 보냅니다.
@@ -1208,6 +1447,10 @@ app.use((err, req, res, next) => {
 // Demo videos are intentionally served only by the access-controlled API.
 app.use('/demo', (req, res) => res.sendStatus(404));
 if (production) {
+  app.get('/', (req, res) => {
+    const html = readFileSync(path.resolve('dist/index.html'), 'utf8');
+    res.set('Cache-Control', 'no-store').type('html').send(injectHomeTags(html, shareBase(req)));
+  });
   app.use(express.static('dist'));
   app.get('/{*path}', (req, res) => res.sendFile(path.resolve('dist/index.html')));
 } else {
@@ -1218,6 +1461,10 @@ if (production) {
       hmr: process.env.NODE_ENV === 'test' ? false : { host: '127.0.0.1', port: port + 1 },
     },
     appType: 'spa',
+  });
+  app.get('/', async (req, res) => {
+    const html = await vite.transformIndexHtml('/', readFileSync(path.resolve('index.html'), 'utf8'));
+    res.set('Cache-Control', 'no-store').type('html').send(injectHomeTags(html, shareBase(req)));
   });
   app.use(vite.middlewares);
 }

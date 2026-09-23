@@ -29,6 +29,11 @@ import {
 import { Empty } from './App';
 import { downloadCsv } from './StudioPanels';
 
+// 정산 항목의 날짜. 구독 배분 항목은 마감을 실행한 날이 아니라 해당 정산 월(period)로 잡아야
+// 관리자 월별 집계와 PD 달력이 같은 달을 가리킵니다.
+const entryDay = (e: { kind: string; period?: string; created_at: string }) =>
+  e.kind === 'subscription' && e.period ? `${e.period}-01` : localDay(new Date(e.created_at));
+
 export const entryStatus: Record<string, string> = {
   pending: '정산 예정',
   available: '출금 가능',
@@ -69,7 +74,7 @@ export function SettlementCalendar({
   const days = new Date(year, m, 0).getDate();
   const byDay = new Map<string, { net: number; gross: number; count: number }>();
   for (const e of entries) {
-    const key = localDay(new Date(e.created_at));
+    const key = entryDay(e);
     const cell = byDay.get(key) || { net: 0, gross: 0, count: 0 };
     cell.net += e.net;
     cell.gross += e.gross;
@@ -207,16 +212,17 @@ export default function Settlement({
     [busy, setBusy] = useState(false),
     [form, setForm] = useState<TaxProfile | null>(null),
     [confirming, setConfirming] = useState(false);
-  const load = useCallback(async () => {
+  const load = useCallback(async (resetForm = false) => {
     try {
-      const r = await api<StudioSettlement>('/studio/settlement');
+      const r = await api<StudioSettlement>('/studio/settlement?month=' + month);
       setData(r);
-      setForm(r.profile);
+      // 계좌·세무 입력 중에는 달을 바꿔도 입력한 값을 지우지 않습니다(저장 직후에만 서버 값으로 맞춤).
+      setForm((prev) => (resetForm || !prev ? r.profile : prev));
       setError('');
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [month]);
   useEffect(() => {
     void load();
   }, [load, user.id]);
@@ -230,11 +236,11 @@ export default function Settlement({
         <span className="spinner" />
       </div>
     );
-  const monthEntries = data.entries.filter((e) => localDay(new Date(e.created_at)).startsWith(month));
+  const monthEntries = data.entries.filter((e) => entryDay(e).startsWith(month));
   const listed = data.entries.filter(
     (e) =>
       (status === 'all' || e.status === status) &&
-      (selected ? localDay(new Date(e.created_at)) === selected : true),
+      (selected ? entryDay(e) === selected : true),
   );
   const ready = data.balance.available >= data.settings.payout_min && data.balance.available > 0;
   const accountReady = !!(form.bank_name && form.account_number && form.account_holder);
@@ -542,7 +548,10 @@ export default function Settlement({
         <div>
           <span className="eyebrow">TAX PROFILE</span>
           <h3>세무 · 정산 정보</h3>
-          <p>사업자 여부에 따라 세금계산서 발행 또는 원천징수로 처리됩니다.</p>
+          <p>
+            사업자 여부에 따라 세금계산서 발행 또는 원천징수로 처리됩니다. 사업자 기준(부가세 가산)은 관리자
+            검증이 끝난 뒤부터 적용돼요.
+          </p>
         </div>
         {form.verified ? (
           <span className="status-chip">
@@ -571,7 +580,7 @@ export default function Settlement({
               contact: form.contact,
               address: form.address,
             });
-            await load();
+            await load(true);
             notify('세무 정보를 저장했어요. 관리자 검증 후 출금에 사용됩니다.');
           } catch (err) {
             notify((err as Error).message);

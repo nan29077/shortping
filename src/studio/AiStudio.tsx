@@ -17,8 +17,11 @@ import {
 import { api, lama, type AiOverview } from '../api';
 import { Empty, Modal, navigate } from '../App';
 import Workspace from './Workspace';
+import { TABS, hasModel, type TabId } from './ws/shared';
 import { STYLES, TEMPLATES, type Template } from './presets';
+import { loadChoices } from './parts';
 import TemplateIcon from './TemplateIcon';
+import { asset } from '../platform';
 
 // 숏핑 스튜디오(AI 제작) 첫 화면: 이용 약관 동의 → 프로젝트 목록 → 작업 공간
 const TERMS = [
@@ -29,6 +32,13 @@ const TERMS = [
   '라마는 작업을 시작할 때 예상치만큼 예약되고, 끝나면 실제 사용량만 차감돼요. 실패한 작업은 전액 돌려드려요. AI 결과물의 품질은 모델에 따라 다를 수 있어요.',
 ];
 
+const readStudioRoute = (): { id: string | null; tab: TabId } => {
+  const p = location.hash.replace(/^#\/?/, '').split('/');
+  const tab = (TABS.some((t) => t.id === p[3]) ? p[3] : 'plan') as TabId;
+  return p[0] === 'studio' && p[1] === 'ai' && p[2] ? { id: p[2], tab } : { id: null, tab: 'plan' };
+};
+// 빠른 제작: 프로젝트를 만들자마자 빠른 제작을 시작합니다(비어 있는 단계만, 정한 라마 안에서).
+const quickDefault = { on: true, bible: true, video: false, lipsync: false, sfx: false, music: false, cap: '' };
 const blank = {
   title: '',
   logline: '',
@@ -49,7 +59,7 @@ export default function AiStudio({
 }) {
   const [data, setData] = useState<AiOverview | null>(null),
     [error, setError] = useState(''),
-    [open, setOpen] = useState<string | null>(null),
+    [route, setRoute] = useState(readStudioRoute),
     [creating, setCreating] = useState(false),
     [agree, setAgree] = useState(false),
     [busy, setBusy] = useState(false),
@@ -60,7 +70,8 @@ export default function AiStudio({
     [query, setQuery] = useState(''),
     [filter, setFilter] = useState('all'),
     [sort, setSort] = useState('recent'),
-    [form, setForm] = useState(blank);
+    [form, setForm] = useState(blank),
+    [quick, setQuick] = useState(quickDefault);
   const pick = (t: Template | null) => {
     setForm(
       t
@@ -84,6 +95,14 @@ export default function AiStudio({
     setTemplateQuery('');
     setCreating(true);
   };
+  // 작업 공간 주소: #/studio/ai/<프로젝트>/<탭> (새로고침 · 뒤로 가기 · 알림 링크로 바로 열림)
+  useEffect(() => {
+    const on = () => setRoute(readStudioRoute());
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  const open = route.id;
+  const setOpen = (id: string | null) => navigate(id ? 'studio/ai/' + id : 'studio/ai');
   const load = useCallback(async () => {
     try {
       await api('/lama'); // 첫 방문 체험 라마 지급
@@ -119,6 +138,8 @@ export default function AiStudio({
         genres={data.genres}
         notify={notify}
         goLama={goLama}
+        tab={route.tab}
+        setTab={(t) => navigate(`studio/ai/${open}/${t}`, { replace: true })}
         back={() => {
           setOpen(null);
           void load();
@@ -310,7 +331,7 @@ export default function AiStudio({
             <article key={p.id} className="project-card">
               <button className="project-open" onClick={() => setOpen(p.id)}>
                 <div className="project-poster">
-                  {p.poster ? <img src={p.poster} alt="" /> : <Clapperboard size={34} />}
+                  {p.poster ? <img src={asset(p.poster)} alt="" /> : <Clapperboard size={34} />}
                 </div>
                 <div>
                   <span className={'status-chip ' + (p.status === 'exported' ? '' : 'neutral')}>
@@ -322,7 +343,7 @@ export default function AiStudio({
                   </span>
                   {(p.autopilot || '').includes('"status":"running"') && (
                     <span className="status-chip">
-                      <Bot size={11} /> 자동 제작 중
+                      <Bot size={11} /> 빠른 제작 중
                     </span>
                   )}
                   <strong>{p.title}</strong>
@@ -451,10 +472,26 @@ export default function AiStudio({
                 try {
                   const r = await api<{ id: string }>('/studio/ai/projects', 'POST', form);
                   setCreating(false);
+                  let message = '프로젝트를 만들었어요. 기획 · 설정부터 차례로 만들어 보세요.';
+                  if (quick.on) {
+                    try {
+                      await api(`/studio/ai/projects/${r.id}/autopilot`, 'POST', {
+                        choices: loadChoices(),
+                        includeBible: quick.bible,
+                        includeVideo: quick.video,
+                        includeLipsync: quick.video && quick.lipsync,
+                        includeSfx: quick.sfx,
+                        includeMusic: quick.music,
+                        musicMood: form.tone,
+                        ...(quick.cap ? { cap: Number(quick.cap) } : {}),
+                      });
+                      message = '빠른 제작을 시작했어요. 화면을 닫아도 계속 만들고, 끝나면 알려 드려요.';
+                    } catch (err) {
+                      message = `프로젝트는 만들었지만 빠른 제작을 시작하지 못했어요: ${(err as Error).message}`;
+                    }
+                  }
                   setOpen(r.id);
-                  notify(
-                    '프로젝트를 만들었어요. 자동 제작으로 한 번에 만들거나, 단계별로 직접 만들 수 있어요.',
-                  );
+                  notify(message);
                 } catch (err) {
                   notify((err as Error).message);
                 } finally {
@@ -552,27 +589,67 @@ export default function AiStudio({
                 />
                 중국 AI 모델 쓰지 않기
               </label>
-              <div className="mode-hint">
-                <div>
+              <div className="mode-choice" role="radiogroup" aria-label="제작 방식">
+                <button type="button" role="radio" aria-checked={quick.on} className={quick.on ? 'active' : ''} onClick={() => setQuick({ ...quick, on: true })}>
                   <Bot size={16} />
                   <span>
-                    <b>자동 제작</b> 최대 라마만 정하면 기획부터 합성까지 한 번에
+                    <b>빠른 제작</b> 만들자마자 기획부터 합성까지 AI가 한 번에
                   </span>
-                </div>
-                <div>
+                </button>
+                <button type="button" role="radio" aria-checked={!quick.on} className={!quick.on ? 'active' : ''} onClick={() => setQuick({ ...quick, on: false })}>
                   <Footprints size={16} />
                   <span>
                     <b>단계별 제작</b> 컷 하나하나 직접 고르고 고치며
                   </span>
+                </button>
+              </div>
+              {quick.on ? (
+                <div className="quick-options">
+                  <label className="inline-check">
+                    <input type="checkbox" checked={quick.bible} onChange={(e) => setQuick({ ...quick, bible: e.target.checked })} />
+                    설정집 · 시즌 설계 먼저 (회차끼리 잘 이어져요)
+                  </label>
+                  <label className="inline-check">
+                    <input type="checkbox" checked={quick.video} onChange={(e) => setQuick({ ...quick, video: e.target.checked, lipsync: e.target.checked && quick.lipsync })} />
+                    컷 영상까지 (비용 큼 · 없으면 이미지가 움직이는 화면)
+                  </label>
+                  {hasModel(data.models, 'lipsync') && (
+                    <label className="inline-check">
+                      <input type="checkbox" checked={quick.lipsync} disabled={!quick.video} onChange={(e) => setQuick({ ...quick, lipsync: e.target.checked })} />
+                      대사 컷 입 모양 맞추기
+                    </label>
+                  )}
+                  {hasModel(data.models, 'sfx') && (
+                    <label className="inline-check">
+                      <input type="checkbox" checked={quick.sfx} onChange={(e) => setQuick({ ...quick, sfx: e.target.checked })} />
+                      효과음 넣기
+                    </label>
+                  )}
+                  {hasModel(data.models, 'music') ? (
+                    <label className="inline-check">
+                      <input type="checkbox" checked={quick.music} onChange={(e) => setQuick({ ...quick, music: e.target.checked })} />
+                      배경음악 만들기
+                    </label>
+                  ) : (
+                    <small className="muted">배경음악 · 효과음 · 입 모양 맞추기는 관리자가 모델을 준비하면 고를 수 있어요.</small>
+                  )}
+                  <label>
+                    최대 사용 라마 <small className="muted">비우면 예상치의 1.3배 · 보유 {lama(data.wallet.total)}</small>
+                    <input type="number" min={1} value={quick.cap} placeholder="자동" onChange={(e) => setQuick({ ...quick, cap: e.target.value.replace(/\D/g, '') })} />
+                  </label>
+                  <div className="info-box">
+                    <FileCheck2 size={18} />
+                    정한 라마를 넘으면 스스로 멈추고, 실패한 작업은 라마를 돌려드려요. 진행 중에도 언제든 멈추거나 직접 고칠 수 있어요.
+                  </div>
                 </div>
-              </div>
-              <div className="info-box">
-                <FileCheck2 size={18} />
-                프로젝트를 만드는 데는 라마가 들지 않아요. 다음 화면에서 두 방식 중 하나를 고르면
-                돼요.
-              </div>
+              ) : (
+                <div className="info-box">
+                  <FileCheck2 size={18} />
+                  프로젝트를 만드는 데는 라마가 들지 않아요. 기획 · 대본 · 장면 · 완성 순서로 직접 만들어요.
+                </div>
+              )}
               <button className="primary full" disabled={busy}>
-                {busy ? '만드는 중…' : '프로젝트 만들기'}
+                {busy ? '만드는 중…' : quick.on ? '만들고 빠른 제작 시작' : '프로젝트 만들기'}
               </button>
             </form>
           )}

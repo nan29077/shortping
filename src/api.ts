@@ -1,13 +1,60 @@
+import { apiUrl, asset, authHeaders, authToken, fetchCredentials, isNativeApp, refreshMediaToken } from './platform';
+export { asset } from './platform';
 export type Role = 'admin' | 'pd' | 'viewer';
+export type CopyKey = 'eyebrow' | 'headline' | 'highlight' | 'description' | 'caption' | 'copyright';
+// PC 여백 디자인: 글자 색(빈 값이면 기본 색), 글자 크기, 카피 배경 상자, 글자 그림자, 배경 어둡기·사진·초점
+export type HomeStyle = {
+  colors: Record<CopyKey, string>;
+  size: 's' | 'm' | 'l';
+  box: boolean;
+  shadow: boolean;
+  shade: number;
+  image: string;
+  focus: 'center' | 'top' | 'bottom' | 'left' | 'right';
+};
+export const defaultHomeStyle: HomeStyle = {
+  colors: { eyebrow: '', headline: '', highlight: '', description: '', caption: '', copyright: '' },
+  size: 'm',
+  box: false,
+  shadow: true,
+  shade: 0,
+  image: '',
+  focus: 'center',
+};
 export type HomeAppearance = {
   theme: 'cinematic' | 'bright' | 'fantasy' | 'classic' | 'medieval';
   image: string;
+  themeImage?: string;
+  style?: HomeStyle;
   eyebrow: string;
   headline: string;
   highlight: string;
   description: string;
   caption: string;
   copyright: string;
+};
+// 메인 화면 구성(최고관리자 편성)
+export type HomeSectionId = 'continue' | 'curated' | 'channels' | 'trending' | 'membership' | 'binge' | 'newest' | 'free' | 'followed' | 'editorial';
+export type HomeSectionSetting = { id: HomeSectionId; visible: boolean; title: string; subtitle: string };
+export type HomeNotice = { enabled?: boolean; text: string; link: string; tone: 'lime' | 'violet' | 'red' | 'neutral'; start?: string; end?: string };
+export type HomeLayout = {
+  hero: { mode: 'auto' | 'manual'; ids: string[]; kicker: string; interval: number };
+  sections: HomeSectionSetting[];
+  curated: { ids: string[] };
+  editorial: { eyebrow: string; title: string; button: string; link: string };
+  notice: HomeNotice | null;
+};
+export const defaultHomeLayout: HomeLayout = {
+  hero: { mode: 'auto', ids: [], kicker: '', interval: 0 },
+  sections: (['continue', 'curated', 'channels', 'trending', 'membership', 'binge', 'newest', 'free', 'followed', 'editorial'] as HomeSectionId[]).map((id) => ({
+    id,
+    visible: id !== 'curated',
+    title: '',
+    subtitle: '',
+  })),
+  curated: { ids: [] },
+  editorial: { eyebrow: '', title: '', button: '', link: '' },
+  notice: null,
 };
 export type HomeTheme = Omit<HomeAppearance, 'theme' | 'copyright'> & {
   id: HomeAppearance['theme'];
@@ -63,6 +110,12 @@ export type Drama = {
   ai_usage?: 'none' | 'partial' | 'full';
   studio_episodes?: number;
   ai_label?: boolean;
+  episode_total?: number;
+  pending_episodes?: number;
+  trailer?: string;
+  hashtags?: string;
+  subtitle_style?: string;
+  thumb_id?: string;
 };
 export const aiUsageLabel: Record<string, string> = {
   none: 'AI 미사용',
@@ -82,6 +135,10 @@ export type Episode = {
   warnings?: string[];
   width?: number | null;
   height?: number | null;
+  thumbnail?: string;
+  review_status?: 'approved' | 'draft' | 'pending' | 'rejected' | 'scheduled';
+  review_note?: string;
+  publish_at?: string | null;
 };
 export type Detail = Drama & {
   episodes: Episode[];
@@ -218,6 +275,7 @@ export type Channel = {
   overlay: number;
   greeting: string;
   status: string;
+  admin_hidden?: number;
   featured: number;
   featured_order: number;
   drama_count: number;
@@ -334,6 +392,7 @@ export type PlatformSettings = {
   withholding_rate: number;
   vat_rate: number;
   payout_notice: string;
+  media_retention_days?: number;
 };
 export type AdminSettlement = {
   settings: PlatformSettings;
@@ -356,6 +415,7 @@ export type AdminSettlement = {
   }[];
   entries: SettlementEntry[];
   payouts: Payout[];
+  payoutStats?: { paid_bank: number; paid_lama: number; waiting: number; count: number };
   closed: { period: string; creators: number; gross: number }[];
 };
 export type TaxCreator = TaxProfile & { id: string; name: string; email: string };
@@ -451,23 +511,51 @@ export class ApiError extends Error {
     Object.assign(this, extra);
   }
 }
+// 세션이 끝났을 때(다른 기기에서 로그아웃·비밀번호 변경 등) 앱 전체가 알 수 있도록 이벤트를 올립니다.
+export const SESSION_EXPIRED_EVENT = 'shortping:session-expired';
 export async function api<T = unknown>(url: string, method = 'GET', body?: unknown): Promise<T> {
-  const res = await fetch('/api' + url, {
-    method,
-    credentials: 'include',
-    headers: body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(url), {
+      method,
+      credentials: fetchCredentials,
+      headers: { ...authHeaders(), ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError('서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요.', { code: 'network' });
+  }
   const data = await res.json().catch(() => ({ error: '서버에 연결할 수 없습니다.' }));
-  if (!res.ok)
+  // 앱: 로그인 · 가입 응답의 토큰을 기억하고, 로그아웃하거나 세션이 끝나면 지웁니다.
+  if (isNativeApp && url.startsWith('/auth/')) {
+    if (res.ok && typeof data?.token === 'string' && data.token) {
+      authToken.set(data.token);
+      await refreshMediaToken();
+    } else if (url === '/auth/logout' || (url === '/auth/me' && res.ok && !data?.user)) authToken.clear();
+  }
+  if (!res.ok) {
+    if (res.status === 401 && url !== '/auth/me' && !url.startsWith('/auth/'))
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     throw new ApiError(data.error || '요청을 처리하지 못했습니다.', {
-      code: data.code,
+      code: res.status === 401 ? data.code || 'unauthorized' : data.code,
       need: data.need,
       balance: data.balance,
     });
+  }
   return data;
 }
-export const won = (n: number) => new Intl.NumberFormat('ko-KR').format(n) + '원';
+// crypto.randomUUID는 HTTPS(또는 localhost)에서만 있습니다. LAN 주소(http://192.168…)로 폰에서
+// 열어도 결제·작업 요청이 깨지지 않도록 v4 UUID를 직접 만듭니다.
+export function uuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+export const won = (n: number | string) => new Intl.NumberFormat('ko-KR').format(Number(n) || 0) + '원';
 export const pings = (n: number) => new Intl.NumberFormat('ko-KR').format(Number(n) || 0) + '핑';
 export const day = (value?: string | null) =>
   value ? new Date(value).toLocaleDateString('ko-KR') : '-';
@@ -475,11 +563,18 @@ export const moment = (value?: string | null) =>
   value ? new Date(value).toLocaleString('ko-KR') : '-';
 export const localDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-export const count = (n: number) =>
-  n >= 10000 ? (n / 10000).toFixed(1) + '만' : n.toLocaleString();
+export const count = (value: number | string) => {
+  const n = Number(value) || 0;
+  return n >= 10000 ? (n / 10000).toFixed(1) + '만' : n.toLocaleString('ko-KR');
+};
 
 // ── 라마(제작 포인트) · 숏핑 스튜디오(AI 제작) ─────────────────────────
-export const lama = (n: number) => new Intl.NumberFormat('ko-KR').format(Math.round(Number(n) || 0)) + '라마';
+// 라마 표시: 1 미만 단가(예: 초당 0.2라마)는 소수점으로, 그 밖은 정수로 보여 줍니다.
+export const lama = (n: number) => {
+  const v = Number(n) || 0;
+  if (v > 0 && v < 1) return v.toLocaleString('ko-KR', { maximumFractionDigits: 2 }) + '라마';
+  return new Intl.NumberFormat('ko-KR').format(Math.round(v)) + '라마';
+};
 export type LamaWallet = { paid: number; bonus: number; held: number; total: number };
 export type LamaLedgerRow = {
   id: string;
@@ -533,13 +628,16 @@ export const lamaTypeLabel: Record<string, string> = {
   spend: 'AI 작업 사용',
   release: '예약 반환',
 };
-export type Capability = 'text' | 'image' | 'video' | 'tts' | 'stt';
+export type Capability = 'text' | 'image' | 'video' | 'tts' | 'stt' | 'music' | 'sfx' | 'lipsync';
 export const capabilityLabel: Record<Capability, string> = {
   text: '기획·대본',
   image: '이미지',
   video: '영상',
   tts: '음성',
   stt: '자막 인식',
+  music: '배경음악',
+  sfx: '효과음',
+  lipsync: '입 모양 맞추기',
 };
 export const unitLabel: Record<string, string> = {
   per_1k_tokens: '1천 토큰',
@@ -578,6 +676,18 @@ export type StudioProject = {
   status: string;
   exclude_cn?: number;
   autopilot?: string;
+  bible?: string;
+  season?: string;
+  source_text?: string;
+  subtitle_style?: string;
+  narrator_model?: string;
+  narrator_voice?: string;
+  bgm?: string;
+  bgm_volume?: number;
+  trailer?: string;
+  trailer_status?: string;
+  meta?: string;
+  resolution?: string;
   created_at: string;
   updated_at: string;
   episode_total?: number;
@@ -603,7 +713,14 @@ export type StudioCharacter = {
   voice_model: string;
   voice: string;
   voice_sample?: string;
+  look_en?: string;
+  look_en_src?: string;
+  outfit?: string;
+  refs?: string;
+  voice_style?: string;
 };
+export type StudioLocation = { id: string; name: string; look: string; look_en: string; look_en_src: string; image: string; sort_order: number };
+export type StudioRender = { id: string; kind: 'episode' | 'trailer'; target_id: string; status: string; progress: number; error: string; created_at: string };
 export type StudioShot = {
   id: string;
   episode_id: string;
@@ -618,6 +735,23 @@ export type StudioShot = {
   audio: string;
   audio_seconds: number;
   video: string;
+  visual_en?: string;
+  visual_en_src?: string;
+  cast_ids?: string;
+  location_id?: string | null;
+  camera_move?: string;
+  emotion?: string;
+  speed?: number;
+  narration?: number;
+  seed?: number | null;
+  seed_lock?: number;
+  end_frame?: number;
+  lipsync?: string;
+  sfx?: string;
+  sfx_prompt?: string;
+  sfx_volume?: number;
+  transition?: string;
+  caption?: string | null;
 };
 export type StudioEpisode = {
   id: string;
@@ -629,6 +763,17 @@ export type StudioEpisode = {
   duration: number;
   subtitles: string;
   exported_at: string | null;
+  hook?: string;
+  cliffhanger?: string;
+  bgm?: string;
+  bgm_volume?: number;
+  thumbnail?: string;
+  intro_card?: string;
+  outro_card?: string;
+  compose_progress?: number;
+  compose_error?: string;
+  script_version?: number;
+  diagnosis?: string;
   shots: StudioShot[];
 };
 export type StudioJob = {
@@ -661,10 +806,12 @@ export type StudioProjectDetail = {
   jobs: StudioJob[];
   assets: StudioAsset[];
   spent: number;
-  drama: { id: string; title: string; status: string; review_note: string } | null;
+  drama: { id: string; title: string; status: string; review_note: string; tagline?: string; free?: number; episode_pings?: number; free_episodes?: number; image?: string } | null;
   wallet: LamaWallet;
   costs: { kind: string; jobs: number; lama: number; failed: number }[];
   autopilot: Autopilot | null;
+  locations?: StudioLocation[];
+  renders?: StudioRender[];
 };
 export type AutopilotChoice = { requested: string; tier: 'draft' | 'standard' | 'premium' };
 export type Autopilot = {
@@ -677,7 +824,12 @@ export type Autopilot = {
   started_at: string;
   updated_at: string;
   spent?: number;
-  choices: Record<'text' | 'image' | 'tts' | 'video', AutopilotChoice>;
+  includeBible?: boolean;
+  includeLipsync?: boolean;
+  includeSfx?: boolean;
+  includeMusic?: boolean;
+  musicMood?: string;
+  choices: Record<'text' | 'image' | 'tts' | 'video', AutopilotChoice> & Partial<Record<'music' | 'sfx' | 'lipsync', AutopilotChoice>>;
 };
 export type AutopilotEstimate = {
   stages: { stage: string; label: string; count: number; lama: number | null }[];
@@ -694,7 +846,20 @@ export type StudioActivity = {
 };
 // 스튜디오 결과물(영상·음성)은 본인만 받을 수 있는 경로로 재생합니다. 이미지는 공개 경로 그대로.
 export const studioMedia = (url: string) =>
-  !url ? '' : /\.(mp4|mp3|wav)$/.test(url) ? '/api/studio/media/' + url.split('/').pop() : url;
+  asset(!url ? '' : /\.(mp4|mp3|wav)$/.test(url) ? '/api/studio/media/' + url.split('/').pop() : url);
+// 스튜디오 알림
+export type AppNotification = { id: string; kind: string; title: string; body: string; link: string; read_at: string | null; created_at: string };
+// 목소리 라이브러리
+export type VoiceOption = { id: string; gender: string; age: string; tone: string; sample: string };
+export type VoiceModel = { model: string; label: string; provider: string; voices: VoiceOption[] };
+export type StudioVersion = { id: string; version: number; source: string; note: string; created_at: string; shots: Partial<StudioShot>[] };
+export const parseJson = <T,>(raw: string | undefined | null, fallback: T): T => {
+  try {
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 export type AiProviderView = {
   id: string;
   name: string;
@@ -804,6 +969,8 @@ export type AdminAi = {
     charged_lama: number;
     cost_won: number;
     error: string;
+    // 공급사 오류 원문(관리자 전용). PD 화면에는 error(정리된 문구)만 보입니다.
+    error_detail?: string;
     attempts: number;
     created_at: string;
     finished_at: string | null;
@@ -846,6 +1013,21 @@ export const jobKindLabel: Record<string, string> = {
   rewrite_shot: '컷 AI 고치기',
   voice_sample: '목소리 미리듣기',
   playground: '관리자 시험',
+  adapt: '원작 각색',
+  bible: '작품 설정집',
+  season: '회차별 훅·반전 설계',
+  diagnose: '대본 진단',
+  rewrite_range: '구간 다시 쓰기',
+  metadata: '제목·소개 제안',
+  translate: '영어 묘사 준비(무료)',
+  character_ref: '인물 참고 이미지',
+  location_image: '장소 이미지',
+  shot_image_edit: '이미지 부분 수정',
+  shot_lipsync: '입 모양 맞추기',
+  shot_sfx: '효과음',
+  music: '배경음악',
+  thumb_bg: '썸네일 배경',
+  voice_preview: '목소리 샘플(무료)',
 };
 export const jobStatusLabel: Record<string, string> = {
   queued: '대기 중',

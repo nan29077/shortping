@@ -1,0 +1,536 @@
+/* 최고관리자 · 메인페이지 관리 */
+.home-admin-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.home-admin-head-actions a.secondary {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.home-admin-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #26332d;
+  padding-bottom: 10px;
+}
+.home-admin-tabs button {
+  position: relative;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid #2c3b34;
+  font-size: 12px;
+  color: #a9b8ae;
+}
+.home-admin-tabs button.active {
+  border-color: #bfe95d88;
+  background: #c4f56214;
+  color: #eef9d8;
+}
+.home-admin-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffb547;
+  display: inline-block;
+}
+.home-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.home-admin-field {
+  margin-top: 15px;
+}
+.home-admin-field > span {
+  display: block;
+  color: #a7b6ad;
+  font-size: 10px;
+  margin-bottom: 8px;
+}
+.home-admin-value {
+  color: var(--lime);
+  margin-left: 6px;
+  font-weight: 700;
+}
+.home-copy-editor input[type='range'] {
+  padding: 0;
+  accent-color: #c4f562;
+}
+.home-admin-subhead {
+  margin-top: 28px !important;
+  padding-top: 20px;
+  border-top: 1px solid #26332d;
+}
+.home-copy-field {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.home-copy-field > label {
+  margin-bottom: 0;
+}
+.home-color-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.home-color-field input[type='color'] {
+  width: 34px;
+  height: 30px;
+  padding: 2px;
+  margin: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.home-color-field .home-color-hex {
+  width: 88px;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.home-swatches {
+  display: flex;
+  gap: 4px;
+}
+.home-swatches button {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #ffffff40;
+}
+.home-swatches button.on {
+  outline: 2px solid var(--lime);
+  outline-offset: 1px;
+}
+.home-admin-save {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 22px;
+  flex-wrap: wrap;
+}
+.home-admin-save .primary {
+  flex: 1;
+  min-width: 180px;
+}
+.home-admin-pending {
+  color: #ffc56b;
+  font-size: 10px;
+}
+.home-appearance-preview .panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+/* 미리보기: 실제 화면처럼 배경 상자 없이 글자만(상자 켜면 상자) */
+.home-preview-shade {
+  position: absolute;
+  inset: 0;
+  background: #040807;
+  z-index: 0;
+  pointer-events: none;
+}
+.home-preview-canvas::after {
+  z-index: 0;
+}
+.home-preview-copy.boxed {
+  padding: 14px 16px;
+  border: 1px solid #ffffff14;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #06100dcc, #08120f82);
+  backdrop-filter: blur(6px);
+}
+.home-preview-copy.flat,
+.home-preview-foot.flat {
+  text-shadow: none;
+}
+.home-preview-copy.size-s h3 {
+  font-size: clamp(16px, 1.6vw, 24px);
+}
+.home-preview-copy.size-l h3 {
+  font-size: clamp(24px, 2.5vw, 38px);
+}
+.home-preview-foot {
+  position: absolute;
+  z-index: 1;
+  left: 24px;
+  bottom: 16px;
+  width: 31%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-shadow: 0 1px 10px #000;
+}
+.home-preview-foot small {
+  font-size: 8px;
+  color: #d5e0d8;
+}
+.home-preview-foot small + small {
+  color: #c7d4cb;
+  font-size: 7px;
+}
+
+/* 메인 화면 구성 */
+.home-layout-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.25fr) minmax(300px, 0.75fr);
+  gap: 18px;
+  align-items: start;
+}
+.home-phone-wrap {
+  position: sticky;
+  top: 16px;
+}
+.home-copy-editor .form-grid.two input,
+.home-copy-editor .form-grid.two select {
+  margin-top: 8px;
+}
+.home-sections {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.home-sections > li {
+  border: 1px solid #2b3a33;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #101917;
+}
+.home-sections > li.hidden-section {
+  opacity: 0.55;
+}
+.home-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.home-section-head > b {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  background: #ffffff12;
+}
+.home-section-head > strong {
+  flex: 1;
+  font-size: 12px;
+}
+.home-section-head .icon-button {
+  width: 30px;
+  height: 30px;
+}
+.home-section-head .icon-button:disabled {
+  opacity: 0.3;
+}
+.home-sections input,
+.home-sections textarea {
+  margin-top: 8px;
+  padding: 8px 10px;
+}
+.home-sections textarea {
+  min-height: 0;
+}
+.home-editorial-edit {
+  display: flex;
+  flex-direction: column;
+}
+.home-picker {
+  margin-top: 10px;
+}
+.home-picked {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.home-picked > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: #ffffff08;
+}
+.home-picked > li.missing {
+  background: #f5626214;
+}
+.home-picked > li > b {
+  width: 16px;
+  font-size: 10px;
+  color: var(--lime);
+}
+.home-picked img,
+.home-picked-empty {
+  width: 30px;
+  height: 42px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: #0b1112;
+}
+.home-picked > li > span {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.home-picked strong {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-picked small {
+  font-size: 9px;
+  color: #81938a;
+}
+.home-picked .icon-button {
+  width: 26px;
+  height: 26px;
+}
+.home-picked-none {
+  font-size: 11px;
+  color: #81938a;
+}
+.home-picker-search {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  margin: 0 !important;
+  padding: 0 10px;
+  border: 1px solid #323d3d;
+  border-radius: 8px;
+  background: #10161a;
+}
+.home-picker-search input {
+  border: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  padding: 9px 0 !important;
+}
+.home-picker-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 5px;
+  margin-top: 6px;
+}
+.home-picker-results button {
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  border: 1px solid #2b3a33;
+  text-align: left;
+  min-width: 0;
+}
+.home-picker-results button:hover {
+  border-color: #bfe95d77;
+}
+.home-picker-results img {
+  width: 26px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.home-picker-results span {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.home-picker-results strong {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-picker-results small {
+  font-size: 9px;
+  color: #81938a;
+}
+/* 휴대폰 순서 미리보기 */
+.home-phone {
+  width: 100%;
+  max-width: 300px;
+  margin: 0 auto;
+  border: 6px solid #22302a;
+  border-radius: 28px;
+  padding: 12px 10px;
+  background: #0d1214;
+  max-height: 640px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.home-phone .home-notice {
+  margin: 0;
+  font-size: 10px;
+  padding: 7px 9px;
+}
+.phone-hero {
+  position: relative;
+  height: 180px;
+  border-radius: 12px;
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 10px;
+  gap: 2px;
+  box-shadow: inset 0 -80px 60px -20px #000c;
+}
+.phone-hero small {
+  font-size: 8px;
+  color: var(--lime);
+}
+.phone-hero b {
+  font-size: 15px;
+}
+.phone-hero span {
+  font-size: 8px;
+  color: #c7d4cb;
+}
+.phone-section b {
+  display: block;
+  font-size: 10px;
+  margin-bottom: 5px;
+}
+.phone-section b small {
+  color: #81938a;
+  font-weight: 400;
+}
+.phone-posters {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.phone-posters img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.phone-channels {
+  height: 34px;
+  border-radius: 8px;
+  background: repeating-linear-gradient(90deg, #1c2a24 0 60px, transparent 60px 66px);
+}
+.phone-banner {
+  font-size: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: linear-gradient(120deg, #2b3d1f, #18221d);
+  color: #e3f9bd;
+}
+.phone-banner.editorial {
+  background: linear-gradient(120deg, #2a2340, #161b22);
+  color: #e3d6ff;
+}
+/* 공지 */
+.home-notice-status {
+  font-size: 11px;
+  color: #cfe7a5;
+}
+.home-notice-preview {
+  border: 1px solid #2b3a33;
+  border-radius: 14px;
+  padding: 14px;
+  background: #0d1214;
+}
+.home-notice-fake {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #ffffff08;
+  color: #5f6d66;
+  font-size: 10px;
+}
+.home-notice-fake.hero {
+  height: 140px;
+}
+/* 변경 기록 */
+.home-history {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.home-history > li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #2b3a33;
+  border-radius: 12px;
+}
+.home-history > li > div {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.home-history strong {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.home-history small {
+  font-size: 10px;
+  color: #81938a;
+}
+.home-history-kind {
+  flex: none;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+.home-history-kind.appearance {
+  background: #c4f5621a;
+  color: #d9f5a8;
+}
+.home-history-kind.layout {
+  background: #b28cff1f;
+  color: #dccbff;
+}
+@media (max-width: 1180px) {
+  .home-layout-grid {
+    grid-template-columns: 1fr;
+  }
+  .home-phone-wrap {
+    position: static;
+  }
+}
+@media (max-width: 720px) {
+  .home-history > li {
+    flex-wrap: wrap;
+  }
+}
+.home-copy-editor .panel-heading {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.home-copy-editor .panel-heading p {
+  margin-top: 0;
+}

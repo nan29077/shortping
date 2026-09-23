@@ -1,3 +1,5 @@
+import { styleOf } from './home-layout.mjs';
+
 export const homeThemes = [
   {
     id: 'cinematic',
@@ -58,9 +60,13 @@ export const homeThemes = [
 
 export const appearanceFromSettings = (settings) => {
   const theme = homeThemes.find((item) => item.id === settings.home_theme) || homeThemes[0];
+  const style = styleOf(settings.home_style);
   return {
     theme: theme.id,
-    image: theme.image,
+    // 관리자가 올린 배경 사진이 있으면 테마 사진 대신 씁니다.
+    image: style.image || theme.image,
+    themeImage: theme.image,
+    style,
     eyebrow: settings.home_eyebrow,
     headline: settings.home_headline,
     highlight: settings.home_highlight,

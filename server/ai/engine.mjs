@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile, stat } from 'node:fs/promises';
+import { readFile, writeFile, stat, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { loadSettings } from '../settings.mjs';
 import { LAMA_WON, captureLama, holdLama, releaseLama } from '../lama.mjs';
 import { probeMedia } from '../media.mjs';
-import { adapters, unitOf } from './providers.mjs';
+import { adapters, unitOf, PRICE_REQUIRED } from './providers.mjs';
 import { mockAdapter } from './mock.mjs';
 import { decrypt } from './secret.mjs';
-import { download } from './http.mjs';
+import { download, VendorError } from './http.mjs';
 import { blockedTerm } from './prompts.mjs';
 
 // AI 작업 엔진: 모델 고르기(자동/직접) → 라마 예약 → 대기열 → 공급사 호출·결과 확인 → 파일 저장 →
@@ -23,6 +23,24 @@ const kstMonthStart = () => {
   const d = new Date(Date.now() + KST);
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - KST).toISOString();
 };
+// 공급사 오류 원문에는 키 일부·내부 주소가 섞일 수 있어, PD에게는 정리된 문구만 보여 줍니다.
+// 원문은 ai_jobs.error_detail(관리자 전용)에 남깁니다.
+export function publicError(err) {
+  const raw = String(err?.message || '알 수 없는 오류');
+  if (err instanceof VendorError) {
+    if (/^AI 공급사 오류\(|^AI 공급사에 연결하지 못했어요|^AI 공급사 응답을 읽지 못했어요/.test(raw))
+      return err.status === 401
+        ? 'AI 공급사 인증에 실패했어요. 관리자에게 문의해 주세요.'
+        : 'AI 공급사에서 일시적인 문제가 생겼어요. 잠시 후 다시 시도해 주세요.';
+  }
+  return raw
+    .replace(/\b(sk|pk|rk|key|api[_-]?key)[-_][A-Za-z0-9*._-]{6,}/gi, '[비공개]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [비공개]')
+    .replace(/https?:\/\/\S+/gi, '[주소]')
+    .slice(0, 300);
+}
+// 공급사 쪽 문제로 볼 수 있는 실패만 장애 차단기에 셉니다(형식 오류·파일 없음 같은 내부 오류 제외).
+const vendorFault = (err) => err instanceof VendorError && (err.status === 401 || err.retryable !== false);
 export const TAGS = ['dialogue', 'closeup', 'action', 'landscape', 'cinematic', 'character', 'consistency', 'lipsync', 'poster', 'korean', 'story', 'emotion', 'fast', 'cheap', 'scene'];
 const TIERS = ['draft', 'standard', 'premium'];
 
@@ -42,6 +60,9 @@ export function unitsFor(capability, input) {
   if (capability === 'video') return Number(input.seconds || 5);
   if (capability === 'tts') return Math.max(0.1, String(input.text || '').length / 1000);
   if (capability === 'stt') return Math.max(0.1, Number(input.duration || 60) / 60);
+  if (capability === 'music') return Math.max(1, Number(input.seconds || 30));
+  if (capability === 'sfx') return Math.max(1, Number(input.seconds || 4));
+  if (capability === 'lipsync') return Math.max(1, Number(input.seconds || 5));
   return 1;
 }
 export const lamaFor = (model, settings, units) => Math.max(1, Math.ceil(units * lamaPerUnit(model, settings) - 1e-9));
@@ -50,6 +71,8 @@ export const costWonFor = (model, settings, units) => Math.round(units * Number(
 export function createAiEngine({ db, uploadDir, demo }) {
   const handlers = new Map();
   const workerId = randomUUID();
+  // PostgreSQL에서는 작업 행을 잠가 취소·완료·실패가 겹쳐도 라마 예약이 두 번 처리되지 않게 합니다.
+  const forUpdate = () => (db.engine === 'postgresql' ? ' FOR UPDATE' : '');
   const inflight = new Set();
   let timer = null;
 
@@ -62,6 +85,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
   const usable = (r) =>
     Number(r.active) === 1 &&
     Number(r.provider_active) === 1 &&
+    // 배경음악·효과음·입 모양 맞추기는 최고관리자가 라마 가격을 정한 모델만 씁니다.
+    (!PRICE_REQUIRED.includes(r.capability) || Number(r.price_lama) > 0) &&
     (r.kind === 'mock' ? demo : !!r.api_key_enc) &&
     !!adapterOf(r.kind);
   // 자동 선택 점수: 품질 등급 일치 > 장면 특성 태그 > 관리자 우선순위 > 가격(초안 등급은 저렴할수록 가산)
@@ -171,11 +196,29 @@ export function createAiEngine({ db, uploadDir, demo }) {
           )
         )?.n || 0,
       );
-    const daily = limit?.daily_lama ?? settings.ai_daily_limit_lama;
-    if (Number(daily) > 0 && (await used(kstDayStart())) + lama > Number(daily))
-      throw error(429, `오늘 쓸 수 있는 AI 제작 한도(${Number(daily).toLocaleString('ko-KR')}라마)를 넘어요. 내일 다시 이용하거나 관리자에게 한도 조정을 요청해 주세요.`, { code: 'daily_limit' });
-    if (limit?.monthly_lama != null && Number(limit.monthly_lama) > 0 && (await used(kstMonthStart())) + lama > Number(limit.monthly_lama))
-      throw error(429, `이번 달 AI 제작 한도(${Number(limit.monthly_lama).toLocaleString('ko-KR')}라마)를 넘어요.`, { code: 'monthly_limit' });
+    // 한도 규칙
+    // - PD 개인 한도: 값이 있으면 그 값이 그대로 상한입니다. 0이면 라마가 드는 작업을 할 수 없어요.
+    //   비워 두면(null) 하루 한도는 공통 값을, 월 한도는 제한 없음을 따릅니다.
+    // - 공통 하루 한도(ai_daily_limit_lama): 0이면 제한 없음(관리자 화면 안내와 같음).
+    const personalDaily = limit?.daily_lama != null ? Number(limit.daily_lama) : null;
+    const daily = personalDaily ?? Number(settings.ai_daily_limit_lama || 0);
+    if ((personalDaily != null || daily > 0) && lama > 0 && (await used(kstDayStart())) + lama > daily)
+      throw error(
+        429,
+        daily === 0
+          ? '관리자가 이 계정의 하루 AI 제작 한도를 0라마로 정해 두어 지금은 만들 수 없어요. 관리자에게 문의해 주세요.'
+          : `오늘 쓸 수 있는 AI 제작 한도(${daily.toLocaleString('ko-KR')}라마)를 넘어요. 내일 다시 이용하거나 관리자에게 한도 조정을 요청해 주세요.`,
+        { code: 'daily_limit' },
+      );
+    const monthly = limit?.monthly_lama != null ? Number(limit.monthly_lama) : null;
+    if (monthly != null && lama > 0 && (await used(kstMonthStart())) + lama > monthly)
+      throw error(
+        429,
+        monthly === 0
+          ? '관리자가 이 계정의 월 AI 제작 한도를 0라마로 정해 두어 지금은 만들 수 없어요. 관리자에게 문의해 주세요.'
+          : `이번 달 AI 제작 한도(${monthly.toLocaleString('ko-KR')}라마)를 넘어요.`,
+        { code: 'monthly_limit' },
+      );
     const budget = Number(settings.ai_monthly_budget_won || 0);
     if (budget > 0) {
       const spent = Number(
@@ -189,6 +232,12 @@ export function createAiEngine({ db, uploadDir, demo }) {
   async function enqueue({ userId, kind, capability, requested = 'auto', tier = 'standard', tags = [], input, units, target = {}, projectId = null, idempotencyKey, bill = true, excludeCn = false }) {
     if (!handlers.has(kind)) throw error(500, 'unknown job kind ' + kind);
     const settings = await loadSettings(db);
+    // 같은 PD의 동시 요청이 일일·월 한도를 함께 넘지 않도록 사용자 단위로 순서를 세웁니다.
+    // (SQLite는 트랜잭션 자체가 한 번에 하나씩 실행되어 따로 잠글 필요가 없습니다.)
+    if (db.engine === 'postgresql') {
+      await db.get('SELECT id FROM users WHERE id=? FOR UPDATE', [userId]);
+      if (Number(settings.ai_monthly_budget_won || 0) > 0) await db.get("SELECT pg_advisory_xact_lock(hashtext('shortping-ai-budget'))");
+    }
     if (idempotencyKey) {
       const existing = await db.get('SELECT * FROM ai_jobs WHERE idempotency_key=?', [idempotencyKey]);
       if (existing) {
@@ -196,19 +245,27 @@ export function createAiEngine({ db, uploadDir, demo }) {
         return existing;
       }
     }
-    const banned = blockedTerm([input.userText, input.prompt, input.text], settings.ai_blocked_terms);
+    // 글 작업의 프롬프트에는 숏핑이 넣은 지시문(예: "실존 인물 금지")이 섞여 있어, PD가 쓴 부분(userText)만 검사합니다.
+    // 이미지·영상·음성 프롬프트는 PD가 쓴 묘사로 만들어지므로 프롬프트 전체를 검사합니다.
+    const banned = blockedTerm([input.userText, capability === 'text' ? '' : input.prompt, input.text], settings.ai_blocked_terms);
     if (banned) throw error(400, `사용할 수 없는 표현이 포함돼 있어요: "${banned}"`, { code: 'blocked_term' });
-    const list = await candidates({ capability, requested, tier, tags, seconds: input.seconds, needImage: !!input.image, excludeCn }, settings);
+    const list = await candidates({ capability, requested, tier, tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), excludeCn }, settings);
     const model = list[0];
     const u = units ?? unitsFor(capability, input);
     const lama = bill ? lamaFor(model, settings, u) : 0;
     const costWon = costWonFor(model, settings, u);
     await checkLimits(userId, lama, costWon, settings);
     const id = randomUUID();
+    // 같은 멱등키가 동시에 들어오면 한쪽만 들어가고 다른 쪽은 기존 작업을 돌려받습니다.
     await db.run(
-      'INSERT INTO ai_jobs (id,user_id,project_id,target_type,target_id,kind,capability,requested_model,model_ref,provider_id,vendor_model,tier,input,status,estimate_lama,cost_won,idempotency_key,billed,created_at,tried) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO ai_jobs (id,user_id,project_id,target_type,target_id,kind,capability,requested_model,model_ref,provider_id,vendor_model,tier,input,status,estimate_lama,cost_won,idempotency_key,billed,created_at,tried) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
       [id, userId, projectId, target.type || '', target.id || '', kind, capability, requested || 'auto', model.id, model.provider_id, model.model_id, tier, JSON.stringify({ ...input, tags, _excludeCn: !!excludeCn }), 'queued', lama, costWon, idempotencyKey || null, bill ? 1 : 0, iso(), model.id],
     );
+    if (!(await db.get('SELECT id FROM ai_jobs WHERE id=?', [id]))) {
+      const existing = idempotencyKey && (await db.get('SELECT * FROM ai_jobs WHERE idempotency_key=?', [idempotencyKey]));
+      if (!existing || existing.user_id !== userId) throw error(409, '중복 요청입니다.');
+      return existing;
+    }
     if (lama > 0) {
       const hold = await holdLama(db, { userId, amount: lama, jobId: id, memo: `${model.label} · ${kind}` });
       await db.run('UPDATE ai_jobs SET hold_paid=?,hold_bonus=? WHERE id=?', [hold.holdPaid, hold.holdBonus, id]);
@@ -225,24 +282,37 @@ export function createAiEngine({ db, uploadDir, demo }) {
   }
   async function hydrate(input) {
     const out = { ...input };
-    for (const field of ['image', 'refImage', 'audio']) {
-      if (input[field]?.path) {
-        const file = path.join(uploadDir, path.basename(input[field].path));
-        out[field] = { buffer: await readFile(file), mime: input[field].mime, ext: path.extname(file).slice(1) };
-      }
-    }
+    const load = async (ref) => {
+      const file = path.join(uploadDir, path.basename(ref.path));
+      return { buffer: await readFile(file), mime: ref.mime, ext: path.extname(file).slice(1) };
+    };
+    for (const field of ['image', 'refImage', 'audio', 'video', 'endImage', 'editImage']) if (input[field]?.path) out[field] = await load(input[field]);
+    if (Array.isArray(input.refImages)) out.refImages = await Promise.all(input.refImages.filter((r) => r?.path).map(load));
     return out;
   }
   const ctx = (m) => ({ provider: { base_url: m.base_url, kind: m.kind }, model: m, key: m.kind === 'mock' ? '' : decrypt(m.api_key_enc), secret: m.secret_enc ? decrypt(m.secret_enc) : '' });
   const pollDelay = (capability, kind) => (kind === 'mock' ? 300 : capability === 'video' ? 8000 : 3000);
   const extFor = (mime) => ({ 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'video/mp4': '.mp4', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/x-wav': '.wav' })[mime];
+  // 결과 파일의 주인: 관리자가 PD의 프로젝트·작품에서 대신 실행해도 파일은 그 PD 것으로 기록해야
+  // PD가 미리보기·포스터 지정 등에 그대로 쓸 수 있습니다.
+  async function resultOwner(job) {
+    if (job.project_id) {
+      const p = await db.get('SELECT owner_id FROM studio_projects WHERE id=?', [job.project_id]);
+      if (p?.owner_id) return p.owner_id;
+    }
+    if (['drama', 'drama_episode'].includes(job.target_type) && job.target_id) {
+      const d = await db.get('SELECT owner_id FROM dramas WHERE id=?', [String(job.target_id).split('#')[0]]);
+      if (d?.owner_id) return d.owner_id;
+    }
+    return job.user_id;
+  }
   async function materialize(job, result) {
     if (job.capability === 'text' || job.capability === 'stt') return result;
     let data = result.data;
     let mime = result.mime;
     if (!data && result.url) {
       data = await download(result.url, result.headers || {});
-      mime = mime || { image: 'image/png', video: 'video/mp4', tts: 'audio/mpeg' }[job.capability];
+      mime = mime || { image: 'image/png', video: 'video/mp4', tts: 'audio/mpeg', music: 'audio/mpeg', sfx: 'audio/mpeg', lipsync: 'video/mp4' }[job.capability];
     }
     if (!data?.length) throw Object.assign(new Error('결과 파일이 비어 있어요.'), { retryable: true });
     // 파일 서명으로 실제 형식을 확인합니다.
@@ -254,21 +324,29 @@ export function createAiEngine({ db, uploadDir, demo }) {
     else if (head.toString('ascii', 4, 8) === 'ftyp') mime = 'video/mp4';
     else if (head.toString('ascii', 0, 3) === 'ID3' || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)) mime = 'audio/mpeg';
     const ext = extFor(mime);
-    const expected = { image: /^image\//, video: /^video\//, tts: /^audio\// }[job.capability];
+    const expected = { image: /^image\//, video: /^video\//, tts: /^audio\//, music: /^audio\//, sfx: /^(audio|video)\//, lipsync: /^video\// }[job.capability];
     if (!ext || !expected.test(mime)) throw Object.assign(new Error('예상과 다른 형식의 결과가 왔어요.'), { retryable: true });
     const filename = randomUUID() + ext;
     const full = path.join(uploadDir, filename);
     await writeFile(full, data);
-    const meta = await probeMedia(full);
     const url = '/uploads/' + filename;
-    await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [url, job.user_id, mime, iso()]);
-    await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [
-      url,
-      Math.ceil(meta.duration || 0),
-      meta.width || 0,
-      meta.height || 0,
-      meta.hasAudio ? 1 : 0,
-    ]);
+    let meta;
+    try {
+      meta = await probeMedia(full);
+      await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [url, await resultOwner(job), mime, iso()]);
+      await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [
+        url,
+        Math.ceil(meta.duration || 0),
+        meta.width || 0,
+        meta.height || 0,
+        meta.hasAudio ? 1 : 0,
+      ]);
+    } catch (e) {
+      // 저장은 됐지만 검사·등록에 실패하면 어디에도 연결되지 않은 파일이 남지 않게 지웁니다.
+      await db.run('DELETE FROM media_files WHERE url=?', [url]).catch(() => {});
+      await rm(full, { force: true }).catch(() => {});
+      throw e;
+    }
     return { url, mime, duration: meta.duration, width: meta.width, height: meta.height, size: (await stat(full)).size };
   }
   async function finish(job, model, result) {
@@ -279,9 +357,26 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (job.capability === 'text' && result.usage && result.usage.input + result.usage.output > 0)
       units = (result.usage.input + result.usage.output) / 1000;
     const handler = handlers.get(job.kind);
-    await db.transaction(async () => {
-      const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?', [job.id]);
-      if (fresh.status !== 'running') return; // 취소된 작업
+    // 결과 반영에 실패하거나 그사이 작업이 취소되면, 방금 저장한 결과 파일은 어디에도 연결되지 않으므로 지웁니다.
+    const discard = async () => {
+      if (!media?.url) return;
+      await db.run('DELETE FROM media_files WHERE url=?', [media.url]).catch(() => {});
+      await rm(path.join(uploadDir, path.basename(media.url)), { force: true }).catch(() => {});
+    };
+    let applied;
+    try {
+      applied = await settleJob(job, model, handler, input, media, units, settings);
+    } catch (e) {
+      await discard();
+      throw e;
+    }
+    if (!applied) return discard();
+    await db.run("UPDATE ai_providers SET status='ok',last_error='',last_checked_at=?,fail_streak=0,cooldown_until=NULL WHERE id=?", [iso(), model.provider_id]);
+  }
+  async function settleJob(job, model, handler, input, media, units, settings) {
+    return db.transaction(async () => {
+      const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
+      if (!fresh || fresh.status !== 'running') return false; // 취소·삭제된 작업
       const output = await handler.onSuccess({ job: fresh, input, result: media, model });
       const charge = Number(fresh.billed) ? Math.min(Number(fresh.estimate_lama), lamaFor(model, settings, units)) : 0;
       let used = 0;
@@ -297,32 +392,35 @@ export function createAiEngine({ db, uploadDir, demo }) {
         used = c.used;
       }
       await db.run(
-        "UPDATE ai_jobs SET status='succeeded',charged_lama=?,cost_won=?,output=?,error='',finished_at=?,hold_paid=0,hold_bonus=0 WHERE id=?",
+        "UPDATE ai_jobs SET status='succeeded',charged_lama=?,cost_won=?,output=?,error='',error_detail='',finished_at=?,hold_paid=0,hold_bonus=0 WHERE id=?",
         [used, costWonFor(model, settings, units), JSON.stringify(output || {}), iso(), fresh.id],
       );
+      return true;
     });
-    await db.run("UPDATE ai_providers SET status='ok',last_error='',last_checked_at=?,fail_streak=0,cooldown_until=NULL WHERE id=?", [iso(), model.provider_id]);
   }
   async function fail(job, err, model) {
     const settings = await loadSettings(db);
-    const message = String(err?.message || '알 수 없는 오류').slice(0, 500);
-    // 공급사 장애 차단: 키 오류는 바로, 그 밖의 실패는 연속 횟수가 기준을 넘으면 잠시 자동 선택에서 뺍니다.
-    if (model && model.kind !== 'mock' && !err?.modelGone) {
+    const detail = String(err?.message || '알 수 없는 오류').slice(0, 500);
+    const message = publicError(err);
+    // 공급사 장애 차단: 키 오류는 바로, 그 밖의 공급사 실패는 연속 횟수가 기준을 넘으면 잠시 자동 선택에서 뺍니다.
+    if (model && model.kind !== 'mock' && !err?.modelGone && vendorFault(err)) {
       const p = await db.get('SELECT fail_streak FROM ai_providers WHERE id=?', [model.provider_id]);
       const streak = Number(p?.fail_streak || 0) + 1;
       const trip = err?.status === 401 || streak >= Number(settings.ai_breaker_failures || 5);
       await db.run(
         `UPDATE ai_providers SET fail_streak=?,last_error=?,last_checked_at=?${trip ? ",status='error',cooldown_until=?" : ''} WHERE id=?`,
         trip
-          ? [streak, message, iso(), new Date(Date.now() + Number(settings.ai_breaker_cooldown_min || 10) * 60000).toISOString(), model.provider_id]
-          : [streak, message, iso(), model.provider_id],
+          ? [streak, detail, iso(), new Date(Date.now() + Number(settings.ai_breaker_cooldown_min || 10) * 60000).toISOString(), model.provider_id]
+          : [streak, detail, iso(), model.provider_id],
       );
     }
     await db.transaction(async () => {
-      const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?', [job.id]);
-      if (!['running', 'queued'].includes(fresh.status)) return;
+      const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
+      if (!fresh || !['running', 'queued'].includes(fresh.status)) return;
       const attempts = Number(fresh.attempts) + 1;
-      const retryable = err?.retryable !== false && attempts < 3;
+      // 자동 선택이면 요청 형식 오류(4xx)처럼 같은 모델로는 다시 해도 안 되는 경우에도 다른 모델을 한 번 더 시도합니다.
+      const switchOnly = err?.retryable === false && fresh.requested_model === 'auto' && err?.status !== 401;
+      const retryable = (err?.retryable !== false || switchOnly) && attempts < 3;
       if (retryable) {
         // 자동 선택이면 아직 안 써 본 다음 모델(예약한 라마 안에서)로, 직접 선택이면 같은 모델로 한 번 더 시도합니다.
         let target = null;
@@ -330,17 +428,17 @@ export function createAiEngine({ db, uploadDir, demo }) {
           const input = JSON.parse(fresh.input || '{}');
           const tried = String(fresh.tried || '').split(',');
           try {
-            const list = await candidates({ capability: fresh.capability, tier: fresh.tier, tags: input.tags, seconds: input.seconds, needImage: !!input.image, excludeCn: !!input._excludeCn }, settings);
+            const list = await candidates({ capability: fresh.capability, tier: fresh.tier, tags: input.tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), excludeCn: !!input._excludeCn }, settings);
             const units = unitsFor(fresh.capability, input);
             target = list.find((r) => !tried.includes(r.id) && (!Number(fresh.billed) || lamaFor(r, settings, units) <= Number(fresh.estimate_lama))) || null;
           } catch {}
         }
-        if (!target && !err?.modelGone) target = { id: fresh.model_ref, provider_id: fresh.provider_id, model_id: fresh.vendor_model };
+        if (!target && !err?.modelGone && !switchOnly) target = { id: fresh.model_ref, provider_id: fresh.provider_id, model_id: fresh.vendor_model };
         if (target) {
           const tried = [...new Set([...String(fresh.tried || '').split(','), target.id].filter(Boolean))].join(',');
           await db.run(
-            "UPDATE ai_jobs SET status='queued',attempts=?,model_ref=?,provider_id=?,vendor_model=?,vendor_ref='',claimed_by=NULL,error=?,tried=?,next_poll_at=? WHERE id=?",
-            [attempts, target.id, target.provider_id, target.model_id, message, tried, new Date(Date.now() + 1500 * attempts).toISOString(), fresh.id],
+            "UPDATE ai_jobs SET status='queued',attempts=?,model_ref=?,provider_id=?,vendor_model=?,vendor_ref='',claimed_by=NULL,started_at=NULL,poll_failures=0,error=?,error_detail=?,tried=?,next_poll_at=? WHERE id=?",
+            [attempts, target.id, target.provider_id, target.model_id, message, detail, tried, new Date(Date.now() + 1500 * attempts).toISOString(), fresh.id],
           );
           return;
         }
@@ -348,11 +446,25 @@ export function createAiEngine({ db, uploadDir, demo }) {
       if (Number(fresh.hold_paid) + Number(fresh.hold_bonus) > 0)
         await releaseLama(db, { userId: fresh.user_id, jobId: fresh.id, holdPaid: Number(fresh.hold_paid), holdBonus: Number(fresh.hold_bonus), memo: '작업 실패 · 전액 반환' });
       await db.run(
-        "UPDATE ai_jobs SET status='failed',attempts=?,error=?,finished_at=?,hold_paid=0,hold_bonus=0,cost_won=0 WHERE id=?",
-        [attempts, message, iso(), fresh.id],
+        "UPDATE ai_jobs SET status='failed',attempts=?,error=?,error_detail=?,finished_at=?,hold_paid=0,hold_bonus=0,cost_won=0 WHERE id=?",
+        [attempts, message, detail, iso(), fresh.id],
       );
       await handlers.get(fresh.kind)?.onFail?.({ job: fresh, message });
     });
+  }
+  async function deferPoll(job, err, model) {
+    const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?', [job.id]);
+    if (!fresh || fresh.status !== 'running' || !fresh.vendor_ref) return false;
+    const failures = Number(fresh.poll_failures || 0) + 1;
+    const started = new Date(fresh.started_at || Date.now()).getTime();
+    const limit = fresh.capability === 'video' ? 30 * 60000 : 10 * 60000;
+    if (failures > 8 || Date.now() - started > limit) return false;
+    const wait = Math.min(60000, 3000 * 2 ** (failures - 1)) + pollDelay(fresh.capability, model?.kind || '');
+    const r = await db.run(
+      "UPDATE ai_jobs SET poll_failures=?,next_poll_at=?,claimed_by=NULL,error_detail=? WHERE id=? AND status='running'",
+      [failures, new Date(Date.now() + wait).toISOString(), String(err?.message || '').slice(0, 500), fresh.id],
+    );
+    return Number(r?.rowCount ?? r?.changes ?? 1) > 0;
   }
   async function execute(job) {
     let model;
@@ -368,7 +480,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
         const started = new Date(job.started_at || Date.now()).getTime();
         const limit = job.capability === 'video' ? 30 * 60000 : 10 * 60000;
         if (Date.now() - started > limit) throw Object.assign(new Error('AI 공급사 응답이 너무 오래 걸려 작업을 중단했어요.'), { retryable: true });
-        await db.run('UPDATE ai_jobs SET vendor_ref=?,next_poll_at=?,claimed_by=NULL WHERE id=?', [
+        await db.run('UPDATE ai_jobs SET vendor_ref=?,next_poll_at=?,claimed_by=NULL,poll_failures=0 WHERE id=?', [
           res.ref,
           new Date(Date.now() + pollDelay(job.capability, model.kind)).toISOString(),
           job.id,
@@ -377,7 +489,33 @@ export function createAiEngine({ db, uploadDir, demo }) {
       }
       await finish(job, model, res.result);
     } catch (err) {
-      await fail(job, err, model);
+      // 결과 확인 중 일시 오류(연결 끊김·429·5xx)라면 공급사가 만들고 있는 작업을 버리지 않고
+      // 잠시 뒤 다시 확인합니다. 새로 생성하면 원가가 두 번 들기 때문입니다.
+      if (job.vendor_ref && err?.transient && (await deferPoll(job, err, model).catch(() => false))) return;
+      try {
+        await fail(job, err, model);
+      } catch (inner) {
+        // 실패 처리 자체가 실패하면 작업이 running으로 영구히 남지 않도록 최후 수단으로 닫습니다.
+        console.error('ai fail handler', inner.message);
+        // 예약한 라마부터 돌려준 뒤 작업을 닫습니다. 반환마저 실패하면 상태만이라도 닫습니다.
+        await db
+          .transaction(async () => {
+            const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
+            if (!fresh || !['running', 'queued'].includes(fresh.status)) return;
+            if (Number(fresh.hold_paid) + Number(fresh.hold_bonus) > 0)
+              await releaseLama(db, { userId: fresh.user_id, jobId: fresh.id, holdPaid: Number(fresh.hold_paid), holdBonus: Number(fresh.hold_bonus), memo: '작업 실패 · 전액 반환' });
+            await db.run("UPDATE ai_jobs SET hold_paid=0,hold_bonus=0 WHERE id=?", [fresh.id]);
+          })
+          .catch((e) => console.error('ai release on fail', e.message));
+        await db
+          .run("UPDATE ai_jobs SET status='failed',claimed_by=NULL,error=?,error_detail=?,finished_at=? WHERE id=? AND status IN ('running','queued')", [
+            publicError(err),
+            String(inner.message || err?.message || '처리 실패').slice(0, 500),
+            iso(),
+            job.id,
+          ])
+          .catch(() => {});
+      }
     }
   }
   async function claim(job, status) {
@@ -389,25 +527,48 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const row = await db.get('SELECT * FROM ai_jobs WHERE id=?', [job.id]);
     return row.claimed_by === workerId && row.status === 'running' ? row : null;
   }
+  let ticking = false;
   async function tick() {
+    // 1.5초 타이머와 kick()이 겹쳐 실행되면 동시 작업 한도를 넘을 수 있어 한 번에 하나만 돌립니다.
+    if (ticking) return;
+    ticking = true;
+    try {
+      await tickOnce();
+    } finally {
+      ticking = false;
+    }
+  }
+  async function tickOnce() {
     const settings = await loadSettings(db);
     const max = Math.max(1, Number(settings.ai_concurrency || 3));
     if (inflight.size >= max) return;
     const stamp = iso();
-    const due = await db.all(
-      `SELECT * FROM ai_jobs WHERE claimed_by IS NULL AND ((status='running' AND vendor_ref<>'' AND (next_poll_at IS NULL OR next_poll_at<=?)) OR (status='queued' AND (next_poll_at IS NULL OR next_poll_at<=?))) ORDER BY created_at LIMIT 50`,
-      [stamp, stamp],
-    );
+    // 공급사별 동시 작업 한도: 한도에 찬 공급사의 새 작업은 조회 단계에서 빼서, 다른 공급사 작업이 막히지 않게 합니다.
     const limits = new Map((await db.all('SELECT id,max_concurrency FROM ai_providers WHERE max_concurrency>0')).map((r) => [r.id, Number(r.max_concurrency)]));
-    for (const job of due) {
+    const running = new Map();
+    if (limits.size)
+      for (const r of await db.all("SELECT provider_id, COUNT(*) AS n FROM ai_jobs WHERE status='running' AND provider_id IS NOT NULL GROUP BY provider_id"))
+        running.set(r.provider_id, Number(r.n));
+    const full = [...limits.entries()].filter(([id, cap]) => (running.get(id) || 0) >= cap).map(([id]) => id);
+    // 결과 확인할 차례인 작업(항상 확인)과 새로 시작할 작업을 따로 가져옵니다.
+    const polls = await db.all(
+      `SELECT * FROM ai_jobs WHERE claimed_by IS NULL AND status='running' AND vendor_ref<>'' AND (next_poll_at IS NULL OR next_poll_at<=?) ORDER BY next_poll_at LIMIT 50`,
+      [stamp],
+    );
+    const queued = await db.all(
+      `SELECT * FROM ai_jobs WHERE claimed_by IS NULL AND status='queued' AND (next_poll_at IS NULL OR next_poll_at<=?)` +
+        (full.length ? ` AND (provider_id IS NULL OR provider_id NOT IN (${full.map(() => '?').join(',')}))` : '') +
+        ' ORDER BY created_at LIMIT 50',
+      [stamp, ...full],
+    );
+    for (const job of [...polls, ...queued]) {
       if (inflight.size >= max) break;
-      // 공급사별 동시 작업 한도: 새 작업만 막고(결과 확인 중인 작업은 계속 확인), 자리가 나면 다음 차례에 시작합니다.
       if (job.status === 'queued' && limits.has(job.provider_id)) {
-        const running = Number((await db.get("SELECT COUNT(*) AS n FROM ai_jobs WHERE provider_id=? AND status='running'", [job.provider_id]))?.n || 0);
-        if (running >= limits.get(job.provider_id)) continue;
+        if ((running.get(job.provider_id) || 0) >= limits.get(job.provider_id)) continue;
       }
       const claimed = await claim(job, job.status);
       if (!claimed) continue;
+      if (job.status === 'queued' && claimed.provider_id) running.set(claimed.provider_id, (running.get(claimed.provider_id) || 0) + 1);
       inflight.add(claimed.id);
       void execute(claimed)
         .catch(() => {})
@@ -423,22 +584,29 @@ export function createAiEngine({ db, uploadDir, demo }) {
   function kick() {
     if (kicking) return;
     kicking = true;
-    setTimeout(() => {
-      kicking = false;
-      void tick().catch((e) => console.error('ai tick', e.message));
-    }, 50);
+    // enqueue는 호출한 쪽 트랜잭션 안에서 실행되므로, 여기서 만든 타이머가 그 트랜잭션 컨텍스트
+    // (AsyncLocalStorage)를 물려받지 않도록 분리합니다. 그렇지 않으면 엔진의 DB 작업이 남의
+    // 트랜잭션에 섞여 들어갑니다.
+    const schedule = () =>
+      setTimeout(() => {
+        kicking = false;
+        void tick().catch((e) => console.error('ai tick', e.message));
+      }, 50);
+    if (db.detach) db.detach(schedule);
+    else schedule();
   }
   async function start() {
     // 서버가 꺼질 때 공급사 호출 중이던 작업은 다시 대기열로, 결과 확인 중이던 작업은 계속 확인합니다.
-    await db.run("UPDATE ai_jobs SET status='queued',claimed_by=NULL WHERE status='running' AND vendor_ref=''");
-    await db.run("UPDATE ai_jobs SET claimed_by=NULL WHERE status='running'");
+    // 꺼져 있던 시간 때문에 바로 '너무 오래 걸림'으로 끝나지 않도록 시작 시각도 새로 잡습니다.
+    await db.run("UPDATE ai_jobs SET status='queued',claimed_by=NULL,started_at=NULL WHERE status='running' AND vendor_ref=''");
+    await db.run("UPDATE ai_jobs SET claimed_by=NULL,started_at=?,poll_failures=0 WHERE status='running'", [iso()]);
     timer = setInterval(() => void tick().catch((e) => console.error('ai tick', e.message)), 1500);
     timer.unref();
     kick();
   }
   async function cancel(jobId, actor, { force = false } = {}) {
     return db.transaction(async () => {
-      const job = await db.get('SELECT * FROM ai_jobs WHERE id=?', [jobId]);
+      const job = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [jobId]);
       if (!job) throw error(404, '작업을 찾을 수 없어요.');
       if (actor.role !== 'admin' && job.user_id !== actor.id) throw error(404, '작업을 찾을 수 없어요.');
       if (job.status === 'queued' || (force && job.status === 'running')) {

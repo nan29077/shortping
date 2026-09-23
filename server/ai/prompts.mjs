@@ -19,6 +19,7 @@ export const planSchema = z.object({
         role: z.string().max(60).default(''),
         description: z.string().max(500).default(''),
         look: z.string().max(500).default(''),
+        look_en: z.string().max(500).default(''),
       }),
     )
     .min(1)
@@ -28,21 +29,21 @@ export const planSchema = z.object({
     .min(1)
     .max(60),
 });
-export const scriptSchema = z.object({
-  shots: z
-    .array(
-      z.object({
-        scene: z.string().max(200).default(''),
-        visual: z.string().min(1).max(800),
-        dialogue: z.string().max(300).default(''),
-        speaker: z.string().max(30).default(''),
-        camera: z.string().max(80).default(''),
-        seconds: z.coerce.number().min(2).max(15).default(5),
-      }),
-    )
-    .min(1)
-    .max(40),
+const shotItem = z.object({
+  scene: z.string().max(200).default(''),
+  visual: z.string().min(1).max(800),
+  visual_en: z.string().max(800).default(''),
+  dialogue: z.string().max(300).default(''),
+  speaker: z.string().max(30).default(''),
+  cast: z.array(z.string().max(30)).max(6).default([]),
+  camera: z.string().max(80).default(''),
+  camera_move: z.string().max(30).default(''),
+  emotion: z.string().max(20).default(''),
+  sfx: z.string().max(120).default(''),
+  seconds: z.coerce.number().min(2).max(15).default(5),
 });
+export const scriptSchema = z.object({ shots: z.array(shotItem).min(1).max(40) });
+export const rangeSchema = z.object({ shots: z.array(shotItem).min(1).max(20) });
 
 export function planPrompt(p) {
   return {
@@ -60,44 +61,78 @@ export function planPrompt(p) {
 
 JSON 형식:
 {"title":"제목","logline":"한 줄 소개","synopsis":"전체 줄거리(5~8문장)","style":"영상 스타일을 영어로 한 문장(예: cinematic Korean drama, soft warm lighting, 35mm)",
- "characters":[{"name":"이름","role":"주인공/조연 등","description":"성격과 목표(한국어)","look":"외모를 영어로 구체적으로(나이대, 머리, 옷, 특징)"}],
+ "characters":[{"name":"이름","role":"주인공/조연 등","description":"성격과 목표(한국어)","look":"외모를 한국어로 구체적으로(나이대, 머리, 옷, 특징)","look_en":"같은 외모를 영어로"}],
  "episodes":[{"number":1,"title":"회차 제목","summary":"회차 줄거리 2~3문장과 마지막 반전"}]}
 episodes는 정확히 ${p.episode_count}개, characters는 2~5명.`,
   };
 }
-export function scriptPrompt({ project, characters, episode, previous, maxShotSeconds }) {
-  const cast = characters.map((c) => `- ${c.name} (${c.role}): ${c.description} / look: ${c.look}`).join('\n');
+const bibleText = (bible) => {
+  if (!bible) return '';
+  const b = typeof bible === 'string' ? safe(bible) : bible;
+  if (!b) return '';
+  const lines = [];
+  if (b.world) lines.push(`세계관·배경: ${b.world}`);
+  if (b.rules) lines.push(`지켜야 할 설정: ${b.rules}`);
+  if (b.relations) lines.push(`인물 관계: ${b.relations}`);
+  if (b.speech?.length) lines.push('말투: ' + b.speech.map((x) => `${x.name}=${x.style}`).join(' / '));
+  if (b.taboos) lines.push(`금기(쓰지 말 것): ${b.taboos}`);
+  if (b.foreshadow?.length) lines.push('복선·떡밥: ' + b.foreshadow.map((x) => `${x.hint}${x.payoff ? ` → ${x.payoff}` : ''}`).join(' / '));
+  return lines.length ? '작품 설정집:\n' + lines.join('\n') + '\n' : '';
+};
+function safe(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+export const CAMERA_MOVES = ['고정', '천천히 다가가기', '천천히 멀어지기', '왼쪽으로 패닝', '오른쪽으로 패닝', '위로 틸트', '핸드헬드', '따라가기'];
+export const EMOTIONS = ['담담', '기쁨', '설렘', '슬픔', '분노', '두려움', '놀람', '속삭임', '비꼼'];
+export function scriptPrompt({ project, characters, episode, previous, maxShotSeconds, locations = [], instruction = '', history = [] }) {
+  const cast = characters.map((c) => `- ${c.name} (${c.role}): ${c.description} / look: ${c.look_en || c.look}`).join('\n');
+  const places = locations.length ? '장소:\n' + locations.map((l) => `- ${l.name}: ${l.look_en || l.look}`).join('\n') + '\n' : '';
+  const past = history.length ? '지난 회차 흐름:\n' + history.map((h) => `- ${h.number}화 ${h.title}: ${h.summary}`).join('\n') + '\n' : previous ? `이전 화 요약: ${previous}\n` : '';
   return {
     system: SYSTEM,
     json: true,
-    maxTokens: 6000,
+    maxTokens: 7000,
     purpose: 'script',
-    context: { project, characters, episode },
+    context: { project, characters, episode, instruction },
     prompt: `작품 "${project.title}" (${project.genre}) ${episode.number}화 대본을 컷 단위로 써 주세요.
 작품 줄거리: ${project.synopsis}
 영상 스타일: ${project.style}
-등장인물:
+${bibleText(project.bible)}등장인물:
 ${cast}
-${previous ? `이전 화 요약: ${previous}\n` : ''}이번 화: ${episode.title} — ${episode.summary}
-
+${places}${past}이번 화: ${episode.title} — ${episode.summary}
+${episode.hook ? `첫 3초 훅: ${episode.hook}\n` : ''}${episode.cliffhanger ? `마지막 장면(클리프행어): ${episode.cliffhanger}\n` : ''}${instruction ? `PD 요청: ${instruction}\n` : ''}
 규칙:
 - 전체 길이 약 ${project.episode_seconds}초, 컷 하나는 3~${maxShotSeconds}초.
 - 첫 컷에서 바로 갈등을 보여 주고, 마지막 컷은 다음 화가 궁금해지는 장면.
-- visual: 이 컷의 화면을 영어로 묘사(인물 외모는 look을 반복해 일관성 유지, 세로 구도, 조명, 동작).
-- dialogue: 한국어 대사 한 줄(없으면 빈 문자열). speaker: 말하는 인물 이름(대사 없으면 빈 문자열).
-- camera: 샷 크기·움직임(예: 클로즈업, 미디엄, 트래킹).
+- visual: 이 컷의 화면을 한국어로 구체적으로(인물 동작, 표정, 조명, 구도). visual_en: 같은 내용을 영상 모델용 영어 프롬프트로(인물 외모는 look을 반복해 일관성 유지, 세로 구도).
+- dialogue: 한국어 대사 한 줄(없으면 빈 문자열). speaker: 말하는 인물 이름(대사 없으면 빈 문자열, 내레이션이면 "내레이션").
+- cast: 화면에 나오는 인물 이름 목록. camera: 샷 크기(클로즈업, 미디엄, 와이드 등). camera_move: ${CAMERA_MOVES.join('/')} 중 하나.
+- emotion: 대사 감정(${EMOTIONS.join('/')}). sfx: 필요한 효과음을 짧은 한국어로(없으면 빈 문자열).
 
-JSON 형식: {"shots":[{"scene":"장소와 상황(한국어)","visual":"English visual prompt","dialogue":"대사","speaker":"이름","camera":"클로즈업","seconds":5}]}`,
+JSON 형식: {"shots":[{"scene":"장소와 상황","visual":"한국어 화면 묘사","visual_en":"English visual prompt","dialogue":"대사","speaker":"이름","cast":["이름"],"camera":"클로즈업","camera_move":"천천히 다가가기","emotion":"설렘","sfx":"문 닫히는 소리","seconds":5}]}`,
   };
 }
-export const shotSchema = z.object({
-  scene: z.string().max(200).default(''),
-  visual: z.string().min(1).max(800),
-  dialogue: z.string().max(300).default(''),
-  speaker: z.string().max(30).default(''),
-  camera: z.string().max(80).default(''),
-  seconds: z.coerce.number().min(2).max(15).default(5),
-});
+// 여러 컷(구간)만 PD 요청대로 다시 씁니다.
+export function rangePrompt({ project, characters, shots, instruction }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 3500,
+    purpose: 'range',
+    context: { shots, instruction },
+    prompt: `작품 "${project.title}" (${project.genre})의 연속된 컷 ${shots.length}개를 고쳐 주세요.
+${bibleText(project.bible)}등장인물: ${characters.map((c) => `${c.name}(${c.role})`).join(', ')}
+현재 컷: ${JSON.stringify(shots.map((x) => ({ scene: x.scene, visual: x.visual, dialogue: x.dialogue, seconds: x.seconds })))}
+요청: ${instruction}
+규칙: 컷 수는 1~${Math.min(20, shots.length + 3)}개. 형식은 대본과 같습니다(visual 한국어, visual_en 영어).
+JSON 형식: {"shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":5}]}`,
+  };
+}
+export const shotSchema = shotItem;
 // 컷 하나를 PD 요청대로 고쳐 씁니다.
 export function rewriteShotPrompt({ project, characters, shot, speaker, instruction }) {
   return {
@@ -110,23 +145,170 @@ export function rewriteShotPrompt({ project, characters, shot, speaker, instruct
 등장인물: ${characters.map((c) => `${c.name}(${c.role}) look: ${c.look}`).join(' / ')}
 현재 컷: ${JSON.stringify({ scene: shot.scene, visual: shot.visual, dialogue: shot.dialogue, speaker: speaker || '', camera: shot.camera, seconds: shot.seconds })}
 요청: ${instruction}
-규칙: visual은 영어, 대사는 한국어 한 줄, 화자는 등장인물 이름 중 하나(대사가 없으면 빈 문자열), 길이 2~10초.
-JSON 형식: {"scene":"","visual":"","dialogue":"","speaker":"","camera":"","seconds":5}`,
+규칙: visual은 한국어 화면 묘사, visual_en은 같은 내용의 영어 프롬프트, 대사는 한국어 한 줄, 화자는 등장인물 이름 중 하나(대사가 없으면 빈 문자열), 길이 2~10초.
+JSON 형식: {"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","camera":"","camera_move":"","emotion":"","seconds":5}`,
   };
 }
 // 캐릭터 기준 이미지(얼굴·의상 고정용)
 export const characterImagePrompt = (project, c) =>
-  `Character reference sheet, single person, front-facing portrait, neutral background, vertical 9:16. ${c.look}. ${project.style}. Photorealistic, consistent face, no text, no watermark.`;
+  `Character reference sheet, single person, front-facing portrait, neutral background, vertical 9:16. ${c.look_en && c.look_en_src === c.look ? c.look_en : c.look}. ${project.style}. Photorealistic, consistent face, no text, no watermark.`;
 // 컷 스토리보드 이미지(영상 첫 장면으로도 씀)
-export const shotImagePrompt = (project, shot, cast) =>
-  `${shot.visual}. ${cast.map((c) => `${c.name}: ${c.look}`).join('; ')}. ${project.style}. Vertical 9:16 frame, cinematic still, no text, no watermark.`;
-export const shotVideoPrompt = (project, shot) =>
-  `${shot.visual}. Camera: ${shot.camera || 'medium shot'}. ${project.style}. Vertical 9:16, natural motion, no text overlay.`;
+// 화면 묘사: 영어 번역이 최신이면 그것을, 아니면 PD가 쓴 묘사를 그대로 씁니다.
+export const visualOf = (shot) => (shot.visual_en && shot.visual_en_src === shot.visual ? shot.visual_en : shot.visual);
+const lookOf = (c) => (c.look_en && c.look_en_src === c.look ? c.look_en : c.look);
+const CAMERA_EN = {
+  고정: 'static camera',
+  '천천히 다가가기': 'slow push-in',
+  '천천히 멀어지기': 'slow pull-out',
+  '왼쪽으로 패닝': 'pan left',
+  '오른쪽으로 패닝': 'pan right',
+  '위로 틸트': 'tilt up',
+  핸드헬드: 'handheld camera',
+  따라가기: 'tracking shot following the subject',
+};
+export const shotImagePrompt = (project, shot, cast, place) =>
+  `${visualOf(shot)}. ${cast.map((c) => `${c.name}: ${lookOf(c)}`).join('; ')}${place ? `. Location: ${lookOf(place)}` : ''}. ${project.style}. Vertical 9:16 frame, cinematic still, keep the same faces and outfits as the reference images, no text, no watermark.`;
+export const shotVideoPrompt = (project, shot, speaker) =>
+  `${visualOf(shot)}. Camera: ${shot.camera || 'medium shot'}${shot.camera_move ? `, ${CAMERA_EN[shot.camera_move] || shot.camera_move}` : ''}. ${project.style}. Vertical 9:16, natural motion, no text overlay.${
+    shot.dialogue && speaker ? ` ${speaker.name} speaks in Korean${shot.emotion ? ` (${shot.emotion})` : ''}: "${shot.dialogue}"` : ''
+  }`;
+export const characterRefPrompt = (project, c, pose) =>
+  `Character reference, same person as the reference image. ${lookOf(c)}${c.outfit ? `, wearing ${c.outfit}` : ''}. ${
+    { front: 'front-facing portrait, neutral expression', side: 'side profile view', full: 'full body standing pose', smile: 'smiling expression close-up', angry: 'angry expression close-up', sad: 'teary sad expression close-up' }[pose] || pose
+  }. Neutral background, vertical 9:16. ${project.style}. Photorealistic, consistent face, no text.`;
+export const locationPrompt = (project, l) => `Establishing shot of a location, no people. ${lookOf(l)}. ${project.style}. Vertical 9:16, cinematic, no text, no watermark.`;
 export const posterPrompt = (project, cast) =>
   `Korean short drama poster, vertical 9:16, dramatic key art for "${project.title}" (${project.genre}). ${project.logline}. ${cast
     .slice(0, 2)
     .map((c) => c.look)
     .join(' and ')}. ${project.style}. Leave empty space at top for the title, no text.`;
+
+// ── 작품 설정집 · 시즌 설계 · 진단 · 각색 · 메타데이터 · 번역 ─────────────
+export const bibleSchema = z.object({
+  world: z.string().max(1500).default(''),
+  rules: z.string().max(1500).default(''),
+  relations: z.string().max(1500).default(''),
+  speech: z.array(z.object({ name: z.string().max(30), style: z.string().max(200) })).max(10).default([]),
+  taboos: z.string().max(800).default(''),
+  foreshadow: z.array(z.object({ hint: z.string().max(200), payoff: z.string().max(200).default(''), episode: z.coerce.number().int().min(0).max(60).default(0) })).max(20).default([]),
+});
+export function biblePrompt({ project, characters, episodes }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 3500,
+    purpose: 'bible',
+    context: { project, characters },
+    prompt: `작품 "${project.title}" (${project.genre}, ${project.episode_count}화)의 설정집을 만들어 주세요. 모든 회차 대본이 이 설정을 지키게 됩니다.
+줄거리: ${project.synopsis || project.logline}
+등장인물: ${characters.map((c) => `${c.name}(${c.role}): ${c.description}`).join(' / ')}
+회차: ${episodes.map((e) => `${e.number}화 ${e.title}`).join(', ')}
+JSON 형식: {"world":"세계관·배경","rules":"지켜야 할 설정(직업, 나이, 관계의 사실 등)","relations":"인물 관계도 설명","speech":[{"name":"이름","style":"말투(존댓말/반말, 입버릇)"}],"taboos":"쓰면 안 되는 전개나 표현","foreshadow":[{"hint":"복선","payoff":"회수 방법","episode":3}]}`,
+  };
+}
+export const seasonSchema = z.object({
+  arc: z.string().max(1500).default(''),
+  paywall_from: z.coerce.number().int().min(1).max(60).default(3),
+  paywall_reason: z.string().max(300).default(''),
+  episodes: z
+    .array(z.object({ number: z.coerce.number().int().min(1), title: z.string().max(100).default(''), summary: z.string().max(800).default(''), hook: z.string().max(200).default(''), cliffhanger: z.string().max(200).default(''), twist: z.string().max(200).default('') }))
+    .min(1)
+    .max(60),
+});
+export function seasonPrompt({ project, characters, episodes }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 7000,
+    purpose: 'season',
+    context: { project, episodes },
+    prompt: `숏폼 드라마 "${project.title}" (${project.genre}) ${project.episode_count}화 전체 흐름을 설계해 주세요.
+줄거리: ${project.synopsis || project.logline}
+${bibleText(project.bible)}등장인물: ${characters.map((c) => `${c.name}(${c.role})`).join(', ')}
+현재 회차 구성: ${episodes.map((e) => `${e.number}화 ${e.title}: ${e.summary}`).join(' / ') || '(없음)'}
+규칙:
+- 발단→전개→위기→반전→결말 흐름(arc)을 먼저 정하고, 회차마다 첫 3초 훅(hook)과 마지막 클리프행어(cliffhanger), 반전 포인트(twist)를 한 문장씩.
+- 숏폼 유료 전환: 시청자가 가장 궁금해질 회차부터 유료가 되도록 paywall_from(유료 시작 회차)과 그 이유를 제안.
+JSON 형식: {"arc":"","paywall_from":4,"paywall_reason":"","episodes":[{"number":1,"title":"","summary":"","hook":"","cliffhanger":"","twist":""}]}
+episodes는 정확히 ${project.episode_count}개.`,
+  };
+}
+export const diagnoseSchema = z.object({
+  scores: z.object({ hook: z.coerce.number().min(0).max(100), pacing: z.coerce.number().min(0).max(100), dialogue: z.coerce.number().min(0).max(100), cliffhanger: z.coerce.number().min(0).max(100), consistency: z.coerce.number().min(0).max(100) }),
+  summary: z.string().max(600).default(''),
+  fixes: z.array(z.object({ shot: z.coerce.number().int().min(0).max(40).default(0), problem: z.string().max(200), suggestion: z.string().max(300) })).max(12).default([]),
+  risks: z.array(z.string().max(200)).max(8).default([]),
+});
+export function diagnosePrompt({ project, characters, episode, shots }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 2500,
+    purpose: 'diagnose',
+    context: { episode, shots },
+    prompt: `숏폼 드라마 "${project.title}" ${episode.number}화 대본을 진단해 주세요.
+${bibleText(project.bible)}등장인물: ${characters.map((c) => c.name).join(', ')}
+대본: ${JSON.stringify(shots.map((s, i) => ({ n: i + 1, scene: s.scene, visual: s.visual, dialogue: s.dialogue, seconds: s.seconds })))}
+평가(0~100): hook(첫 3초 흡입력), pacing(전개 속도), dialogue(대사 자연스러움), cliffhanger(다음 화 궁금증), consistency(설정·인물 일관성).
+fixes: 고칠 컷 번호(shot)와 문제, 구체적 수정 제안. risks: 선정성·실존 인물·저작권 등 검수 위험 요소.
+JSON 형식: {"scores":{"hook":80,"pacing":70,"dialogue":75,"cliffhanger":85,"consistency":90},"summary":"","fixes":[{"shot":2,"problem":"","suggestion":""}],"risks":[]}`,
+  };
+}
+export function adaptPrompt({ project, source }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 7000,
+    purpose: 'adapt',
+    context: { ...project, source: String(source).slice(0, 200) },
+    prompt: `아래 원작(PD가 직접 쓴 시놉시스·원고)을 ${project.episode_count}화, 회당 약 ${project.episode_seconds}초 숏폼 드라마로 각색해 주세요.
+원작의 인물·사건을 살리되 회차마다 반전과 클리프행어가 있도록 나눕니다.
+원작:
+"""
+${String(source).slice(0, 30000)}
+"""
+JSON 형식: {"title":"제목","logline":"한 줄 소개","synopsis":"전체 줄거리","style":"English visual style sentence",
+ "characters":[{"name":"","role":"","description":"성격·목표(한국어)","look":"외모(한국어)"}],
+ "episodes":[{"number":1,"title":"","summary":"회차 줄거리와 마지막 반전"}]}
+episodes는 정확히 ${project.episode_count}개, characters는 2~8명.`,
+  };
+}
+export const metaSchema = z.object({
+  titles: z.array(z.string().max(70)).min(1).max(6),
+  tagline: z.string().max(120).default(''),
+  synopsis: z.string().max(1500).default(''),
+  hashtags: z.array(z.string().max(30)).max(12).default([]),
+  episode_titles: z.array(z.object({ number: z.coerce.number().int().min(1), title: z.string().max(100) })).max(60).default([]),
+});
+export function metaPrompt({ project, episodes }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 2500,
+    purpose: 'meta',
+    context: { project, episodes },
+    prompt: `숏폼 드라마 "${project.title}" (${project.genre})를 숏핑에 공개하려 해요. 시청자가 누르고 싶게 만드는 소개 문구를 만들어 주세요.
+줄거리: ${project.synopsis || project.logline}
+회차: ${episodes.map((e) => `${e.number}화 ${e.title}: ${e.summary}`).join(' / ')}
+규칙: 제목 후보 4~5개(70자 이내), 한 줄 소개(tagline, 40자 안팎), 작품 소개(synopsis, 3~5문장, 스포일러 없이), 해시태그 5~10개(# 없이), 회차별 궁금증을 자극하는 제목.
+JSON 형식: {"titles":[""],"tagline":"","synopsis":"","hashtags":[""],"episode_titles":[{"number":1,"title":""}]}`,
+  };
+}
+export const translateSchema = z.object({ items: z.array(z.object({ id: z.string().max(80), en: z.string().max(900) })).max(60) });
+export function translatePrompt(items) {
+  return {
+    system: 'You translate Korean scene and appearance descriptions into concise English prompts for image and video generation models. Keep names as-is. Output JSON only.',
+    json: true,
+    maxTokens: 3000,
+    purpose: 'translate',
+    context: { items },
+    prompt: `Translate each "ko" into an English visual prompt ("en"). Keep it concrete (subject, action, expression, lighting, framing).
+${JSON.stringify(items.map((x) => ({ id: x.id, ko: x.ko })))}
+JSON: {"items":[{"id":"","en":""}]}`,
+  };
+}
+export const musicPrompt = (project, mood, seconds) =>
+  `Instrumental background score for a Korean short drama (${project.genre}). Mood: ${mood || project.tone || 'emotional, cinematic'}. ${seconds} seconds, loopable, no vocals, subtle so dialogue stays clear.`;
 
 // 모델이 코드 블록이나 앞뒤 설명을 붙여도 첫 JSON 객체를 찾아 검증합니다.
 export function parseJson(text, schema) {
@@ -147,8 +329,20 @@ export function parseJson(text, schema) {
 
 // 기본 금칙어: 실존 인물·타 작품 복제·미성년 대상 선정성 등 명백한 위험 요청을 막습니다.
 const BASE_BLOCK = ['미성년자 성', '아동 성', '로리', '딥페이크', 'deepfake', 'nude', '누드', '포르노', 'porn', '실존 인물', '마약 제조', '폭탄 제조'];
+// 단순 부분 문자열로 찾으면 "칼로리·글로리"가 '로리'에, "denuded"가 'nude'에 걸립니다.
+// 그래서 짧은 금칙어는 앞에 같은 종류의 글자(영문자 또는 한글)가 붙어 있으면 다른 단어의 일부로 보고 넘어갑니다.
+// 뒤쪽은 조사("로리를")나 파생어("pornography")까지 막기 위해 제한하지 않습니다.
+function matches(hay, word) {
+  const w = word.toLowerCase();
+  // 짧은 단어(한글 2자 이하·영문 4자 이하)만 앞 글자를 봅니다. 긴 단어는 붙여 써도("아이돌딥페이크") 막습니다.
+  const sameKind = /^[a-z]{1,4}$/.test(w) ? /[a-z]/ : /^[가-힣]{1,2}$/.test(w) ? /[가-힣]/ : null;
+  if (!sameKind) return hay.includes(w);
+  for (let i = hay.indexOf(w); i >= 0; i = hay.indexOf(w, i + 1))
+    if (i === 0 || !sameKind.test(hay[i - 1])) return true;
+  return false;
+}
 export function blockedTerm(texts, extra = '') {
   const list = [...BASE_BLOCK, ...String(extra || '').split('\n').map((s) => s.trim()).filter(Boolean)];
   const hay = texts.filter(Boolean).join('\n').toLowerCase();
-  return list.find((w) => hay.includes(w.toLowerCase())) || null;
+  return list.find((w) => matches(hay, w)) || null;
 }

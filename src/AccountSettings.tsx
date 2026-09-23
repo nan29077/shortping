@@ -10,6 +10,7 @@ import {
   type User,
 } from './api';
 import { Modal, navigate } from './App';
+import { asset } from './platform';
 
 const roleName: Record<string, string> = {
   admin: '슈퍼관리자',
@@ -21,7 +22,7 @@ export function Avatar({ user }: { user: Pick<User, 'name' | 'avatar'> }) {
   return (
     <img
       className="profile-image"
-      src={user.avatar || '/avatars/block-01.webp'}
+      src={asset(user.avatar || '/avatars/block-01.webp')}
       alt={user.name + ' 프로필'}
       onError={(e) => {
         e.currentTarget.onerror = null;
@@ -107,7 +108,7 @@ function AccountOverview({ user }: { user: User }) {
                 hint:
                   settlement.profile.business_type === 'business'
                     ? '사업자 · 세금계산서'
-                    : '비사업자 · 원천징수 3.3%',
+                    : `비사업자 · 원천징수 ${settlement.settings.withholding_rate}%`,
               },
             ]);
         } else {

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowRightLeft, Gift, History, Info, ShieldCheck, Sparkles, Wallet } from 'lucide-react';
-import { api, lama, lamaTypeLabel, moment, won, type LamaProduct, type LamaState } from './api';
+import { api, lama, lamaTypeLabel, moment, uuid, won, type LamaProduct, type LamaState } from './api';
 import { Empty, Modal } from './App';
 
 // PD 라마 지갑: 충전(테스트 결제) · 정산 수익 전환 · 사용 내역
@@ -10,6 +10,8 @@ export default function LamaWalletPanel({ notify, onChanged }: { notify: (s: str
     [pick, setPick] = useState<LamaProduct | null>(null),
     [converting, setConverting] = useState(false),
     [busy, setBusy] = useState(false);
+  // 같은 상품 결제창에서 다시 누르면 같은 멱등키를 써서, 응답이 끊겨도 두 번 충전되지 않게 합니다.
+  const chargeKey = useMemo(() => (pick ? uuid() : ''), [pick]);
   const load = useCallback(async () => {
     try {
       setState(await api<LamaState>('/lama'));
@@ -186,7 +188,7 @@ export default function LamaWalletPanel({ notify, onChanged }: { notify: (s: str
             onClick={async () => {
               setBusy(true);
               try {
-                await api('/lama/charge', 'POST', { productId: pick.id, idempotencyKey: crypto.randomUUID() });
+                await api('/lama/charge', 'POST', { productId: pick.id, idempotencyKey: chargeKey });
                 setPick(null);
                 await load();
                 onChanged?.();

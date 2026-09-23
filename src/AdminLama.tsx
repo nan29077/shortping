@@ -270,15 +270,15 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
             <div className="form-columns">
               <label>
                 체험 라마 (PD 첫 방문)
-                <input type="number" min={0} max={100000} value={policy.lama_signup_bonus} onChange={(e) => setPolicy({ ...policy, lama_signup_bonus: Number(e.target.value) })} />
+                <input type="number" min={0} max={100000} required value={policy.lama_signup_bonus} onChange={(e) => setPolicy({ ...policy, lama_signup_bonus: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
               </label>
               <label>
                 전환 최소 금액 (원)
-                <input type="number" min={0} value={policy.lama_convert_min} onChange={(e) => setPolicy({ ...policy, lama_convert_min: Number(e.target.value) })} />
+                <input type="number" min={0} required value={policy.lama_convert_min} onChange={(e) => setPolicy({ ...policy, lama_convert_min: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
               </label>
               <label>
                 전환 보너스 (%)
-                <input type="number" min={0} max={50} step={0.5} value={policy.lama_convert_bonus_rate} onChange={(e) => setPolicy({ ...policy, lama_convert_bonus_rate: Number(e.target.value) })} />
+                <input type="number" min={0} max={50} step={0.5} required value={policy.lama_convert_bonus_rate} onChange={(e) => setPolicy({ ...policy, lama_convert_bonus_rate: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
               </label>
             </div>
             <div className="info-box">

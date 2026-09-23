@@ -128,6 +128,10 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     const taken = await db.get('SELECT owner_id FROM channels WHERE slug=?', [b.slug]);
     if (taken && taken.owner_id !== req.user.id) fail(409, '이미 사용 중인 방송국 주소입니다.');
     const existing = await myChannel(req.user.id);
+    if (existing && Number(existing.admin_hidden) === 1 && req.user.role !== 'admin') {
+      if (b.status !== 'hidden')
+        fail(409, '운영 정책에 따라 관리자가 숨긴 방송국이에요. 공개하려면 고객센터로 문의해 주세요.');
+    }
     if (existing)
       await db.run(
         'UPDATE channels SET name=?,slug=?,tagline=?,description=?,banner=?,logo=?,accent=?,theme=?,banner_fit=?,overlay=?,greeting=?,status=? WHERE id=?',
@@ -174,6 +178,10 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
         req.user.id,
       ]);
     }
+    }).catch((e) => {
+      // 두 PD가 같은 주소를 동시에 저장하면 UNIQUE 제약이 막습니다. 500 대신 안내 문구로 돌려줍니다.
+      if (!e.status && /unique|duplicate/i.test(String(e?.message))) fail(409, '이미 사용 중인 방송국 주소입니다.');
+      throw e;
     });
     res.json({ ok: true });
   });
@@ -240,10 +248,21 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     const settings = await loadSettings(db);
     await refreshEntries(db);
     const pdId = req.user.id;
-    const entries = await db.all(
-      'SELECT s.*, d.title AS drama_title FROM settlement_entries s LEFT JOIN dramas d ON d.id=s.drama_id WHERE s.pd_id=? ORDER BY s.created_at DESC LIMIT 400',
-      [pdId],
-    );
+    // 달력·내역은 고른 달 전체를 보여 줍니다(판매가 많아도 잘리지 않게 월 단위로 조회).
+    const month = z
+      .string()
+      .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+      .optional()
+      .parse(req.query.month || undefined);
+    const entries = month
+      ? await db.all(
+          'SELECT s.*, d.title AS drama_title FROM settlement_entries s LEFT JOIN dramas d ON d.id=s.drama_id WHERE s.pd_id=? AND s.period=? ORDER BY s.created_at DESC LIMIT 5000',
+          [pdId, month],
+        )
+      : await db.all(
+          'SELECT s.*, d.title AS drama_title FROM settlement_entries s LEFT JOIN dramas d ON d.id=s.drama_id WHERE s.pd_id=? ORDER BY s.created_at DESC LIMIT 400',
+          [pdId],
+        );
     res.json({
       balance: await balanceOf(db, pdId),
       entries,

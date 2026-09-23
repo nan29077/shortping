@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Bot, ChevronRight, Loader2, Plus, Sparkles } from 'lucide-react';
 import { api, lama, type AiOverview, type StudioActivity } from '../api';
+import { navigate } from '../App';
 
-// 스튜디오 상단: 진행 중인 AI 작업·자동 제작을 어느 메뉴에서든 보여 줍니다(10초마다 갱신).
+// 스튜디오 상단: 진행 중인 AI 작업·빠른 제작을 어느 메뉴에서든 보여 줍니다(10초마다 갱신).
 export function ActivityChip({ go }: { go: () => void }) {
   const [a, setA] = useState<StudioActivity | null>(null);
   useEffect(() => {
@@ -20,13 +21,18 @@ export function ActivityChip({ go }: { go: () => void }) {
   }, []);
   if (!a) return null;
   const autos = a.autopilots.filter((x) => x.status === 'running').length;
-  if (!a.active && !autos && !a.failedLastHour) return null;
+  const paused = a.autopilots.filter((x) => x.status === 'paused');
+  if (!a.active && !autos && !a.failedLastHour && !paused.length) return null;
+  const busy = a.active || autos;
+  // 멈춘 빠른 제작이 하나뿐이면 그 프로젝트로 바로 이동합니다.
+  const open = () => (!busy && paused.length === 1 ? navigate(`studio/ai/${paused[0].id}`) : go());
   return (
-    <button className={'activity-chip' + (a.failedLastHour && !a.active ? ' warn' : '')} onClick={go} title="숏핑 스튜디오 작업 보기">
-      {a.active || autos ? <Loader2 size={14} className="spin" /> : <AlertTriangle size={14} />}
+    <button className={'activity-chip' + (!busy && (a.failedLastHour || paused.length) ? ' warn' : '')} onClick={open} title={paused.length ? paused.map((x) => `${x.title}: ${x.message || '멈춤'}`).join('\n') : '숏핑 스튜디오 작업 보기'}>
+      {busy ? <Loader2 size={14} className="spin" /> : <AlertTriangle size={14} />}
       {a.active ? `AI 작업 ${a.active}건` : ''}
-      {autos ? `${a.active ? ' · ' : ''}자동 제작 ${autos}개` : ''}
-      {!a.active && !autos && a.failedLastHour ? `최근 실패 ${a.failedLastHour}건` : ''}
+      {autos ? `${a.active ? ' · ' : ''}빠른 제작 ${autos}개` : ''}
+      {paused.length ? `${busy ? ' · ' : ''}빠른 제작 멈춤 ${paused.length}개` : ''}
+      {!busy && !paused.length && a.failedLastHour ? `최근 실패 ${a.failedLastHour}건` : ''}
     </button>
   );
 }

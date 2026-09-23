@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { call, dataUri, pcmToWav, VendorError } from './http.mjs';
+import { call, dataUri, pcmToWav, safeUrl, VendorError } from './http.mjs';
 
 // AI 공급사 연결부. 공급사마다 요청 형식이 달라서 "종류(kind)"별 어댑터로 감쌉니다.
 // 모든 어댑터는 같은 약속을 지킵니다.
@@ -14,6 +14,11 @@ const aspectSize = { '9:16': '1024x1536', '1:1': '1024x1024', '16:9': '1536x1024
 const trimBase = (url, fallback) => String(url || fallback).replace(/\/+$/, '');
 const bearer = (key) => ({ Authorization: `Bearer ${key}` });
 const ok = (result) => ({ status: 'done', result });
+// 참고 이미지 목록: 편집할 원본(editImage) → 인물·장소 참고(refImages) → 예전 단일 참고(refImage) 순서
+const refList = (input) => [input.editImage, ...(input.refImages || []), input.refImage].filter((x) => x?.buffer);
+// 감정·속도 지시(한국어)를 공급사별 형식으로 바꿉니다.
+const ttsStyle = (input) => [input.style, input.speed && Number(input.speed) !== 1 ? (Number(input.speed) > 1 ? '조금 빠르게' : '조금 느리게') : ''].filter(Boolean).join(', ');
+const MINIMAX_EMOTION = { 기쁨: 'happy', 설렘: 'happy', 슬픔: 'sad', 분노: 'angry', 두려움: 'fearful', 놀람: 'surprised', 혐오: 'disgusted', 담담: 'neutral' };
 const pending = (ref) => ({ status: 'pending', ref });
 
 // ── OpenAI 호환 채팅 (OpenAI · DeepSeek · Qwen · Kimi · GLM · Doubao 등) ──
@@ -36,11 +41,27 @@ async function chat(base, key, model, input, { maxField = 'max_tokens', extraHea
   return ok({ text, usage: { input: data.usage?.prompt_tokens || 0, output: data.usage?.completion_tokens || 0 } });
 }
 async function openaiImage(base, key, model, input) {
-  const data = await call(`${base}/images/generations`, {
-    headers: bearer(key),
-    timeout: 180000,
-    json: { model: model.model_id, prompt: input.prompt, size: aspectSize[input.aspect] || '1024x1536', n: 1 },
-  });
+  // 참고 이미지(인물·장소·현재 컷)가 있으면 편집 API로 보내 얼굴·의상을 맞춥니다(gpt-image 계열).
+  const refs = refList(input);
+  const data =
+    refs.length && /gpt-image/i.test(model.model_id)
+      ? await call(`${base}/images/edits`, {
+          headers: bearer(key),
+          timeout: 180000,
+          body: (() => {
+            const form = new FormData();
+            form.set('model', model.model_id);
+            form.set('prompt', input.prompt);
+            form.set('size', aspectSize[input.aspect] || '1024x1536');
+            refs.slice(0, 4).forEach((r, i) => form.append('image[]', new Blob([r.buffer], { type: r.mime }), `ref${i}.${r.ext || 'png'}`));
+            return form;
+          })(),
+        })
+      : await call(`${base}/images/generations`, {
+          headers: bearer(key),
+          timeout: 180000,
+          json: { model: model.model_id, prompt: input.prompt, size: aspectSize[input.aspect] || '1024x1536', n: 1 },
+        });
   const item = data.data?.[0];
   if (item?.b64_json) return ok({ data: Buffer.from(item.b64_json, 'base64'), mime: 'image/png' });
   if (item?.url) return ok({ url: item.url });
@@ -64,7 +85,7 @@ const openai = {
           voice: input.voice || 'alloy',
           input: input.text,
           response_format: 'mp3',
-          ...(input.instructions ? { instructions: input.instructions } : {}),
+          ...(input.instructions || ttsStyle(input) ? { instructions: input.instructions || `한국어로 ${ttsStyle(input)} 말하기` } : {}),
         },
       });
       return ok({ data, mime: 'audio/mpeg' });
@@ -81,7 +102,7 @@ const openai = {
       return ok({ segments });
     }
     if (capability === 'video') {
-      const seconds = String([4, 8, 12].reduce((a, b) => (Math.abs(b - input.seconds) < Math.abs(a - input.seconds) ? b : a)));
+      const seconds = String(videoSeconds('sora', input.seconds));
       let body;
       let json;
       if (input.image) {
@@ -165,16 +186,17 @@ const gemini = {
     if (capability === 'video') {
       const instance = { prompt: input.prompt };
       if (input.image) instance.image = { bytesBase64Encoded: input.image.buffer.toString('base64'), mimeType: input.image.mime };
+      if (input.endImage) instance.lastFrame = { bytesBase64Encoded: input.endImage.buffer.toString('base64'), mimeType: input.endImage.mime };
       const data = await call(`${base}/models/${model.model_id}:predictLongRunning`, {
         headers,
-        json: { instances: [instance], parameters: { aspectRatio: input.aspect || '9:16', ...(input.seconds ? { durationSeconds: Math.min(8, Math.max(4, Math.round(input.seconds))) } : {}) } },
+        json: { instances: [instance], parameters: { aspectRatio: input.aspect || '9:16', ...(input.seconds ? { durationSeconds: videoSeconds(model.model_id, input.seconds) } : {}) } },
       });
       if (!data.name) throw new VendorError('영상 작업 번호를 받지 못했어요.');
       return pending(data.name);
     }
-    const parts = [{ text: input.prompt || input.text }];
-    if (capability === 'image' && input.refImage)
-      parts.push({ inlineData: { mimeType: input.refImage.mime, data: input.refImage.buffer.toString('base64') } });
+    const spoken = capability === 'tts' && ttsStyle(input) ? `${ttsStyle(input)} 말해 주세요: ${input.text}` : input.prompt || input.text;
+    const parts = [{ text: spoken }];
+    if (capability === 'image') for (const r of refList(input).slice(0, 3)) parts.push({ inlineData: { mimeType: r.mime, data: r.buffer.toString('base64') } });
     const generationConfig =
       capability === 'image'
         ? { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: input.aspect || '9:16' } }
@@ -221,21 +243,65 @@ const gemini = {
   },
 };
 
+// 모델마다 받는 영상 길이가 정해져 있습니다. 요청 길이 이상인 값 중 가장 짧은 값을 고르고,
+// 없으면 가장 긴 값을 씁니다(남는 부분은 합성할 때 컷 길이에 맞춰 자릅니다).
+export function videoSeconds(modelId, seconds) {
+  const id = String(modelId || '').toLowerCase();
+  const want = Math.max(1, Number(seconds) || 5);
+  const pick = (list) => list.find((v) => v >= want - 0.25) ?? list[list.length - 1];
+  if (/veo/.test(id)) return pick([4, 6, 8]);
+  if (/sora/.test(id)) return pick([4, 8, 12]);
+  if (/hailuo|minimax/.test(id)) return pick([6, 10]);
+  if (/kling|seedance/.test(id)) return pick([5, 10]);
+  if (/wan/.test(id)) return 5;
+  return Math.min(10, Math.max(2, Math.round(want)));
+}
 // fal · Replicate: Kling · Seedance · Hailuo · Wan · Flux · Seedream 등 여러 모델을 한 키로 씁니다.
-function genericInput(capability, input) {
+function genericInput(capability, input, modelId = '', numeric = false) {
+  const id = String(modelId || '').toLowerCase();
+  const seed = Number.isInteger(input.seed) ? { seed: input.seed } : {};
+  const secs = (v) => (numeric ? v : String(v));
   if (capability === 'video')
     return {
       prompt: input.prompt,
-      duration: String(Math.round(input.seconds || 5)),
+      duration: secs(videoSeconds(modelId, input.seconds)),
       aspect_ratio: input.aspect || '9:16',
       ...(input.image ? { image_url: dataUri(input.image.buffer, input.image.mime) } : {}),
+      // 끝 장면 지정(Kling 등은 tail_image_url, 그 밖은 end_image_url)
+      ...(input.endImage ? (/kling/.test(id) ? { tail_image_url: dataUri(input.endImage.buffer, input.endImage.mime) } : { end_image_url: dataUri(input.endImage.buffer, input.endImage.mime) }) : {}),
+      ...seed,
     };
-  if (capability === 'image')
+  if (capability === 'image') {
+    const refs = refList(input);
     return {
       prompt: input.prompt,
       aspect_ratio: input.aspect || '9:16',
       image_size: input.aspect === '16:9' ? 'landscape_16_9' : input.aspect === '1:1' ? 'square_hd' : 'portrait_16_9',
-      ...(input.refImage ? { image_url: dataUri(input.refImage.buffer, input.refImage.mime) } : {}),
+      ...(refs.length ? { image_url: dataUri(refs[0].buffer, refs[0].mime), image_urls: refs.slice(0, 4).map((r) => dataUri(r.buffer, r.mime)) } : {}),
+      ...seed,
+    };
+  }
+  // 배경음악: 모델마다 길이 칸 이름이 달라 알려진 형식으로 맞춥니다.
+  if (capability === 'music') {
+    const s = Math.max(5, Math.min(180, Math.round(Number(input.seconds) || 30)));
+    if (/elevenlabs/.test(id)) return { prompt: input.prompt, music_length_ms: s * 1000, force_instrumental: true };
+    if (/stable-audio/.test(id)) return { prompt: input.prompt, seconds_total: s };
+    if (/musicgen/.test(id)) return { prompt: input.prompt, duration: Math.min(30, s) };
+    return { prompt: input.prompt, ...(/lyria/.test(id) ? {} : { duration: s }) };
+  }
+  // 효과음: 글로 만들기(text-to-audio) 또는 컷 영상에 맞춰 만들기(video-to-audio)
+  if (capability === 'sfx') {
+    const s = Math.max(1, Math.min(30, Number(input.seconds) || 4));
+    if (/elevenlabs/.test(id)) return { text: input.prompt, duration_seconds: s };
+    if (input.video && !/text-to-audio/.test(id)) return { video_url: dataUri(input.video.buffer, input.video.mime), prompt: input.prompt, duration: s };
+    return { prompt: input.prompt, duration: s, ...seed };
+  }
+  // 입 모양 맞추기: 컷 영상 + 대사 음성
+  if (capability === 'lipsync')
+    return {
+      video_url: dataUri(input.video.buffer, input.video.mime),
+      audio_url: dataUri(input.audio.buffer, input.audio.mime),
+      ...(/sync-lipsync/.test(id) ? { sync_mode: 'cut_off' } : {}),
     };
   if (capability === 'tts') return { text: input.text, ...(input.voice ? { voice: input.voice } : {}) };
   if (capability === 'stt') return { audio_url: dataUri(input.audio.buffer, input.audio.mime), language: 'ko' };
@@ -258,20 +324,23 @@ function pickOutput(capability, out) {
   throw new VendorError('결과 파일 주소를 찾지 못했어요.');
 }
 const fal = {
-  label: 'fal.ai (여러 영상·이미지 모델 중계)',
-  capabilities: ['image', 'video', 'tts', 'stt'],
+  label: 'fal.ai (여러 영상·이미지·음악·효과음 모델 중계)',
+  capabilities: ['image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'],
   base: 'https://queue.fal.run',
   headers: (key) => ({ Authorization: `Key ${key}` }),
   async run({ provider, model, capability, input, key }) {
     const data = await call(`${trimBase(provider.base_url, this.base)}/${model.model_id}`, {
       headers: this.headers(key),
-      json: genericInput(capability, input),
+      json: genericInput(capability, input, model.model_id),
     });
     if (!data.request_id) throw new VendorError('작업 번호를 받지 못했어요.');
     return pending(JSON.stringify({ status: data.status_url, response: data.response_url }));
   },
   async poll({ capability, ref, key }) {
     const { status, response } = JSON.parse(ref);
+    // 응답에 들어 있던 주소로 키를 보내기 전에 안전한 외부 주소인지 확인합니다.
+    if (!(await safeUrl(status)) || !(await safeUrl(response)))
+      throw new VendorError('안전하지 않은 작업 확인 주소예요.', { retryable: false });
     const s = await call(status, { method: 'GET', headers: this.headers(key) });
     if (s.status === 'COMPLETED') {
       const out = await call(response, { method: 'GET', headers: this.headers(key) });
@@ -293,11 +362,11 @@ const fal = {
 };
 const replicate = {
   label: 'Replicate (여러 모델 중계)',
-  capabilities: ['text', 'image', 'video', 'tts', 'stt'],
+  capabilities: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'],
   base: 'https://api.replicate.com/v1',
   async run({ provider, model, capability, input, key }) {
     const base = trimBase(provider.base_url, this.base);
-    const payload = genericInput(capability, input);
+    const payload = genericInput(capability, input, model.model_id, true);
     if (payload.image_url) {
       payload.image = payload.image_url;
       payload.start_image = payload.image_url;
@@ -328,8 +397,8 @@ const replicate = {
 };
 
 const elevenlabs = {
-  label: 'ElevenLabs (음성)',
-  capabilities: ['tts', 'stt'],
+  label: 'ElevenLabs (음성 · 음악 · 효과음)',
+  capabilities: ['tts', 'stt', 'music', 'sfx'],
   base: 'https://api.elevenlabs.io/v1',
   async run({ provider, model, capability, input, key }) {
     const base = trimBase(provider.base_url, this.base);
@@ -356,11 +425,29 @@ const elevenlabs = {
       if (!segments.length && data.text) segments.push({ start: 0, end: 5, text: data.text });
       return ok({ segments });
     }
+    if (capability === 'music') {
+      const data = await call(`${base}/music?output_format=mp3_44100_128`, {
+        headers: { 'xi-api-key': key },
+        raw: true,
+        timeout: 300000,
+        json: { prompt: input.prompt, music_length_ms: Math.max(3000, Math.min(600000, Math.round((Number(input.seconds) || 30) * 1000))), model_id: model.model_id || 'music_v1', force_instrumental: true },
+      });
+      return ok({ data, mime: 'audio/mpeg' });
+    }
+    if (capability === 'sfx') {
+      const data = await call(`${base}/sound-generation?output_format=mp3_44100_128`, {
+        headers: { 'xi-api-key': key },
+        raw: true,
+        json: { text: input.prompt, model_id: model.model_id, duration_seconds: Math.max(0.5, Math.min(30, Number(input.seconds) || 4)), prompt_influence: 0.5 },
+      });
+      return ok({ data, mime: 'audio/mpeg' });
+    }
     const voice = input.voice || 'JBFqnCBsd6RMkjVDRZzb';
+    const speed = Math.max(0.7, Math.min(1.2, Number(input.speed) || 1));
     const data = await call(`${base}/text-to-speech/${encodeURIComponent(voice)}?output_format=mp3_44100_128`, {
       headers: { 'xi-api-key': key },
       raw: true,
-      json: { text: input.text, model_id: model.model_id },
+      json: { text: input.text, model_id: model.model_id, ...(speed !== 1 ? { voice_settings: { speed } } : {}) },
     });
     return ok({ data, mime: 'audio/mpeg' });
   },
@@ -397,7 +484,7 @@ const kling = {
       json = {
         model_name: model.model_id,
         prompt: input.prompt,
-        duration: input.seconds > 7 ? '10' : '5',
+        duration: String(videoSeconds('kling', input.seconds)),
         ...(input.image ? { image: input.image.buffer.toString('base64') } : { aspect_ratio: input.aspect || '9:16' }),
       };
     } else if (capability === 'image') {
@@ -447,7 +534,13 @@ const minimax = {
             text: input.text,
             stream: false,
             language_boost: 'Korean',
-            voice_setting: { voice_id: input.voice || 'Korean_SweetGirl', speed: 1, vol: 1, pitch: 0 },
+            voice_setting: {
+              voice_id: input.voice || 'Korean_SweetGirl',
+              speed: Math.max(0.5, Math.min(2, Number(input.speed) || 1)),
+              vol: 1,
+              pitch: 0,
+              ...(MINIMAX_EMOTION[input.style] ? { emotion: MINIMAX_EMOTION[input.style] } : {}),
+            },
             audio_setting: { format: 'mp3', sample_rate: 32000, bitrate: 128000, channel: 1 },
           },
         }),
@@ -462,7 +555,7 @@ const minimax = {
           json: {
             model: model.model_id,
             prompt: input.prompt,
-            duration: input.seconds > 7 ? 10 : 6,
+            duration: videoSeconds('hailuo', input.seconds),
             ...(input.image ? { first_frame_image: dataUri(input.image.buffer, input.image.mime) } : {}),
           },
         }),
@@ -500,7 +593,7 @@ const dashscope = {
         ? {
             model: model.model_id,
             input: { prompt: input.prompt, ...(input.image ? { img_url: dataUri(input.image.buffer, input.image.mime) } : {}) },
-            parameters: { ...(input.image ? { resolution: '720P' } : { size: '720*1280' }), duration: Math.round(input.seconds || 5) },
+            parameters: { ...(input.image ? { resolution: '720P' } : { size: '720*1280' }), duration: videoSeconds(model.model_id, input.seconds) },
           }
         : { model: model.model_id, input: { prompt: input.prompt }, parameters: { size: '720*1280', n: 1 } };
     const path = capability === 'video' ? '/services/aigc/video-generation/video-synthesis' : '/services/aigc/text2image/image-synthesis';
@@ -546,7 +639,7 @@ const volcengine = {
       if (item?.url) return ok({ url: item.url });
       throw new VendorError('이미지 결과가 없어요.');
     }
-    const content = [{ type: 'text', text: `${input.prompt} --ratio ${input.aspect || '9:16'} --dur ${Math.round(input.seconds || 5)}` }];
+    const content = [{ type: 'text', text: `${input.prompt} --ratio ${input.aspect || '9:16'} --dur ${videoSeconds('seedance', input.seconds)}` }];
     if (input.image) content.push({ type: 'image_url', image_url: { url: dataUri(input.image.buffer, input.image.mime) } });
     const data = await call(`${base}/contents/generations/tasks`, { headers: bearer(key), json: { model: model.model_id, content } });
     if (!data.id) throw new VendorError('작업 번호를 받지 못했어요.');
@@ -595,8 +688,10 @@ export const adapters = {
   dashscope,
   volcengine,
 };
-export const capabilityLabel = { text: '기획·대본', image: '이미지', video: '영상', tts: '음성(TTS)', stt: '자막(음성 인식)' };
-export const unitOf = { text: 'per_1k_tokens', image: 'per_image', video: 'per_second', tts: 'per_1k_chars', stt: 'per_minute' };
+export const capabilityLabel = { text: '기획·대본', image: '이미지', video: '영상', tts: '음성(TTS)', stt: '자막(음성 인식)', music: '배경음악', sfx: '효과음', lipsync: '입 모양 맞추기' };
+export const unitOf = { text: 'per_1k_tokens', image: 'per_image', video: 'per_second', tts: 'per_1k_chars', stt: 'per_minute', music: 'per_second', sfx: 'per_second', lipsync: 'per_second' };
+// 새 기능(배경음악·효과음·입 모양)은 최고관리자가 라마 가격을 정한 모델만 PD에게 열립니다(그 전에는 '준비 중').
+export const PRICE_REQUIRED = ['music', 'sfx', 'lipsync'];
 
 // 관리자가 한 번에 추가할 수 있는 공급사·모델 프리셋. 가격(USD)은 2026년 7월 공개 가격을 참고한 기본값이며,
 // 모델 ID와 가격은 공급사 문서를 확인해 관리자 화면에서 바로 고칠 수 있습니다.
@@ -640,6 +735,12 @@ export const presets = [
       m('video', 'fal-ai/wan/v2.2-a14b/image-to-video', 'Wan 2.2 (fal)', 'draft', 0.05, 'cheap,landscape', { max_seconds: 5, image_input: 1 }),
       m('image', 'fal-ai/flux/dev', 'FLUX dev (fal)', 'draft', 0.025, 'cheap,landscape'),
       m('image', 'fal-ai/bytedance/seedream/v4/text-to-image', 'Seedream 4 (fal)', 'standard', 0.03, 'character,poster'),
+      // 새 기능: 가격(라마)은 최고관리자가 정해야 PD에게 열립니다.
+      m('lipsync', 'fal-ai/sync-lipsync/v2', 'Sync Lipsync 2 (fal)', 'standard', 0.05, 'lipsync,dialogue', { max_seconds: 30 }),
+      m('sfx', 'fal-ai/mmaudio-v2/text-to-audio', 'MMAudio 효과음 (fal)', 'draft', 0.001, 'cheap', { max_seconds: 30 }),
+      m('sfx', 'fal-ai/mmaudio-v2', 'MMAudio 영상 맞춤 효과음 (fal)', 'standard', 0.001, 'scene', { max_seconds: 30, image_input: 1 }),
+      m('music', 'fal-ai/elevenlabs/music', 'Eleven Music (fal)', 'standard', 0.01, 'emotion', { max_seconds: 180 }),
+      m('music', 'fal-ai/lyria2', 'Lyria 2 (fal)', 'draft', 0.003, 'cheap', { max_seconds: 30 }),
     ],
   },
   {
@@ -655,6 +756,8 @@ export const presets = [
       m('tts', 'eleven_multilingual_v2', 'ElevenLabs 다국어 v2', 'premium', 0.1, 'korean,emotion'),
       m('tts', 'eleven_flash_v2_5', 'ElevenLabs Flash', 'standard', 0.05, 'korean,fast'),
       m('stt', 'scribe_v1', 'ElevenLabs Scribe', 'standard', 0.0067, 'korean'),
+      m('music', 'music_v1', 'Eleven Music', 'premium', 0.01, 'emotion', { max_seconds: 180 }),
+      m('sfx', 'eleven_text_to_sound_v2', 'ElevenLabs 효과음', 'standard', 0.004, 'scene', { max_seconds: 30 }),
     ],
   },
   {

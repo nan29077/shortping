@@ -4,6 +4,11 @@ import path from 'node:path';
 import pg from 'pg';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+// PostgreSQL은 COUNT/SUM(bigint)과 NUMERIC을 문자열로 돌려줍니다. 화면과 정산 계산이 숫자를
+// 기대하므로 안전 범위(2^53) 안에서 숫자로 바꿔 받습니다.
+pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
+
 export async function openDb() {
   if (process.env.DATABASE_URL) {
     const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -34,6 +39,14 @@ export async function openDb() {
       get: async (s, p) => (await query(s, p)).rows[0],
       run: query,
       transaction,
+      // 트랜잭션 컨텍스트를 물려받지 않는 자리에서 실행합니다(타이머·백그라운드 작업용).
+      detach: (fn) => context.exit(fn),
+      // 돈이 오가는 트랜잭션 첫머리에서 회원 행을 잠가 같은 회원의 동시 요청을 한 줄로 세웁니다.
+      lockUser: async (userId) => {
+        if (!context.getStore()) throw new Error('lockUser must run inside a transaction');
+        await query('SELECT id FROM users WHERE id=? FOR UPDATE', [userId]);
+      },
+      isUnique: (e) => e?.code === '23505',
       close: () => pool.end(),
       engine: 'postgresql',
     };
@@ -67,6 +80,10 @@ export async function openDb() {
     get: (s, p = []) => operation(() => db.prepare(s).get(...p)),
     run: (s, p = []) => operation(() => db.prepare(s).run(...p)),
     transaction,
+    detach: (fn) => context.exit(fn),
+    // SQLite는 BEGIN IMMEDIATE로 트랜잭션이 이미 한 줄로 실행됩니다.
+    lockUser: async () => {},
+    isUnique: (e) => /UNIQUE constraint failed/i.test(String(e?.message || '')),
     close: () => db.close(),
     engine: 'sqlite',
   };
@@ -99,6 +116,9 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS settlement_entries (id TEXT PRIMARY KEY, pd_id TEXT NOT NULL REFERENCES users(id), order_id TEXT REFERENCES orders(id), drama_id TEXT REFERENCES dramas(id), kind TEXT NOT NULL, period TEXT NOT NULL DEFAULT '', gross INTEGER NOT NULL, platform_fee INTEGER NOT NULL DEFAULT 0, pg_fee INTEGER NOT NULL DEFAULT 0, net INTEGER NOT NULL, fee_rate REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending', confirm_at TEXT NOT NULL, payout_id TEXT REFERENCES payouts(id), created_at TEXT NOT NULL)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS settlement_entry_order ON settlement_entries(order_id) WHERE order_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS settlement_entry_pd ON settlement_entries(pd_id,status)`,
+    // 구독 풀 배분용 재생 기록: 구독 덕분에 재생된 회차만, 월마다 회원·작품·회차당 한 번
+    `CREATE TABLE IF NOT EXISTS subscription_views (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, drama_id TEXT NOT NULL REFERENCES dramas(id) ON DELETE CASCADE, episode INTEGER NOT NULL, period TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(user_id,drama_id,episode,period))`,
+    `CREATE INDEX IF NOT EXISTS subscription_views_period ON subscription_views(period)`,
     `CREATE TABLE IF NOT EXISTS settlement_watch_marks (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, drama_id TEXT NOT NULL REFERENCES dramas(id) ON DELETE CASCADE, episode INTEGER NOT NULL, period TEXT NOT NULL, PRIMARY KEY(user_id,drama_id))`,
     // 핑(포인트) — 충전 상품, 지갑(잔액 캐시), 충전 단위(로트), 거래 장부, 사용 내역, PD별 분배율
     `CREATE TABLE IF NOT EXISTS ping_products (id TEXT PRIMARY KEY, channel TEXT NOT NULL DEFAULT 'web', name TEXT NOT NULL, price INTEGER NOT NULL CHECK(price >= 0), pings INTEGER NOT NULL CHECK(pings > 0), bonus_pings INTEGER NOT NULL DEFAULT 0 CHECK(bonus_pings >= 0), badge TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -131,6 +151,20 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS studio_shots (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES studio_episodes(id) ON DELETE CASCADE, sort_order INTEGER NOT NULL DEFAULT 0, scene TEXT NOT NULL DEFAULT '', visual TEXT NOT NULL DEFAULT '', dialogue TEXT NOT NULL DEFAULT '', speaker_id TEXT, camera TEXT NOT NULL DEFAULT '', seconds INTEGER NOT NULL DEFAULT 5, image TEXT NOT NULL DEFAULT '', audio TEXT NOT NULL DEFAULT '', audio_seconds REAL NOT NULL DEFAULT 0, video TEXT NOT NULL DEFAULT '')`,
     `CREATE TABLE IF NOT EXISTS studio_assets (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL, job_id TEXT, model_label TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS studio_assets_target ON studio_assets(target_type, target_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS studio_locations (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, name TEXT NOT NULL, look TEXT NOT NULL DEFAULT '', look_en TEXT NOT NULL DEFAULT '', look_en_src TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS studio_script_versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, episode_id TEXT NOT NULL REFERENCES studio_episodes(id) ON DELETE CASCADE, version INTEGER NOT NULL, shots TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_script_versions_ep ON studio_script_versions(episode_id, version)`,
+    `CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '', read_at TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, created_at)`,
+    // 합성 대기열(회차·예고편). 웹 서버 안에서 돌거나, COMPOSE_WORKER=external이면 별도 작업 프로세스(npm run worker)가 처리합니다.
+    `CREATE TABLE IF NOT EXISTS studio_renders (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, kind TEXT NOT NULL, target_id TEXT NOT NULL, options TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued', progress REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', claimed_by TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)`,
+    `CREATE INDEX IF NOT EXISTS studio_renders_status ON studio_renders(status, created_at)`,
+    `CREATE TABLE IF NOT EXISTS voice_samples (model_ref TEXT NOT NULL, voice TEXT NOT NULL, url TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(model_ref, voice))`,
+    `CREATE TABLE IF NOT EXISTS drama_thumbnails (id TEXT PRIMARY KEY, drama_id TEXT NOT NULL REFERENCES dramas(id) ON DELETE CASCADE, url TEXT NOT NULL, impressions INTEGER NOT NULL DEFAULT 0, clicks INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, winner INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS drama_thumbnails_drama ON drama_thumbnails(drama_id)`,
+    // 메인페이지 관리 변경 기록(되돌리기용): kind = appearance(PC 여백) | layout(메인 화면 구성)
+    `CREATE TABLE IF NOT EXISTS home_history (id TEXT PRIMARY KEY, kind TEXT NOT NULL, data TEXT NOT NULL, actor_id TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS home_history_created ON home_history(created_at)`,
     `CREATE TABLE IF NOT EXISTS ai_route_rules (id TEXT PRIMARY KEY, capability TEXT NOT NULL, tier TEXT NOT NULL, model_ids TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, updated_by TEXT, UNIQUE(capability, tier))`,
     `CREATE TABLE IF NOT EXISTS ai_safety_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, term TEXT NOT NULL, excerpt TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
   ];
@@ -146,6 +180,8 @@ export async function migrate(db) {
   await ensureColumn(db, 'channels', 'banner_fit', "TEXT NOT NULL DEFAULT 'contain'");
   await ensureColumn(db, 'channels', 'overlay', 'INTEGER NOT NULL DEFAULT 45');
   await ensureColumn(db, 'channels', 'greeting', "TEXT NOT NULL DEFAULT ''");
+  // 관리자가 숨긴 방송국은 PD가 공개 상태를 바꿀 수 없습니다.
+  await ensureColumn(db, 'channels', 'admin_hidden', 'INTEGER NOT NULL DEFAULT 0');
   // 편당 결제는 원화에서 핑으로 바뀌었습니다. 무료 여부는 가격 0원이 아니라 별도 표시로 관리합니다.
   if (await ensureColumn(db, 'dramas', 'free', 'INTEGER NOT NULL DEFAULT 0'))
     await db.run('UPDATE dramas SET free=1 WHERE price=0');
@@ -169,7 +205,7 @@ export async function migrate(db) {
   // 정산 수익을 라마로 전환한 지급은 method='lama'
   await ensureColumn(db, 'payouts', 'method', "TEXT NOT NULL DEFAULT 'bank'");
   await ensureColumn(db, 'payouts', 'lama', 'INTEGER NOT NULL DEFAULT 0');
-  // 스튜디오 고도화: 자동 제작, 중국 모델 제외, 목소리 미리듣기, 공급사 동시작업·월예산·장애 차단
+  // 스튜디오 고도화: 빠른 제작, 중국 모델 제외, 목소리 미리듣기, 공급사 동시작업·월예산·장애 차단
   await ensureColumn(db, 'studio_projects', 'exclude_cn', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'studio_projects', 'autopilot', "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'studio_characters', 'voice_sample', "TEXT NOT NULL DEFAULT ''");
@@ -177,6 +213,71 @@ export async function migrate(db) {
   await ensureColumn(db, 'ai_providers', 'monthly_budget_won', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'ai_providers', 'fail_streak', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'ai_providers', 'cooldown_until', 'TEXT');
+  // 공급사 오류 원문(관리자 전용). PD 화면에는 정리된 문구(error)만 보여 줍니다.
+  await ensureColumn(db, 'ai_jobs', 'error_detail', "TEXT NOT NULL DEFAULT ''");
+  // ── AI 드라마 고도화(2026-09-23): 설정집·시즌 설계·장면 편집·소리·연재형 공개 ──
+  const cols = [
+    ['studio_projects', 'bible', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'season', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'source_text', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'subtitle_style', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'narrator_model', "TEXT NOT NULL DEFAULT 'auto'"],
+    ['studio_projects', 'narrator_voice', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'bgm', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'bgm_volume', 'REAL NOT NULL DEFAULT 0.22'],
+    ['studio_projects', 'trailer', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'trailer_status', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'meta', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'thumbs', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_projects', 'resolution', "TEXT NOT NULL DEFAULT '720p'"],
+    ['studio_episodes', 'hook', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'cliffhanger', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'bgm', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'bgm_volume', 'REAL NOT NULL DEFAULT -1'],
+    ['studio_episodes', 'thumbnail', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'intro_card', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'outro_card', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'compose_progress', 'REAL NOT NULL DEFAULT 0'],
+    ['studio_episodes', 'compose_error', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'compose_claimed_by', 'TEXT'],
+    ['studio_episodes', 'compose_queued_at', 'TEXT'],
+    ['studio_episodes', 'script_version', 'INTEGER NOT NULL DEFAULT 0'],
+    ['studio_episodes', 'diagnosis', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'look_en', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'look_en_src', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'outfit', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'refs', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'voice_style', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'visual_en', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'visual_en_src', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'cast_ids', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'location_id', 'TEXT'],
+    ['studio_shots', 'camera_move', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'emotion', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'speed', 'REAL NOT NULL DEFAULT 1'],
+    ['studio_shots', 'narration', 'INTEGER NOT NULL DEFAULT 0'],
+    ['studio_shots', 'seed', 'INTEGER'],
+    ['studio_shots', 'seed_lock', 'INTEGER NOT NULL DEFAULT 0'],
+    ['studio_shots', 'end_frame', 'INTEGER NOT NULL DEFAULT 0'],
+    ['studio_shots', 'lipsync', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'sfx', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'sfx_prompt', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'sfx_volume', 'REAL NOT NULL DEFAULT 0.6'],
+    ['studio_shots', 'transition', "TEXT NOT NULL DEFAULT 'cut'"],
+    ['studio_shots', 'caption', 'TEXT'],
+    // 연재형 공개: 회차 단위 검수·예약 공개
+    ['episodes', 'review_status', "TEXT NOT NULL DEFAULT 'approved'"],
+    ['episodes', 'review_note', "TEXT NOT NULL DEFAULT ''"],
+    ['episodes', 'publish_at', 'TEXT'],
+    ['episodes', 'thumbnail', "TEXT NOT NULL DEFAULT ''"],
+    ['episodes', 'submitted_at', 'TEXT'],
+    ['dramas', 'trailer', "TEXT NOT NULL DEFAULT ''"],
+    ['dramas', 'hashtags', "TEXT NOT NULL DEFAULT ''"],
+    ['dramas', 'subtitle_style', "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [t, c, type] of cols) await ensureColumn(db, t, c, type);
+  // 결과 확인 중 일시 오류가 연속으로 난 횟수(공급사 작업은 유지한 채 다시 확인합니다).
+  await ensureColumn(db, 'ai_jobs', 'poll_failures', 'INTEGER NOT NULL DEFAULT 0');
   // 처음 한 번만 기본 충전 상품(웹)을 만들어 둡니다. 이후 구성은 관리자 포인트 관리에서 바꿉니다.
   if (!(await db.get('SELECT id FROM ping_products LIMIT 1'))) {
     const stamp = new Date().toISOString();

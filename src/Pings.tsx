@@ -1,17 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Coins, Gift, History, ShieldCheck, Sparkles } from 'lucide-react';
 import {
   api,
   moment,
   pingTypeLabel,
   pings,
+  uuid,
   won,
   type PingProduct,
   type PingState,
   type User,
   type Wallet,
 } from './api';
-import { Modal, navigate } from './App';
+import { Modal, backTo, loginWithReturn } from './App';
 
 // 핑 충전 화면. 지금은 테스트 결제이고, PG·인앱결제가 연동되면 결제 승인 후 같은 적립 로직을 탑니다.
 export default function PingsPage({
@@ -31,9 +32,14 @@ export default function PingsPage({
     [error, setError] = useState(''),
     [pick, setPick] = useState<PingProduct | null>(null),
     [busy, setBusy] = useState(false);
+  // 같은 상품 결제창에서 다시 누르면 같은 멱등키를 써서, 응답이 끊겨도 두 번 충전되지 않게 합니다.
+  const chargeKey = useMemo(() => (pick ? uuid() : ''), [pick]);
   const load = () =>
     api<PingState>('/pings')
-      .then(setState)
+      .then((s) => {
+        setState(s);
+        setError('');
+      })
       .catch((e) => setError(e.message));
   useEffect(() => {
     if (user) void load();
@@ -43,12 +49,27 @@ export default function PingsPage({
       <div className="page-content pings-page">
         <h1>핑 충전</h1>
         <p className="muted">로그인하면 핑을 충전하고 회차를 열 수 있어요.</p>
-        <button className="primary" onClick={() => navigate('login')}>
+        <button className="primary" onClick={() => loginWithReturn()}>
           로그인
         </button>
       </div>
     );
-  if (error) return <div className="page-content pings-page"><p className="muted">{error}</p></div>;
+  if (error && !state)
+    return (
+      <div className="page-content pings-page viewer-retry">
+        <h1>핑 충전</h1>
+        <p className="muted">{error}</p>
+        <button
+          className="primary"
+          onClick={() => {
+            setError('');
+            void load();
+          }}
+        >
+          다시 시도
+        </button>
+      </div>
+    );
   if (!state)
     return (
       <div className="loading">
@@ -63,7 +84,7 @@ export default function PingsPage({
     try {
       const r = await api<{ wallet: Wallet; pings: number; bonus: number }>('/pings/charge', 'POST', {
         productId: pick.id,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: chargeKey,
       });
       setPick(null);
       await Promise.all([load(), onCharged()]);
@@ -71,7 +92,8 @@ export default function PingsPage({
         `${pings(r.pings + r.bonus)}을 충전했어요. 보유 ${pings(r.wallet.total)}` +
           (returnTo ? ' · 보던 화면으로 돌아갈게요.' : ''),
       );
-      if (returnTo) navigate(returnTo);
+      // 보던 화면으로 돌아갈 때 충전 화면이 뒤로 가기 기록에 남지 않게 합니다.
+      if (returnTo) backTo(returnTo);
     } catch (e) {
       notify((e as Error).message);
     } finally {
@@ -81,7 +103,7 @@ export default function PingsPage({
   return (
     <div className="page-content pings-page">
       {returnTo && (
-        <button className="text-link back-link" onClick={() => navigate(returnTo)}>
+        <button className="text-link back-link" onClick={() => backTo(returnTo)}>
           <ArrowLeft size={15} /> 보던 화면으로 돌아가기
         </button>
       )}

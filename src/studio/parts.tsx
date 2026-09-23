@@ -8,6 +8,7 @@ import {
   lama,
   tierLabel,
   unitLabel,
+  uuid,
   won,
   type AiModelOption,
   type Capability,
@@ -18,13 +19,33 @@ import {
 import { Modal } from '../App';
 
 export type Choice = { requested: string; tier: 'draft' | 'standard' | 'premium' };
-export type Choices = Record<'text' | 'image' | 'tts' | 'video', Choice>;
+export type ChoiceKey = 'text' | 'image' | 'tts' | 'video' | 'music' | 'sfx' | 'lipsync';
+export type Choices = Record<ChoiceKey, Choice>;
 export const defaultChoices: Choices = {
   text: { requested: 'auto', tier: 'standard' },
   image: { requested: 'auto', tier: 'standard' },
   tts: { requested: 'auto', tier: 'standard' },
   video: { requested: 'auto', tier: 'draft' },
+  music: { requested: 'auto', tier: 'standard' },
+  sfx: { requested: 'auto', tier: 'standard' },
+  lipsync: { requested: 'auto', tier: 'standard' },
 };
+// 모델 선택을 기기에 기억합니다(작업 공간을 다시 열어도 유지).
+const CHOICE_KEY = 'shortping.studio.choices';
+export function loadChoices(): Choices {
+  try {
+    return { ...defaultChoices, ...(JSON.parse(localStorage.getItem(CHOICE_KEY) || '{}') as Partial<Choices>) };
+  } catch {
+    return defaultChoices;
+  }
+}
+export function saveChoices(c: Choices) {
+  try {
+    localStorage.setItem(CHOICE_KEY, JSON.stringify(c));
+  } catch {
+    // 저장 공간을 쓸 수 없으면(사생활 보호 모드 등) 이번 화면에서만 기억합니다.
+  }
+}
 
 // 작업별 AI 모델 고르기: "자동(추천)"이면 품질 등급과 장면 특성으로 가장 알맞은 모델을 서버가 고릅니다.
 export function ModelPicker({
@@ -71,7 +92,7 @@ export function ModelPicker({
       ) : (
         <small>{chosen ? `${tierLabel[chosen.tier]} · 최대 ${chosen.max_seconds}초` : ''}</small>
       )}
-      {!list.length && <small className="danger">연결된 모델이 없어요</small>}
+      {!list.length && <small className="danger">{['music', 'sfx', 'lipsync'].includes(capability) ? '준비 중이에요' : '연결된 모델이 없어요'}</small>}
     </div>
   );
 }
@@ -102,7 +123,7 @@ export function useRunner({
         'POST',
         body,
       );
-      setPending({ label, body, estimate, idempotencyKey: crypto.randomUUID() });
+      setPending({ label, body, estimate, idempotencyKey: uuid() });
     } catch (e) {
       notify((e as Error).message);
     }
@@ -174,25 +195,42 @@ export function useRunner({
   return { ask, confirm };
 }
 
-export function JobBadge({ jobs, targetId, kind }: { jobs: StudioJob[]; targetId: string; kind: string }) {
+// 작업 상태 표시. 실패하면 눌러서 이유를 볼 수 있고(휴대폰에서도), 바로 다시 시도할 수 있어요.
+export function JobBadge({ jobs, targetId, kind, onRetry }: { jobs: StudioJob[]; targetId: string; kind: string; onRetry?: () => void }) {
+  const [open, setOpen] = useState(false);
   const job = jobs.find((j) => j.target_id === targetId && j.kind === kind);
   if (!job) return null;
-  if (job.status === 'queued' || job.status === 'running')
+  if (job.status === 'queued' || job.status === 'running') {
+    const waited = Math.max(0, Math.round((Date.now() - new Date(job.created_at).getTime()) / 1000));
     return (
-      <span className="job-badge running">
+      <span className="job-badge running" title={`시작한 지 ${waited}초`}>
         <Loader2 size={12} className="spin" /> {jobStatusLabel[job.status]}
+        {waited >= 20 ? ` · ${waited < 60 ? waited + '초' : Math.floor(waited / 60) + '분'} 경과` : ''}
       </span>
     );
+  }
   if (job.status === 'failed')
     return (
-      <span className="job-badge failed" title={job.error}>
-        <AlertTriangle size={12} /> 실패 · 라마 반환
+      <span className="job-badge-wrap">
+        <button type="button" className="job-badge failed" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <AlertTriangle size={12} /> 실패 · 라마 반환 {open ? '▴' : '▾'}
+        </button>
+        {open && (
+          <span className="job-fail-reason" role="note">
+            {job.error || '원인을 알 수 없어요.'}
+            {onRetry && (
+              <button type="button" className="text-link" onClick={onRetry}>
+                다시 시도
+              </button>
+            )}
+          </span>
+        )}
       </span>
     );
   if (job.status === 'succeeded')
     return (
       <span className="job-badge done" title={job.model_label || ''}>
-        <Check size={12} /> {lama(job.charged_lama)} 사용
+        <Check size={12} /> {Number(job.charged_lama) ? lama(job.charged_lama) + ' 사용' : '완료'}
       </span>
     );
   return (

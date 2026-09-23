@@ -15,6 +15,7 @@ import {
 import { api, count, type Channel, type ChannelCategory, type Drama, type User } from './api';
 import { Empty, navigate } from './App';
 import { ChannelBanner, ChannelLogo, channelStyle, channelThemes } from './Channels';
+import { asset } from './platform';
 
 type StudioChannel = { channel: Channel | null; categories: ChannelCategory[]; dramas: Drama[] };
 const channelBannerPresets = [
@@ -108,11 +109,14 @@ export default function ChannelStudio({
     [busy, setBusy] = useState(false),
     [uploading, setUploading] = useState(''),
     [category, setCategory] = useState('');
-  const load = useCallback(async () => {
+  // keepForm: 카테고리·진열처럼 폼과 무관한 작업 뒤에는 편집 중인 배너·문구를 서버 값으로 덮어쓰지 않습니다.
+  const load = useCallback(async (keepForm = false) => {
     try {
       const r = await api<StudioChannel>('/studio/channel');
       setData(r);
-      if (r.channel)
+      if (r.channel && keepForm) {
+        /* 편집 중인 폼 유지 */
+      } else if (r.channel)
         setForm({
           name: r.channel.name,
           slug: r.channel.slug,
@@ -157,11 +161,11 @@ export default function ChannelStudio({
       setUploading('');
     }
   }
-  async function act(fn: () => Promise<unknown>, message: string) {
+  async function act(fn: () => Promise<unknown>, message: string, keepForm = true) {
     setBusy(true);
     try {
       await fn();
-      await load();
+      await load(keepForm);
       await reloadChannels();
       notify(message);
     } catch (e) {
@@ -301,7 +305,7 @@ export default function ChannelStudio({
                 })
               }
             >
-              <img src={preset.image} alt={`${preset.name} 방송국 배너`} />
+              <img src={asset(preset.image)} alt={`${preset.name} 방송국 배너`} />
               <span>
                 <strong>{preset.name}</strong>
                 <small>{preset.mood}</small>
@@ -417,7 +421,7 @@ export default function ChannelStudio({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            void act(() => api('/studio/channel', 'PUT', form), '방송국 정보를 저장했어요.');
+            void act(() => api('/studio/channel', 'PUT', form), '방송국 정보를 저장했어요.', false);
           }}
         >
           <h4 className="spaced-title">방송국 정보</h4>
@@ -474,12 +478,16 @@ export default function ChannelStudio({
             공개 상태
             <select
               value={form.status}
+              disabled={!!data.channel?.admin_hidden}
               onChange={(e) => setForm({ ...form, status: e.target.value })}
             >
               <option value="draft">비공개 (준비 중)</option>
               <option value="active">공개</option>
               <option value="hidden">숨김</option>
             </select>
+            {!!data.channel?.admin_hidden && (
+              <small className="field-hint">관리자가 운영 정책에 따라 숨긴 방송국이에요. 공개하려면 고객센터로 문의해 주세요.</small>
+            )}
           </label>
           <button className="primary full" disabled={busy || !!uploading}>
             {busy ? '저장 중…' : data.channel ? '방송국 정보 저장' : '방송국 개설하기'}
@@ -553,7 +561,7 @@ export default function ChannelStudio({
               <div className="shelf-grid">
                 {data.dramas.map((d) => (
                   <article className="shelf-card" key={d.id}>
-                    <img src={d.image} alt="" />
+                    <img src={asset(d.image)} alt="" />
                     <div className="shelf-card-body">
                       <span
                         className={'status-chip ' + (d.status === 'published' ? '' : 'neutral')}

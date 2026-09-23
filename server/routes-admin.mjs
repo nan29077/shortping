@@ -11,6 +11,7 @@ import {
 import { channelSelect } from './routes-studio.mjs';
 import { channels as pingChannels, channelFeeRate, creditPings, debitPings, walletOf } from './pings.mjs';
 import { appearanceFromSettings, homeThemes } from './home-appearance.mjs';
+import { HOME_SECTIONS, layoutOf, layoutSchema, normalizeLayout, styleSchema } from './home-layout.mjs';
 
 const memberSql = `SELECT u.id,u.email,u.name,u.role,u.status,u.created_at,u.last_login_at,u.phone,
   p.avatar,p.bio,
@@ -47,7 +48,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     const settings = await loadSettings(db);
     const month = z
       .string()
-      .regex(/^\d{4}-\d{2}$/)
+      .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
       .optional()
       .parse(req.query.month || undefined);
     const filter = month ? ' WHERE s.period=?' : '';
@@ -74,11 +75,12 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
          COALESCE(SUM(CASE WHEN s.status='available' THEN s.net ELSE 0 END),0) AS available,
          COALESCE(SUM(CASE WHEN s.status='requested' THEN s.net ELSE 0 END),0) AS requested,
          COALESCE(SUM(CASE WHEN s.status='paid' THEN s.net ELSE 0 END),0) AS paid
-         FROM users u LEFT JOIN settlement_entries s ON s.pd_id=u.id
+         FROM users u LEFT JOIN settlement_entries s ON s.pd_id=u.id${month ? ' AND s.period=?' : ''}
          LEFT JOIN pd_tax_profiles t ON t.user_id=u.id
          WHERE u.role IN ('pd','admin')
          GROUP BY u.id,u.name,u.email,u.status,t.business_type,t.verified
          ORDER BY net DESC`,
+        params,
       ),
       entries: await db.all(
         `SELECT s.*, d.title AS drama_title, u.name AS pd_name FROM settlement_entries s
@@ -86,6 +88,13 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
           filter +
           ' ORDER BY s.created_at DESC LIMIT 400',
         params,
+      ),
+      // 목록은 최근 200건이지만, 누적 통계는 전체 기준으로 따로 계산합니다(라마 전환은 은행 지급과 분리).
+      payoutStats: await db.get(
+        `SELECT COALESCE(SUM(CASE WHEN status='paid' AND method<>'lama' THEN payable ELSE 0 END),0) AS paid_bank,
+         COALESCE(SUM(CASE WHEN status='paid' AND method='lama' THEN payable ELSE 0 END),0) AS paid_lama,
+         COALESCE(SUM(CASE WHEN status IN ('requested','approved') THEN payable ELSE 0 END),0) AS waiting,
+         COUNT(*) AS count FROM payouts`,
       ),
       payouts: await db.all(
         `SELECT p.*, u.name AS pd_name, u.email AS pd_email FROM payouts p JOIN users u ON u.id=p.pd_id ORDER BY
@@ -97,9 +106,18 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     });
   });
   app.post('/api/admin/settlements/close', roles('admin'), async (req, res) => {
-    const b = z.object({ period: z.string().regex(/^\d{4}-\d{2}$/) }).parse(req.body);
+    const b = z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }).parse(req.body);
     const settings = await loadSettings(db);
-    res.json(await closeSubscriptionPeriod(db, b.period, settings, req.user.id));
+    // 앞 달 구독 매출이 남아 있는데 마감하지 않았다면 순서대로 마감하도록 안내합니다.
+    const earlier = await db.get(
+      `SELECT MIN(v.period) AS period FROM subscription_views v
+       WHERE v.period < ? AND NOT EXISTS (SELECT 1 FROM audit_logs a WHERE a.action='settlement:closed' AND a.target_id=v.period)`,
+      [b.period],
+    );
+    if (earlier?.period)
+      fail(409, `${earlier.period} 구독 정산이 아직 마감되지 않았어요. 앞 달부터 순서대로 마감해 주세요.`);
+    // 배분 항목·시청 표시·감사 기록을 한 트랜잭션으로 묶어 중간에 실패해도 절반만 남지 않게 합니다.
+    res.json(await db.transaction(() => closeSubscriptionPeriod(db, b.period, settings, req.user.id)));
   });
   app.post('/api/admin/payouts/:id', roles('admin'), async (req, res) => {
     const b = z
@@ -118,11 +136,14 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     );
   });
   app.get('/api/admin/tax', roles('admin'), async (req, res) => {
+    // 한국 시간 기준 연도. 지급명세는 실제 지급일(processed_at) 기준으로 모읍니다.
+    const kstYear = String(new Date(Date.now() + 9 * 3600000).getUTCFullYear());
     const year = z
       .string()
       .regex(/^\d{4}$/)
-      .default(String(new Date().getFullYear()))
-      .parse(req.query.year || String(new Date().getFullYear()));
+      .parse(req.query.year || kstYear);
+    const yStart = new Date(Date.UTC(Number(year), 0, 1) - 9 * 3600000).toISOString();
+    const yEnd = new Date(Date.UTC(Number(year) + 1, 0, 1) - 9 * 3600000).toISOString();
     res.json({
       year,
       creators: await db.all(
@@ -141,8 +162,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         `SELECT pd_id, COUNT(*) AS count, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(vat),0) AS vat,
          COALESCE(SUM(income_tax),0) AS income_tax, COALESCE(SUM(local_tax),0) AS local_tax,
          COALESCE(SUM(payable),0) AS payable
-         FROM payouts WHERE status='paid' AND requested_at>=? AND requested_at<? GROUP BY pd_id`,
-        [`${year}-01-01T00:00:00.000Z`, `${Number(year) + 1}-01-01T00:00:00.000Z`],
+         FROM payouts WHERE status='paid' AND processed_at>=? AND processed_at<? GROUP BY pd_id`,
+        [yStart, yEnd],
       ),
     });
   });
@@ -207,6 +228,13 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         ai_allow_cn: z.number().int().min(0).max(1),
         ai_breaker_failures: z.number().int().min(1).max(100),
         ai_breaker_cooldown_min: z.number().int().min(1).max(1440),
+        // 0 = 자동 정리 끔. 켤 때는 실수로 너무 짧게 잡지 않도록 최소 7일.
+        media_retention_days: z
+          .number()
+          .int()
+          .min(0)
+          .max(3650)
+          .refine((v) => v === 0 || v >= 7, '보관 기간은 0(끔) 또는 7일 이상으로 입력해 주세요.'),
       })
       .partial()
       .parse(req.body);
@@ -362,22 +390,31 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     res.json({ ok: true });
   });
 
-  app.get('/api/admin/home-appearance', roles('admin'), async (req, res) => {
-    const settings = await loadSettings(db);
-    res.json({ appearance: appearanceFromSettings(settings), themes: homeThemes });
+  // ── 메인페이지 관리 ─────────────────────────────────────────
+  // 변경할 때마다 적용 직후 상태를 기록해 두고(최근 30개), 기록에서 되돌릴 수 있게 합니다.
+  const recordHome = async (kind, data, actorId) => {
+    await db.run('INSERT INTO home_history (id,kind,data,actor_id,created_at) VALUES (?,?,?,?,?)', [randomUUID(), kind, JSON.stringify(data), actorId, now()]);
+    const old = await db.all('SELECT id FROM home_history ORDER BY created_at DESC LIMIT 1000 OFFSET 30');
+    for (const r of old) await db.run('DELETE FROM home_history WHERE id=?', [r.id]);
+  };
+  // 관리자가 올린(또는 관리자 계정이 가진) 이미지만 배경으로 쓸 수 있습니다.
+  const checkImage = async (url) => {
+    if (!url || !url.startsWith('/uploads/')) return;
+    const f = await db.get('SELECT m.owner_id, u.role FROM media_files m LEFT JOIN users u ON u.id=m.owner_id WHERE m.url=?', [url]);
+    if (!f || f.role !== 'admin') fail(403, '관리자 화면에서 올린 이미지만 배경으로 쓸 수 있어요.');
+  };
+  const appearanceSchema = z.object({
+    theme: z.enum(homeThemes.map((theme) => theme.id)),
+    eyebrow: z.string().trim().min(2).max(60),
+    headline: z.string().trim().min(2).max(40),
+    highlight: z.string().trim().min(2).max(40),
+    description: z.string().trim().min(2).max(160),
+    caption: z.string().trim().min(2).max(80),
+    copyright: z.string().trim().min(2).max(60),
+    style: styleSchema.optional(),
   });
-  app.put('/api/admin/home-appearance', roles('admin'), async (req, res) => {
-    const b = z
-      .object({
-        theme: z.enum(homeThemes.map((theme) => theme.id)),
-        eyebrow: z.string().trim().min(2).max(60),
-        headline: z.string().trim().min(2).max(40),
-        highlight: z.string().trim().min(2).max(40),
-        description: z.string().trim().min(2).max(160),
-        caption: z.string().trim().min(2).max(80),
-        copyright: z.string().trim().min(2).max(60),
-      })
-      .parse(req.body);
+  async function applyAppearance(b, actorId) {
+    if (b.style) await checkImage(b.style.image);
     const settings = await saveSettings(
       db,
       {
@@ -388,11 +425,54 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         home_description: b.description,
         home_caption: b.caption,
         home_copyright: b.copyright,
+        ...(b.style ? { home_style: JSON.stringify(b.style) } : {}),
       },
-      req.user.id,
+      actorId,
     );
+    const appearance = appearanceFromSettings(settings);
+    await recordHome('appearance', { theme: appearance.theme, eyebrow: appearance.eyebrow, headline: appearance.headline, highlight: appearance.highlight, description: appearance.description, caption: appearance.caption, copyright: appearance.copyright, style: appearance.style }, actorId);
+    return appearance;
+  }
+  async function applyLayout(value, actorId) {
+    const iso = (v) => (v ? new Date(v).toISOString() : '');
+    const layout = normalizeLayout({ ...value, notice: { ...value.notice, start: iso(value.notice.start), end: iso(value.notice.end) } });
+    if (layout.notice.start && layout.notice.end && layout.notice.start >= layout.notice.end) fail(400, '공지 띠 종료 시각은 시작 시각보다 뒤여야 해요.');
+    const settings = await saveSettings(db, { home_layout: JSON.stringify(layout) }, actorId);
+    const saved = layoutOf(settings.home_layout);
+    await recordHome('layout', saved, actorId);
+    return saved;
+  }
+  app.get('/api/admin/home-appearance', roles('admin'), async (req, res) => {
+    const settings = await loadSettings(db);
+    res.json({ appearance: appearanceFromSettings(settings), themes: homeThemes, layout: layoutOf(settings.home_layout), sections: HOME_SECTIONS });
+  });
+  app.put('/api/admin/home-appearance', roles('admin'), async (req, res) => {
+    const b = appearanceSchema.parse(req.body);
+    const appearance = await applyAppearance(b, req.user.id);
     await audit(req.user.id, 'home-appearance:updated', b.theme);
-    res.json({ appearance: appearanceFromSettings(settings) });
+    res.json({ appearance });
+  });
+  app.put('/api/admin/home-layout', roles('admin'), async (req, res) => {
+    const layout = await applyLayout(layoutSchema.parse(req.body), req.user.id);
+    await audit(req.user.id, 'home-layout:updated', 'home');
+    res.json({ layout });
+  });
+  app.get('/api/admin/home-history', roles('admin'), async (req, res) => {
+    const rows = await db.all('SELECT h.id,h.kind,h.data,h.created_at,u.name AS actor_name FROM home_history h LEFT JOIN users u ON u.id=h.actor_id ORDER BY h.created_at DESC LIMIT 30');
+    res.json(rows.map((r) => ({ ...r, data: JSON.parse(r.data) })));
+  });
+  app.post('/api/admin/home-history/:id/restore', roles('admin'), async (req, res) => {
+    const row = await db.get('SELECT * FROM home_history WHERE id=?', [req.params.id]);
+    if (!row) fail(404, '기록을 찾을 수 없어요.');
+    const data = JSON.parse(row.data);
+    if (row.kind === 'appearance') {
+      const appearance = await applyAppearance(appearanceSchema.parse(data), req.user.id);
+      await audit(req.user.id, 'home-appearance:restored', row.id);
+      return res.json({ appearance });
+    }
+    const layout = await applyLayout(layoutSchema.parse(data), req.user.id);
+    await audit(req.user.id, 'home-layout:restored', row.id);
+    res.json({ layout });
   });
 
   app.get('/api/admin/members', roles('admin'), async (req, res) => {
@@ -539,10 +619,11 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       .parse(req.body);
     if (!(await db.get('SELECT id FROM channels WHERE id=?', [req.params.id])))
       fail(404, '방송국을 찾을 수 없습니다.');
-    await db.run('UPDATE channels SET status=?,featured=?,featured_order=? WHERE id=?', [
+    await db.run('UPDATE channels SET status=?,featured=?,featured_order=?,admin_hidden=? WHERE id=?', [
       b.status,
       b.featured ? 1 : 0,
       b.featured_order,
+      b.status === 'hidden' ? 1 : 0,
       req.params.id,
     ]);
     await audit(req.user.id, `channel:${b.status}${b.featured ? ':featured' : ''}`, req.params.id);

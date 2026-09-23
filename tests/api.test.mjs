@@ -4,6 +4,9 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readFileSync, renameSync } from 'node:fs';
+import { socialTags } from '../server/social.mjs';
+import { prepareTestDb } from './_db.mjs';
+let testDb;
 
 const port = 5188,
   base = `http://127.0.0.1:${port}`,
@@ -39,12 +42,13 @@ const login = async (role) => {
   return r.cookie;
 };
 before(async () => {
+  testDb = await prepareTestDb(runId, path.resolve('data/tests', runId));
   child = spawn(process.execPath, ['server/index.mjs'], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       NODE_ENV: 'test',
-      DATABASE_URL: '',
+      DATABASE_URL: testDb.url,
       PORT: String(port),
       APP_ORIGIN: base,
       ENABLE_DEMO: 'true',
@@ -79,7 +83,11 @@ before(async () => {
   pd = await login('pd');
   admin = await login('admin');
 });
-after(() => child?.kill());
+after(async () => {
+  child?.kill();
+  await new Promise((r) => setTimeout(r, 300));
+  await testDb?.close();
+});
 // 핑 충전(테스트 결제)과 핑으로 회차·작품 열기
 const chargePings = (cookie, productId = 'ping-10k', idempotencyKey = randomUUID()) =>
   request('/pings/charge', { method: 'POST', cookie, body: { productId, idempotencyKey } });
@@ -105,6 +113,34 @@ test('catalog contains original drama metadata and excludes private video URLs',
   assert.equal(d.data.episodes[2].locked, false);
   assert.equal(d.data.episodes[3].locked, true);
   assert.equal('video' in d.data.episodes[0], false);
+});
+test('share cards expose absolute images, item copy and public-only destinations', async () => {
+  const home = await fetch(base + '/');
+  const homeHtml = await home.text();
+  assert.equal(home.status, 200);
+  assert.match(homeHtml, /property="og:title" content="숏핑 \| 짧지만, 깊게 빠지다"/);
+  assert.match(homeHtml, new RegExp(`property="og:image" content="${base}/images/share-shortping.jpg"`));
+
+  const drama = await fetch(base + '/share/drama/midnight');
+  const dramaHtml = await drama.text();
+  assert.equal(drama.status, 200);
+  assert.match(dramaHtml, /property="og:title" content="자정의 계약 \| 숏핑"/);
+  assert.match(dramaHtml, /property="og:description" content="로맨스 · /);
+  assert.match(dramaHtml, /href="http:\/\/127\.0\.0\.1:5188\/#\/drama\/midnight"/);
+  assert.match(dramaHtml, /src="\/share-redirect.js"/);
+  assert.equal((await fetch(base + '/share/drama/not-public')).status, 404);
+
+  const channels = (await request('/channels')).data;
+  const channel = await fetch(base + '/share/channel/' + channels[0].id);
+  assert.equal(channel.status, 200);
+  assert.match(await channel.text(), /방송국 \| 숏핑/);
+  assert.equal((await fetch(base + '/share/channel/not-public')).status, 404);
+
+  const image = await fetch(base + '/images/share-shortping.jpg');
+  assert.equal(image.status, 200);
+  assert.match(image.headers.get('content-type'), /image\/jpeg/);
+  assert.ok((await image.arrayBuffer()).byteLength > 10_000);
+  assert.match(socialTags({ title: '<홍길동 & 친구>', description: '"인용"', url: base, image: base }), /&lt;홍길동 &amp; 친구&gt;/);
 });
 test('free video supports byte ranges; premium video is protected server-side', async () => {
   const free = await fetch(base + '/api/play/midnight/1', { headers: { Range: 'bytes=0-1023' } });
@@ -390,16 +426,50 @@ test('PD submission -> admin rejection -> revision -> approval -> public playbac
       .status,
     206,
   );
+  // 공개된 회차는 그대로 두고 바꿀 수 없다(우회 수정 차단).
   assert.equal(
     (
       await request('/studio/dramas/' + created + '/episodes', {
         method: 'POST',
         cookie: pd,
-        body: { number: 2, title: '우회 수정', duration: 12, video: '/demo/preview.mp4' },
+        body: { number: 1, title: '우회 수정', duration: 12, video: '/demo/preview.mp4' },
       })
     ).status,
     409,
   );
+  // 번호를 건너뛴 회차는 올릴 수 없다.
+  assert.equal(
+    (await request('/studio/dramas/' + created + '/episodes', { method: 'POST', cookie: pd, body: { number: 3, title: '건너뜀', duration: 12, video: '/demo/preview.mp4' } })).status,
+    409,
+  );
+  // 연재: 새 회차(2화)는 올릴 수 있지만 회차 검수 전에는 시청자에게 보이지 않는다.
+  assert.equal(
+    (await request('/studio/dramas/' + created + '/episodes', { method: 'POST', cookie: pd, body: { number: 2, title: '새 회차', duration: 12, video: '/demo/preview.mp4' } })).status,
+    200,
+  );
+  assert.equal((await request('/dramas/' + created)).data.episodes.length, 1);
+  assert.equal((await request('/dramas/' + created, { cookie: pd })).data.episodes.length, 2);
+  assert.equal((await fetch(base + '/api/play/' + created + '/2', { headers: { cookie: admin, Range: 'bytes=0-20' } })).status, 206);
+  assert.equal((await request('/admin/episodes/review', { cookie: admin })).data.some((e) => e.drama_id === created), false);
+  assert.equal((await request(`/studio/dramas/${created}/episodes/2/submit`, { method: 'POST', cookie: pd, body: {} })).status, 200);
+  const queue = (await request('/admin/episodes/review', { cookie: admin })).data.filter((e) => e.drama_id === created);
+  assert.equal(queue.length, 1);
+  assert.equal((await request('/admin/episodes/' + queue[0].id + '/review', { method: 'POST', cookie: admin, body: { status: 'rejected' } })).status, 400);
+  assert.equal((await request('/admin/episodes/' + queue[0].id + '/review', { method: 'POST', cookie: admin, body: { status: 'approved' } })).data.status, 'approved');
+  assert.equal((await request('/dramas/' + created)).data.episodes.length, 2);
+  // 승인된 회차는 다시 바꿀 수 없다.
+  assert.equal(
+    (await request('/studio/dramas/' + created + '/episodes', { method: 'POST', cookie: pd, body: { number: 2, title: '또 수정', duration: 12, video: '/demo/preview.mp4' } })).status,
+    409,
+  );
+  // 예약 공개: 3화를 1초 뒤로 예약해 승인하면 예약 대기 후 공개된다.
+  await request('/studio/dramas/' + created + '/episodes', { method: 'POST', cookie: pd, body: { number: 3, title: '예약 회차', duration: 12, video: '/demo/preview.mp4' } });
+  const at = new Date(Date.now() + 1500).toISOString();
+  assert.equal((await request(`/studio/dramas/${created}/episodes/3/submit`, { method: 'POST', cookie: pd, body: { publish_at: at } })).status, 200);
+  const third = (await request('/admin/episodes/review', { cookie: admin })).data.find((e) => e.drama_id === created && e.number === 3);
+  assert.equal((await request('/admin/episodes/' + third.id + '/review', { method: 'POST', cookie: admin, body: { status: 'approved' } })).data.status, 'scheduled');
+  assert.equal((await request('/dramas/' + created)).data.episodes.length, 2);
+  assert.ok((await request('/notifications', { cookie: pd })).data.list.some((n) => n.kind === 'episode_review'));
 });
 test('admin user management, audit trail, and protected administrator', async () => {
   assert.equal(
@@ -428,7 +498,7 @@ test('admin user management, audit trail, and protected administrator', async ()
 });
 test('studio exposes operational and subscription data only to administrators', async () => {
   const a = await request('/studio', { cookie: admin });
-  assert.equal(a.data.operations.database, 'SQLite');
+  assert.equal(a.data.operations.database, process.env.TEST_PG_ADMIN_URL ? 'PostgreSQL' : 'SQLite');
   assert.equal(a.data.operations.demo, true);
   assert.ok(Array.isArray(a.data.subscriptions));
   const p = await request('/studio', { cookie: pd });
@@ -944,6 +1014,75 @@ test('only the super administrator can change the public home appearance', async
   assert.equal(changed.data.appearance.theme, 'fantasy');
   assert.equal(changed.data.appearance.image, '/images/home-fantasy.webp');
   assert.equal((await request('/config')).data.homeAppearance.description, body.description);
+});
+
+test('main page management: copy colors, layout curation, notice window and history restore', async () => {
+  const base = {
+    theme: 'fantasy',
+    eyebrow: 'STEP INTO ANOTHER WORLD',
+    headline: '상상 너머,',
+    highlight: '새로운 세계.',
+    description: '현실을 잠시 벗어나 보세요.',
+    caption: '짧은 장면에서 시작되는 큰 세계',
+    copyright: '© 2026 SHORTPING',
+  };
+  const style = { colors: { eyebrow: '', headline: '#ffffff', highlight: '#ff8fb1', description: '', caption: '#ffd66b', copyright: '' }, size: 'l', box: false, shadow: true, shade: 20, image: '', focus: 'left' };
+  // 잘못된 색은 거절
+  const bad = await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: { ...base, style: { ...style, colors: { ...style.colors, headline: 'red' } } } });
+  assert.equal(bad.status, 400);
+  // 다른 회원이 올린 사진은 배경으로 못 씀
+  const foreign = await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: { ...base, style: { ...style, image: '/uploads/00000000-0000-0000-0000-000000000000.jpg' } } });
+  assert.equal(foreign.status, 403);
+  const ok = await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: { ...base, style } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.data));
+  const cfg = (await request('/config')).data;
+  assert.equal(cfg.homeAppearance.style.colors.highlight, '#ff8fb1');
+  assert.equal(cfg.homeAppearance.style.box, false);
+  assert.equal(cfg.homeAppearance.style.size, 'l');
+  // 예전 방식(style 없이) 저장해도 글자 색 설정은 그대로
+  assert.equal((await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: base })).status, 200);
+  assert.equal((await request('/config')).data.homeAppearance.style.colors.caption, '#ffd66b');
+
+  // 메인 화면 구성: 추천 배너 직접 편성 · 섹션 숨김 · 에디터 추천 · 공지 기간
+  const catalog = (await request('/dramas')).data;
+  const past = new Date(Date.now() - 3600000).toISOString();
+  const future = new Date(Date.now() + 3600000).toISOString();
+  const layout = {
+    hero: { mode: 'manual', ids: [catalog[1].id, catalog[0].id], kicker: '이번 주 편성', interval: 8 },
+    sections: [{ id: 'free', visible: true, title: '공짜로 시작!', subtitle: '' }, { id: 'membership', visible: false, title: '', subtitle: '' }],
+    curated: { ids: [catalog[2].id] },
+    editorial: { eyebrow: 'HELLO', title: '첫 줄\n둘째 줄', button: '보러 가기', link: 'membership' },
+    notice: { enabled: true, text: '추석 연휴 무료 공개', link: 'https://example.com/event', tone: 'violet', start: past, end: future },
+  };
+  assert.equal((await request('/admin/home-layout', { method: 'PUT', cookie: pd, body: layout })).status, 403);
+  assert.equal((await request('/admin/home-layout', { method: 'PUT', cookie: admin, body: { ...layout, notice: { ...layout.notice, link: 'javascript:alert(1)' } } })).status, 400);
+  assert.equal((await request('/admin/home-layout', { method: 'PUT', cookie: admin, body: { ...layout, notice: { ...layout.notice, start: future, end: past } } })).status, 400);
+  const saved = await request('/admin/home-layout', { method: 'PUT', cookie: admin, body: layout });
+  assert.equal(saved.status, 200, JSON.stringify(saved.data));
+  // 빠진 섹션은 뒤에 기본값으로 채워지고 순서가 유지된다
+  assert.deepEqual(saved.data.layout.sections.slice(0, 2).map((s) => s.id), ['free', 'membership']);
+  assert.equal(saved.data.layout.sections.length, 10);
+  let pub = (await request('/config')).data.homeLayout;
+  assert.deepEqual(pub.hero.ids, layout.hero.ids);
+  assert.equal(pub.notice.text, '추석 연휴 무료 공개');
+  assert.equal(pub.notice.start, undefined); // 공개 설정에는 기간 정보를 싣지 않음
+  // 예약(아직 시작 전) 공지는 시청자에게 보이지 않음
+  await request('/admin/home-layout', { method: 'PUT', cookie: admin, body: { ...layout, notice: { ...layout.notice, start: future, end: '' } } });
+  pub = (await request('/config')).data.homeLayout;
+  assert.equal(pub.notice, null);
+  // 변경 기록과 되돌리기
+  const hist = await request('/admin/home-history', { cookie: admin });
+  assert.equal(hist.status, 200);
+  const prev = hist.data.find((h) => h.kind === 'layout' && h.data.notice.start === layout.notice.start);
+  assert.ok(prev);
+  assert.equal((await request(`/admin/home-history/${prev.id}/restore`, { method: 'POST', cookie: admin })).status, 200);
+  assert.equal((await request('/config')).data.homeLayout.notice.text, '추석 연휴 무료 공개');
+  assert.equal((await request('/admin/home-history', { cookie: pd })).status, 403);
+  // 원래대로(자동 · 공지 없음)
+  await request('/admin/home-layout', { method: 'PUT', cookie: admin, body: {} });
+  pub = (await request('/config')).data.homeLayout;
+  assert.equal(pub.hero.mode, 'auto');
+  assert.equal(pub.notice, null);
 });
 
 const publishDrama = async (overrides = {}) => {
