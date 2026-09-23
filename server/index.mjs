@@ -294,7 +294,7 @@ app.get('/api/config', async (req, res) => {
     pingUnitWon: settings.ping_unit_won,
     defaultEpisodePings: settings.default_episode_pings,
     titleUnlockDiscount: settings.title_unlock_discount,
-    homeAppearance: appearanceFromSettings(settings),
+    homeAppearance: appearanceFromSettings(settings, { live: true }),
     homeLayout: publicLayout(settings),
   });
 });

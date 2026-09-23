@@ -42,6 +42,8 @@ import {
   defaultHomeAppearance,
   defaultHomeLayout,
   defaultHomeStyle,
+  nextRotationAt,
+  rotationAt,
   type CopyKey,
   type HomeLayout,
   emptyLibrary,
@@ -287,6 +289,7 @@ export default function App() {
     [feed, setFeed] = useState('추천'),
     [query, setQuery] = useState(''),
     [heroIndex, setHeroIndex] = useState(0),
+    [rotationClock, setRotationClock] = useState(() => Date.now()),
     [checkout, setCheckout] = useState<Purchase | null>(null),
     [busy, setBusy] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
@@ -356,6 +359,14 @@ export default function App() {
     const t = setTimeout(() => setToast(''), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+  // 여백 로테이션: 다음 교체 시각에 맞춰 화면을 다시 그립니다.
+  const rotationHours = config.homeAppearance.rotation?.hours || 0;
+  useEffect(() => {
+    if (!rotationHours) return;
+    const wait = Math.max(1000, nextRotationAt(rotationHours) - Date.now() + 1000);
+    const t = setTimeout(() => setRotationClock(Date.now()), Math.min(wait, 2147483000));
+    return () => clearTimeout(t);
+  }, [rotationHours, rotationClock]);
   // 추천 배너 자동 넘김: 관리자 설정(0 = 기본 6.5초, -1 = 끄기, 그 밖은 초)
   const heroSetting = config.homeLayout?.hero || defaultHomeLayout.hero;
   const heroCount =
@@ -539,11 +550,29 @@ export default function App() {
           ? 'channels'
           : route.page;
   const managing = route.page === 'studio' && !!user && user.role !== 'viewer';
+  // 여백 로테이션이 켜져 있으면 지금 시각의 테마로(화면을 켜 둔 채 교체 시각이 지나도 바뀌게)
+  const rotation = config.homeAppearance.rotation;
+  const rotatingNow = rotation ? rotationAt(rotation, rotationClock) : null;
+  const homeLook = rotatingNow
+    ? {
+        ...config.homeAppearance,
+        image: rotatingNow.image,
+        ...(rotation?.copy
+          ? {
+              eyebrow: rotatingNow.eyebrow,
+              headline: rotatingNow.headline,
+              highlight: rotatingNow.highlight,
+              description: rotatingNow.description,
+              caption: rotatingNow.caption,
+            }
+          : {}),
+      }
+    : config.homeAppearance;
   // PC 여백: 관리자가 정한 배경 사진·초점·어둡기와 카피 글자 색을 CSS 변수로 넘깁니다(빈 값이면 기본 색).
   const homeStyle = { ...defaultHomeStyle, ...(config.homeAppearance.style || {}) };
   const copyColor = (k: CopyKey) => (homeStyle.colors?.[k] ? { [`--copy-${k}`]: homeStyle.colors[k] } : {});
   const siteStyle = {
-    '--home-wallpaper': `url("${asset(config.homeAppearance.image)}")`,
+    '--home-wallpaper': `url("${asset(homeLook.image)}")`,
     '--home-focus': homeStyle.focus,
     '--home-shade': String(Math.min(80, Math.max(0, Number(homeStyle.shade) || 0)) / 100),
     ...copyColor('eyebrow'),
@@ -563,14 +592,14 @@ export default function App() {
         </a>
         <div className={`rail-copy copy-${homeStyle.size}${homeStyle.box ? ' boxed' : ''}${homeStyle.shadow ? '' : ' no-shadow'}`}>
           <span className="eyebrow">
-            <span /> {config.homeAppearance.eyebrow}
+            <span /> {homeLook.eyebrow}
           </span>
           <h1>
-            {config.homeAppearance.headline}
+            {homeLook.headline}
             <br />
-            <em>{config.homeAppearance.highlight}</em>
+            <em>{homeLook.highlight}</em>
           </h1>
-          <p>{config.homeAppearance.description}</p>
+          <p>{homeLook.description}</p>
         </div>
         <div className="rail-art">
           <div className="art-orbit" />
@@ -593,9 +622,9 @@ export default function App() {
           <span className="art-spark">✳</span>
         </div>
         <div className={'rail-caption' + (homeStyle.shadow ? '' : ' no-shadow')}>
-          <span className="green-dot" /> {config.homeAppearance.caption}
+          <span className="green-dot" /> {homeLook.caption}
         </div>
-        <small className="rail-copyright">{config.homeAppearance.copyright}</small>
+        <small className="rail-copyright">{homeLook.copyright}</small>
       </aside>
       <div
         className={'app-shell ' + (['watch'].includes(route.page) ? 'watch-shell' : '')}

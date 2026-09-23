@@ -14,6 +14,9 @@ export const styleSchema = z.object({
   shade: z.number().int().min(0).max(80).default(0), // 배경 사진을 더 어둡게(%)
   image: z.union([z.literal(''), z.string().regex(/^\/(images\/[a-z0-9-]+\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/)]).default(''),
   focus: z.enum(['center', 'top', 'bottom', 'left', 'right']).default('center'),
+  // 여백 로테이션: 켜면 5개 테마 사진을 4시간마다 돌아가며 보여 줍니다(끄면 고른 테마·사진).
+  rotate: z.boolean().default(false),
+  rotateCopy: z.boolean().default(false), // 로테이션 때 문구도 그 테마 문구로 함께 바꾸기
 });
 export const defaultStyle = styleSchema.parse({});
 export function styleOf(raw) {

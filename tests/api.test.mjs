@@ -1085,6 +1085,45 @@ test('main page management: copy colors, layout curation, notice window and hist
   assert.equal(pub.notice, null);
 });
 
+test('main page margin rotation: every 4 hours through the 5 themes, off = chosen theme', async () => {
+  const { rotationTheme } = await import('../server/home-appearance.mjs');
+  const body = {
+    theme: 'classic',
+    eyebrow: 'MY COPY',
+    headline: '내 문구,',
+    highlight: '그대로.',
+    description: '관리자가 쓴 설명',
+    caption: '관리자 캡션',
+    copyright: '© 2026 SHORTPING',
+  };
+  const style = { colors: {}, rotate: true, rotateCopy: false };
+  assert.equal((await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: { ...body, style } })).status, 200);
+  let live = (await request('/config')).data.homeAppearance;
+  const cur = rotationTheme();
+  assert.equal(live.image, cur.image);
+  assert.equal(live.headline, '내 문구,'); // 문구는 그대로
+  assert.equal(live.rotation.themes.length, 5);
+  assert.equal(live.rotation.hours, 4);
+  // 관리자 편집 화면에는 저장한 테마 그대로
+  const panel = (await request('/admin/home-appearance', { cookie: admin })).data.appearance;
+  assert.equal(panel.theme, 'classic');
+  assert.equal(panel.style.rotate, true);
+  // 문구도 함께 바꾸기
+  await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: { ...body, style: { ...style, rotateCopy: true } } });
+  live = (await request('/config')).data.homeAppearance;
+  assert.equal(live.headline, cur.headline);
+  // 4시간 칸이 바뀌면 다음 테마, 5칸이 지나면 한 바퀴
+  const t = Date.UTC(2026, 8, 23, -9); // 한국 시각 0시
+  assert.notEqual(rotationTheme(t).id, rotationTheme(t + 4 * 3600000).id);
+  assert.equal(rotationTheme(t).id, rotationTheme(t + 3.9 * 3600000).id);
+  assert.equal(rotationTheme(t).id, rotationTheme(t + 20 * 3600000).id);
+  // 끄면 고른 테마
+  await request('/admin/home-appearance', { method: 'PUT', cookie: admin, body: { ...body, style: { ...style, rotate: false } } });
+  live = (await request('/config')).data.homeAppearance;
+  assert.equal(live.image, '/images/home-classic.webp');
+  assert.equal(live.rotation, undefined);
+});
+
 const publishDrama = async (overrides = {}) => {
   const created = await request('/studio/dramas', {
     method: 'POST',

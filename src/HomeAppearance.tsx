@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import {
   api,
+  rotationSlot,
   defaultHomeAppearance,
   defaultHomeLayout,
   defaultHomeStyle,
@@ -53,6 +54,7 @@ const toAdminLayout = (l?: Partial<HomeLayout> | null): AdminLayout => ({
 });
 const withStyle = (a: Appearance): Appearance => ({ ...a, style: { ...defaultHomeStyle, ...(a.style || {}), colors: { ...defaultHomeStyle.colors, ...(a.style?.colors || {}) } } });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const ROTATE_HOURS = 4;
 
 // 카피 기본 색(빈 값일 때 실제 화면에 쓰이는 색) — 색 고르기 칸의 시작 색으로 보여 줍니다.
 const COPY_DEFAULT: Record<CopyKey, string> = {
@@ -314,7 +316,19 @@ function MarginTab({
   const [uploading, setUploading] = useState(false);
   const file = useRef<HTMLInputElement>(null);
   const themeImage = themes.find((t) => t.id === appearance.theme)?.image || appearance.themeImage || appearance.image;
-  const bg = style.image || themeImage;
+  // 여백 로테이션(4시간마다 5개 테마): 켜져 있으면 미리보기는 지금 차례 테마로 보여 줍니다.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+  const slot = rotationSlot(ROTATE_HOURS, now);
+  const current = style.rotate && themes.length ? themes[slot % themes.length] : null;
+  const schedule = themes.length
+    ? Array.from({ length: 6 }, (_, i) => ({ at: (slot + i) * ROTATE_HOURS * 3600000 - 9 * 3600000, theme: themes[(slot + i) % themes.length] }))
+    : [];
+  const bg = current ? current.image : style.image || themeImage;
+  const shown = current && style.rotateCopy ? { ...appearance, eyebrow: current.eyebrow, headline: current.headline, highlight: current.highlight, description: current.description, caption: current.caption } : appearance;
   const setStyle = (patch: Partial<HomeStyle>) => setAppearance((a) => ({ ...a, style: { ...(a.style || defaultHomeStyle), ...patch } }));
   const setColor = (k: CopyKey, v: string) => setStyle({ colors: { ...style.colors, [k]: v } });
   const change = (key: CopyKey, value: string) => setAppearance((current) => ({ ...current, [key]: value }));
@@ -351,6 +365,40 @@ function MarginTab({
   const tooShort = COPY_FIELDS.filter((f) => appearance[f.key].trim().length < 2);
   return (
     <>
+      <div className={'home-rotate' + (style.rotate ? ' on' : '')}>
+        <label className="home-switch">
+          <input type="checkbox" role="switch" aria-checked={style.rotate} checked={style.rotate} onChange={(e) => setStyle({ rotate: e.target.checked })} />
+          <i aria-hidden="true" />
+          <span>
+            <strong>여백 로테이션 {style.rotate ? '켜짐' : '꺼짐'}</strong>
+            <small>
+              {style.rotate
+                ? `${ROTATE_HOURS}시간마다 5개 테마 사진이 차례로 바뀌어요(한국 시각 0 · 4 · 8 · 12 · 16 · 20시). 끄면 아래에서 고른 테마가 적용돼요.`
+                : '켜면 5개 테마 사진이 4시간마다 돌아가며 적용돼요. 지금은 아래에서 고른 테마가 적용돼요.'}
+            </small>
+          </span>
+        </label>
+        {style.rotate && (
+          <>
+            <label className="inline-check">
+              <input type="checkbox" checked={style.rotateCopy} onChange={(e) => setStyle({ rotateCopy: e.target.checked })} /> 문구도 그 테마 문구로 함께 바꾸기
+              <small className="muted"> (끄면 아래 카피 편집 문구가 그대로 유지돼요)</small>
+            </label>
+            <ol className="home-rotate-schedule" aria-label="로테이션 순서">
+              {schedule.map(({ at, theme }, i) => (
+                <li key={at} className={i === 0 ? 'now' : ''}>
+                  <img src={asset(theme.image)} alt="" />
+                  <span>
+                    <b>{theme.name}</b>
+                    <small>{i === 0 ? `지금 ~ ${kst(new Date(at + ROTATE_HOURS * 3600000).toISOString()).split(' ').slice(-2).join(' ')}` : kst(new Date(at).toISOString())}</small>
+                  </span>
+                </li>
+              ))}
+            </ol>
+            {style.image && <p className="settings-note">로테이션 중에는 직접 올린 사진 대신 5개 테마 사진이 쓰여요. 로테이션을 끄면 올린 사진이 다시 적용돼요.</p>}
+          </>
+        )}
+      </div>
       <div className="home-theme-grid" role="radiogroup" aria-label="메인 여백 테마">
         {themes.map((theme) => (
           <button
@@ -469,20 +517,21 @@ function MarginTab({
               <Eye size={19} />
               <h2>PC 여백 미리보기</h2>
             </div>
+            {current && <small className="home-admin-pending">로테이션 · 지금 차례: {current.name}</small>}
             {dirty && <small className="home-admin-pending">아직 적용하지 않은 미리보기예요</small>}
           </div>
           <div className="home-preview-canvas" style={{ backgroundImage: `url(${asset(bg)})`, backgroundPosition: style.focus }}>
             <i className="home-preview-shade" style={{ opacity: style.shade / 100 }} />
             <div className={`home-preview-copy size-${style.size}${style.box ? ' boxed' : ''}${style.shadow ? '' : ' flat'}`}>
-              <span style={{ color: style.colors.eyebrow || undefined }}>{appearance.eyebrow}</span>
+              <span style={{ color: style.colors.eyebrow || undefined }}>{shown.eyebrow}</span>
               <h3 style={{ color: style.colors.headline || undefined }}>
-                {appearance.headline}
-                <em style={{ color: style.colors.highlight || undefined }}>{appearance.highlight}</em>
+                {shown.headline}
+                <em style={{ color: style.colors.highlight || undefined }}>{shown.highlight}</em>
               </h3>
-              <p style={{ color: style.colors.description || undefined }}>{appearance.description}</p>
+              <p style={{ color: style.colors.description || undefined }}>{shown.description}</p>
             </div>
             <div className={'home-preview-foot' + (style.shadow ? '' : ' flat')}>
-              <small style={{ color: style.colors.caption || undefined }}>● {appearance.caption}</small>
+              <small style={{ color: style.colors.caption || undefined }}>● {shown.caption}</small>
               <small style={{ color: style.colors.copyright || undefined }}>{appearance.copyright}</small>
             </div>
             <div className="home-preview-app">숏핑 메인 콘텐츠</div>
@@ -923,7 +972,7 @@ function HistoryTab({
     if (r.kind === 'appearance') {
       const d = r.data as Partial<Appearance> & { style?: HomeStyle };
       const colored = d.style ? Object.values(d.style.colors || {}).filter(Boolean).length : 0;
-      return `${d.headline || ''} ${d.highlight || ''} · 테마 ${d.theme}${d.style?.image ? ' · 직접 올린 사진' : ''}${colored ? ` · 글자 색 ${colored}곳` : ''}`;
+      return `${d.headline || ''} ${d.highlight || ''} · 테마 ${d.theme}${d.style?.image ? ' · 직접 올린 사진' : ''}${colored ? ` · 글자 색 ${colored}곳` : ''}${d.style?.rotate ? ' · 로테이션 켜짐' : ''}`;
     }
     const d = r.data as unknown as AdminLayout;
     const hidden = (d.sections || []).filter((s) => !s.visible).length;

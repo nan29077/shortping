@@ -58,10 +58,18 @@ export const homeThemes = [
   },
 ];
 
-export const appearanceFromSettings = (settings) => {
+// 여백 로테이션: 한국 시각 0·4·8·12·16·20시마다 다음 테마로 바뀝니다(5개를 차례로 돌아가며).
+export const ROTATE_HOURS = 4;
+export const rotationSlot = (now = Date.now()) => Math.floor((now + 9 * 3600000) / (ROTATE_HOURS * 3600000));
+export const rotationTheme = (now = Date.now()) => homeThemes[rotationSlot(now) % homeThemes.length];
+const COPY = ['eyebrow', 'headline', 'highlight', 'description', 'caption'];
+
+// live=true(시청자 화면): 로테이션이 켜져 있으면 지금 차례의 테마 사진(과 문구)을 돌려줍니다.
+// live=false(관리자 편집): 저장된 값 그대로.
+export const appearanceFromSettings = (settings, { live = false, now = Date.now() } = {}) => {
   const theme = homeThemes.find((item) => item.id === settings.home_theme) || homeThemes[0];
   const style = styleOf(settings.home_style);
-  return {
+  const base = {
     theme: theme.id,
     // 관리자가 올린 배경 사진이 있으면 테마 사진 대신 씁니다.
     image: style.image || theme.image,
@@ -73,5 +81,20 @@ export const appearanceFromSettings = (settings) => {
     description: settings.home_description,
     caption: settings.home_caption,
     copyright: settings.home_copyright,
+  };
+  if (!style.rotate) return base;
+  const rotation = {
+    hours: ROTATE_HOURS,
+    copy: style.rotateCopy,
+    themes: homeThemes.map((t) => ({ id: t.id, image: t.image, ...Object.fromEntries(COPY.map((k) => [k, t[k]])) })),
+  };
+  if (!live) return { ...base, rotation };
+  const current = rotationTheme(now);
+  return {
+    ...base,
+    theme: current.id,
+    image: current.image,
+    ...(style.rotateCopy ? Object.fromEntries(COPY.map((k) => [k, current[k]])) : {}),
+    rotation,
   };
 };

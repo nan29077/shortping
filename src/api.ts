@@ -11,7 +11,16 @@ export type HomeStyle = {
   shade: number;
   image: string;
   focus: 'center' | 'top' | 'bottom' | 'left' | 'right';
+  rotate: boolean;
+  rotateCopy: boolean;
 };
+export type HomeRotationTheme = { id: string; image: string; eyebrow: string; headline: string; highlight: string; description: string; caption: string };
+export type HomeRotation = { hours: number; copy: boolean; themes: HomeRotationTheme[] };
+// 여백 로테이션: 한국 시각 기준 N시간 단위 칸 번호(서버와 같은 계산)
+export const rotationSlot = (hours: number, now = Date.now()) => Math.floor((now + 9 * 3600000) / (hours * 3600000));
+export const rotationAt = (rotation: HomeRotation, now = Date.now()) => rotation.themes[rotationSlot(rotation.hours, now) % rotation.themes.length];
+// 다음 교체 시각(ms)
+export const nextRotationAt = (hours: number, now = Date.now()) => (rotationSlot(hours, now) + 1) * hours * 3600000 - 9 * 3600000;
 export const defaultHomeStyle: HomeStyle = {
   colors: { eyebrow: '', headline: '', highlight: '', description: '', caption: '', copyright: '' },
   size: 'm',
@@ -20,12 +29,15 @@ export const defaultHomeStyle: HomeStyle = {
   shade: 0,
   image: '',
   focus: 'center',
+  rotate: false,
+  rotateCopy: false,
 };
 export type HomeAppearance = {
   theme: 'cinematic' | 'bright' | 'fantasy' | 'classic' | 'medieval';
   image: string;
   themeImage?: string;
   style?: HomeStyle;
+  rotation?: HomeRotation;
   eyebrow: string;
   headline: string;
   highlight: string;

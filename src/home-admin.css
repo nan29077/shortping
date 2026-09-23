@@ -534,3 +534,124 @@
 .home-copy-editor .panel-heading p {
   margin-top: 0;
 }
+/* 여백 로테이션 스위치 */
+.home-rotate {
+  border: 1px solid #2b3a33;
+  border-radius: 16px;
+  background: #141e1c;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.home-rotate.on {
+  border-color: #bfe95d66;
+  background: linear-gradient(135deg, #1b2a1a, #141e1c);
+}
+.home-switch {
+  display: flex !important;
+  align-items: center;
+  gap: 14px;
+  margin: 0 !important;
+  cursor: pointer;
+}
+.home-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.home-switch > i {
+  flex: none;
+  position: relative;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  background: #34413b;
+  transition: background 0.2s;
+}
+.home-switch > i::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #dfe8e2;
+  transition: transform 0.2s;
+}
+.home-switch input:checked + i {
+  background: var(--lime);
+}
+.home-switch input:checked + i::after {
+  transform: translateX(20px);
+  background: #14200e;
+}
+.home-switch input:focus-visible + i {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+.home-switch > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.home-switch strong {
+  font-size: 14px;
+  color: #edf4ee;
+}
+.home-switch small {
+  font-size: 11px;
+  color: #8fa197;
+  line-height: 1.6;
+}
+.home-rotate .inline-check {
+  margin: 0;
+  font-size: 11px;
+}
+.home-rotate-schedule {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+.home-rotate-schedule li {
+  border: 1px solid #2b3a33;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #101917;
+}
+.home-rotate-schedule li.now {
+  border-color: var(--lime);
+}
+.home-rotate-schedule img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+}
+.home-rotate-schedule span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+}
+.home-rotate-schedule b {
+  font-size: 11px;
+}
+.home-rotate-schedule small {
+  font-size: 9px;
+  color: #8fa197;
+}
+.home-rotate-schedule li.now small {
+  color: var(--lime);
+}
+@media (max-width: 900px) {
+  .home-rotate-schedule {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
