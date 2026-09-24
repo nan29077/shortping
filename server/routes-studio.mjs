@@ -116,7 +116,7 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
           .regex(/^#[0-9a-fA-F]{6}$/)
           .default('#c4f562'),
         theme: z.enum(['lime', 'coral', 'ocean', 'violet', 'sand', 'mono']).default('lime'),
-        banner_fit: z.enum(['contain', 'cover']).default('contain'),
+        banner_fit: z.enum(['contain', 'cover']).default('cover'),
         overlay: z.number().int().min(0).max(90).default(45),
         greeting: z.string().trim().max(120).default(''),
         status: z.enum(['draft', 'active', 'hidden']).default('draft'),

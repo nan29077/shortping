@@ -32,7 +32,7 @@ export const channelStyle = (c: Pick<Channel, 'accent' | 'overlay'>) =>
     '--channel-veil': String(Math.min(90, Math.max(0, c.overlay ?? 45)) / 100),
   }) as React.CSSProperties;
 
-// 배너는 잘라내지 않습니다. 원본을 전부 보여주고 빈 자리는 같은 이미지를 흐리게 깔아 채웁니다.
+// 배너는 기본으로 배너 영역을 가득 채웁니다. PD가 '원본 전체 보이기'를 고르면 잘라내지 않고 빈 자리를 같은 이미지를 흐리게 깔아 채웁니다.
 export function ChannelBanner({ channel, tall = false }: { channel: BannerSource; tall?: boolean }) {
   return (
     <div className={'channel-hero' + (tall ? ' tall' : '')} style={channelStyle(channel)}>
@@ -46,7 +46,7 @@ export function ChannelBanner({ channel, tall = false }: { channel: BannerSource
           />
           <img
             className={
-              'channel-hero-image ' + (channel.banner_fit === 'cover' ? 'cover' : 'contain')
+              'channel-hero-image ' + (channel.banner_fit === 'contain' ? 'contain' : 'cover')
             }
             src={asset(channel.banner)}
             alt=""

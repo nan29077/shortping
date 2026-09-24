@@ -671,6 +671,36 @@ export type AiModelOption = {
   max_seconds: number;
   tags: string;
   cooling?: boolean;
+  kind?: string;
+  family?: string;
+  image_input?: boolean;
+  stats?: { jobs: number; success: number | null; seconds: number | null } | null;
+};
+// AI 계열(브랜드) 안내: 무엇을 할 수 있는지(연결 여부와 별개)
+export type AiFamily = { id: string; name: string; maker: string; caps: Capability[]; note: string };
+export type StudioFeatures = {
+  assistant: boolean;
+  assistant_daily_limit: number;
+  upload: { enabled: boolean; image_mb: number; video_mb: number; video_seconds: number; audio_mb: number; audio_seconds: number };
+};
+// 자동 선택 설명('왜 이 모델?')
+export type ModelWhy = { id: string; label: string; provider: string; tier: string; lama: number; rank: number; why: string[]; success: number | null; seconds: number | null };
+export const tagLabel: Record<string, string> = {
+  dialogue: '대사',
+  closeup: '클로즈업',
+  action: '액션',
+  landscape: '풍경',
+  cinematic: '영화 같은 화면',
+  character: '인물',
+  consistency: '인물 일관성',
+  lipsync: '입 모양',
+  poster: '포스터',
+  korean: '한국어',
+  story: '이야기 구성',
+  emotion: '감정 표현',
+  fast: '빠름',
+  cheap: '저렴',
+  scene: '장면',
 };
 export type StudioProject = {
   id: string;
@@ -700,6 +730,7 @@ export type StudioProject = {
   trailer_status?: string;
   meta?: string;
   resolution?: string;
+  budget_lama?: number;
   created_at: string;
   updated_at: string;
   episode_total?: number;
@@ -712,6 +743,8 @@ export type AiOverview = {
   wallet: LamaWallet;
   enabled: boolean;
   models: AiModelOption[];
+  families?: AiFamily[];
+  features?: StudioFeatures;
   genres: string[];
   projects: StudioProject[];
 };
@@ -801,6 +834,9 @@ export type StudioJob = {
   finished_at: string | null;
   model_label: string | null;
   requested_model: string;
+  attempts?: number;
+  model_ref?: string | null;
+  tier?: string;
 };
 export type StudioAsset = {
   id: string;
@@ -824,6 +860,32 @@ export type StudioProjectDetail = {
   autopilot: Autopilot | null;
   locations?: StudioLocation[];
   renders?: StudioRender[];
+  chat?: StudioChat[];
+};
+// AI 조수 대화·실행 계획
+export type AssistantAction = {
+  type: string;
+  label: string;
+  what?: string;
+  reason?: string;
+  cap?: string;
+  ok: boolean;
+  note?: string;
+  error?: string;
+  lama?: number;
+  jobs?: number;
+  model?: string;
+  fields?: Record<string, string | number>;
+  before?: Record<string, string | number>;
+};
+export type StudioChat = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  plan: AssistantAction[];
+  status: '' | 'thinking' | 'ready' | 'applying' | 'applied' | 'done' | 'declined' | 'failed' | 'undone';
+  result: { results: { i: number; ok?: boolean; skipped?: boolean; message?: string }[] } | null;
+  created_at: string;
 };
 export type AutopilotChoice = { requested: string; tier: 'draft' | 'standard' | 'premium' };
 export type Autopilot = {
@@ -953,8 +1015,12 @@ export type AiModelRow = {
   active: number;
   priority: number;
   notes: string;
+  family?: string;
+  stats?: { jobs: number; success: number | null; seconds: number | null } | null;
 };
 export type AdminAi = {
+  families?: AiFamily[];
+  assistant?: { today: number; applied: number; cost_won: number };
   settings: PlatformSettings & Record<string, number | string>;
   catalog: Record<string, { label: string; capabilities: Capability[]; base: string; secretLabel: string }>;
   presets: { kind: string; name: string; country: string; base_url: string; models: number; capabilities: Capability[] }[];

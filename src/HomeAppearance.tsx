@@ -191,6 +191,38 @@ export default function HomeAppearance({
       setBusy(false);
     }
   }
+  // 로테이션 스위치는 누르는 즉시 저장합니다(다른 편집 중인 내용은 그대로 두고 로테이션 설정만).
+  async function applyRotation(patch: Partial<Pick<HomeStyle, 'rotate' | 'rotateCopy'>>) {
+    setBusy(true);
+    try {
+      const s0 = savedAppearance;
+      const style = { ...(s0.style || defaultHomeStyle), ...patch };
+      const result = await api<{ appearance: Appearance }>('/admin/home-appearance', 'PUT', {
+        theme: s0.theme,
+        eyebrow: s0.eyebrow,
+        headline: s0.headline,
+        highlight: s0.highlight,
+        description: s0.description,
+        caption: s0.caption,
+        copyright: s0.copyright,
+        style,
+      });
+      const next = withStyle(result.appearance);
+      // 서버가 로테이션 설정을 모르는 옛 버전이면(서버를 다시 켜지 않음) 저장되지 않으므로 알려 줍니다.
+      if (patch.rotate !== undefined && !!next.style?.rotate !== patch.rotate) {
+        notify('로테이션 설정이 저장되지 않았어요. 서버를 다시 켠 뒤(npm run dev) 다시 시도해 주세요.');
+        return;
+      }
+      setSavedAppearance(next);
+      setAppearance((a) => withStyle({ ...a, style: { ...(a.style || defaultHomeStyle), ...patch } }));
+      onAppearance(result.appearance);
+      notify(patch.rotate === undefined ? '문구 로테이션 설정을 적용했어요.' : patch.rotate ? '여백 로테이션을 켰어요. 4시간마다 테마가 바뀌어요.' : '여백 로테이션을 껐어요. 고른 테마가 적용돼요.');
+    } catch (error) {
+      notify((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function saveLayout(message: string) {
     setBusy(true);
     try {
@@ -261,6 +293,7 @@ export default function HomeAppearance({
           busy={busy}
           dirty={appearanceDirty}
           save={() => void saveAppearance()}
+          applyRotation={(p) => void applyRotation(p)}
           notify={notify}
         />
       )}
@@ -301,6 +334,7 @@ function MarginTab({
   busy,
   dirty,
   save,
+  applyRotation,
   notify,
 }: {
   appearance: Appearance;
@@ -310,6 +344,7 @@ function MarginTab({
   busy: boolean;
   dirty: boolean;
   save: () => void;
+  applyRotation: (p: Partial<Pick<HomeStyle, 'rotate' | 'rotateCopy'>>) => void;
   notify: (s: string) => void;
 }) {
   const style = appearance.style || defaultHomeStyle;
@@ -325,8 +360,21 @@ function MarginTab({
   const slot = rotationSlot(ROTATE_HOURS, now);
   const current = style.rotate && themes.length ? themes[slot % themes.length] : null;
   const schedule = themes.length
-    ? Array.from({ length: 6 }, (_, i) => ({ at: (slot + i) * ROTATE_HOURS * 3600000 - 9 * 3600000, theme: themes[(slot + i) % themes.length] }))
+    ? Array.from({ length: themes.length }, (_, i) => ({ at: (slot + i) * ROTATE_HOURS * 3600000 - 9 * 3600000, theme: themes[(slot + i) % themes.length] }))
     : [];
+  // 지금 메인페이지에 실제로 적용 중인 여백(저장된 값 기준)
+  const liveStyle = saved.style || defaultHomeStyle;
+  const liveTheme = themes.find((t) => t.id === saved.theme);
+  const liveRotating = !!liveStyle.rotate && themes.length > 0;
+  const liveCurrent = liveRotating ? themes[slot % themes.length] : null;
+  const liveNext = liveRotating ? themes[(slot + 1) % themes.length] : null;
+  const slotStart = slot * ROTATE_HOURS * 3600000 - 9 * 3600000;
+  const slotEnd = slotStart + ROTATE_HOURS * 3600000;
+  const left = Math.max(0, slotEnd - now);
+  const leftText = `${Math.floor(left / 3600000)}시간 ${Math.floor((left % 3600000) / 60000)}분`;
+  const hm = (ms: number) => new Date(ms).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' });
+  const liveImage = liveCurrent ? liveCurrent.image : liveStyle.image || liveTheme?.image || saved.image;
+  const liveName = liveCurrent ? liveCurrent.name : liveStyle.image ? '직접 올린 사진' : liveTheme?.name || saved.theme;
   const bg = current ? current.image : style.image || themeImage;
   const shown = current && style.rotateCopy ? { ...appearance, eyebrow: current.eyebrow, headline: current.headline, highlight: current.highlight, description: current.description, caption: current.caption } : appearance;
   const setStyle = (patch: Partial<HomeStyle>) => setAppearance((a) => ({ ...a, style: { ...(a.style || defaultHomeStyle), ...patch } }));
@@ -365,23 +413,39 @@ function MarginTab({
   const tooShort = COPY_FIELDS.filter((f) => appearance[f.key].trim().length < 2);
   return (
     <>
-      <div className={'home-rotate' + (style.rotate ? ' on' : '')}>
+      <div className="home-live" aria-live="polite">
+        <img src={asset(liveImage)} alt={`${liveName} 여백`} />
+        <div>
+          <span className="home-live-label">지금 메인페이지에 적용 중</span>
+          <strong>{liveName}</strong>
+          {liveCurrent ? (
+            <small>
+              여백 로테이션 · {hm(slotStart)} ~ {hm(slotEnd)} · 다음 교체까지 {leftText} · 다음 차례 <b>{liveNext?.name}</b>
+              {liveStyle.rotateCopy ? ' · 문구도 테마 문구로 표시' : ' · 문구는 카피 편집 내용'}
+            </small>
+          ) : (
+            <small>{liveStyle.image ? '고정 · 직접 올린 사진' : '고정 테마'} · 로테이션 꺼짐</small>
+          )}
+        </div>
+      </div>
+      <div className={'home-rotate' + (liveStyle.rotate ? ' on' : '')}>
         <label className="home-switch">
-          <input type="checkbox" role="switch" aria-checked={style.rotate} checked={style.rotate} onChange={(e) => setStyle({ rotate: e.target.checked })} />
+          <input type="checkbox" role="switch" aria-checked={!!liveStyle.rotate} checked={!!liveStyle.rotate} disabled={busy} onChange={(e) => applyRotation({ rotate: e.target.checked })} />
           <i aria-hidden="true" />
           <span>
-            <strong>여백 로테이션 {style.rotate ? '켜짐' : '꺼짐'}</strong>
+            <strong>여백 로테이션 {liveStyle.rotate ? '켜짐' : '꺼짐'}</strong>
             <small>
-              {style.rotate
+              {liveStyle.rotate
                 ? `${ROTATE_HOURS}시간마다 5개 테마 사진이 차례로 바뀌어요(한국 시각 0 · 4 · 8 · 12 · 16 · 20시). 끄면 아래에서 고른 테마가 적용돼요.`
                 : '켜면 5개 테마 사진이 4시간마다 돌아가며 적용돼요. 지금은 아래에서 고른 테마가 적용돼요.'}
+              {' '}스위치를 누르면 바로 저장돼요.
             </small>
           </span>
         </label>
-        {style.rotate && (
+        {liveStyle.rotate && (
           <>
             <label className="inline-check">
-              <input type="checkbox" checked={style.rotateCopy} onChange={(e) => setStyle({ rotateCopy: e.target.checked })} /> 문구도 그 테마 문구로 함께 바꾸기
+              <input type="checkbox" checked={!!liveStyle.rotateCopy} disabled={busy} onChange={(e) => applyRotation({ rotateCopy: e.target.checked })} /> 문구도 그 테마 문구로 함께 바꾸기
               <small className="muted"> (끄면 아래 카피 편집 문구가 그대로 유지돼요)</small>
             </label>
             <ol className="home-rotate-schedule" aria-label="로테이션 순서">
@@ -395,7 +459,7 @@ function MarginTab({
                 </li>
               ))}
             </ol>
-            {style.image && <p className="settings-note">로테이션 중에는 직접 올린 사진 대신 5개 테마 사진이 쓰여요. 로테이션을 끄면 올린 사진이 다시 적용돼요.</p>}
+            {liveStyle.image && <p className="settings-note">로테이션 중에는 직접 올린 사진 대신 5개 테마 사진이 쓰여요. 로테이션을 끄면 올린 사진이 다시 적용돼요.</p>}
           </>
         )}
       </div>
@@ -419,6 +483,8 @@ function MarginTab({
                 <Check size={14} />
               </i>
             )}
+            {(liveCurrent ? liveCurrent.id === theme.id : !liveStyle.image && saved.theme === theme.id) && <em className="home-theme-live">지금 적용 중</em>}
+            {liveRotating && appearance.theme === theme.id && !style.image && <em className="home-theme-picked">로테이션 끄면 적용</em>}
           </button>
         ))}
       </div>

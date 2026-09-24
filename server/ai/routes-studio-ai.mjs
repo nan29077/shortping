@@ -40,6 +40,10 @@ import {
 } from './prompts.mjs';
 import { studioPlusRoutes } from './studio-plus.mjs';
 import { notify } from '../notify.mjs';
+import { familyList } from './model-guide.mjs';
+import { assistantRoutes } from './assistant.mjs';
+import { shotMediaRoutes } from './shot-media.mjs';
+import { qualityRoutes } from './quality.mjs';
 
 // 숏핑 스튜디오(AI 제작) API: 프로젝트 → 기획 → 캐릭터 → 대본(컷) → 스토리보드 → 음성 → 영상 → 합성 → 작품으로 내보내기·검수 신청.
 // 비용이 드는 단계는 모두 AI 작업 대기열(engine)을 거치고, 라마 예약·차감·반환은 엔진이 맡습니다.
@@ -76,6 +80,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (!p || (p.owner_id !== req.user.id && req.user.role !== 'admin')) fail(404, '프로젝트를 찾을 수 없어요.');
     return p;
   };
+  let chatApi = null; // AI 조수(assistant.mjs) — 아래에서 연결
   const touch = (id) => db.run('UPDATE studio_projects SET updated_at=? WHERE id=?', [now(), id]);
   const charactersOf = (pid) => db.all('SELECT * FROM studio_characters WHERE project_id=? ORDER BY sort_order, name', [pid]);
   const episodesOf = (pid) => db.all('SELECT * FROM studio_episodes WHERE project_id=? ORDER BY number', [pid]);
@@ -649,17 +654,19 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     fail(400, '알 수 없는 작업이에요.');
   }
   // 회차 단위 일괄 작업: 아직 결과가 없는 컷만 대상으로 합니다.
-  async function batchTargets(p, action, episodeId) {
+  // chosen: 고른 컷만(이미 결과가 있어도 다시 만듦 — 여러 컷 골라 한 번에 다시 만들기)
+  async function batchTargets(p, action, episodeId, chosen = null) {
     const e = await db.get('SELECT * FROM studio_episodes WHERE id=? AND project_id=?', [episodeId, p.id]);
     if (!e) fail(404, '회차를 찾을 수 없어요.');
-    const shots = await shotsOf(e.id);
+    const all = await shotsOf(e.id);
+    const shots = chosen ? all.filter((s) => chosen.includes(s.id)) : all;
     const busy = new Set(
       (await db.all("SELECT target_id FROM ai_jobs WHERE project_id=? AND target_type='shot' AND kind=? AND status IN ('queued','running')", [p.id, action])).map((r) => r.target_id),
     );
     const col = { shot_image: 'image', shot_tts: 'audio', shot_video: 'video', shot_lipsync: 'lipsync', shot_sfx: 'sfx' }[action];
     return shots.filter(
       (s) =>
-        !s[col] &&
+        (chosen || !s[col]) &&
         !busy.has(s.id) &&
         // 화면 묘사가 빈 컷은 이미지·영상 일괄 작업에서 빼서 라마가 헛되이 쓰이지 않게 합니다.
         (!['shot_image', 'shot_video'].includes(action) || String(s.visual || '').trim()) &&
@@ -694,6 +701,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     requested: z.string().max(80).default('auto'),
     tier: z.enum(['draft', 'standard', 'premium']).default('standard'),
     idempotencyKey: z.string().uuid().optional(),
+    budgetOk: z.boolean().optional(), // 프로젝트 예산을 넘어도 진행(PD가 확인함)
   });
   async function plan(req, p, b) {
     if (!PROJECT_ACTIONS.includes(b.action) && !b.targetId) fail(400, '작업 대상을 선택해 주세요.');
@@ -712,8 +720,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     }
     if (b.action.startsWith('batch_')) {
       const action = b.action.slice(6);
-      const targets = await batchTargets(p, action, b.targetId);
-      if (!targets.length) fail(400, '새로 만들 컷이 없어요. 이미 결과가 있거나 진행 중이에요.');
+      const chosen = b.options.shotIds?.length ? b.options.shotIds : null;
+      const targets = await batchTargets(p, action, b.targetId, chosen);
+      if (!targets.length) fail(400, chosen ? '고른 컷 중에 만들 수 있는 컷이 없어요(진행 중이거나 필요한 내용이 비어 있어요).' : '새로 만들 컷이 없어요. 이미 결과가 있거나 진행 중이에요.');
       const specs = [];
       for (const t of targets) specs.push(await buildJob(req, p, action, t.id));
       return specs;
@@ -732,6 +741,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       wallet: await lamaWalletOf(db, req.user.id),
       enabled: !!Number(settings.ai_enabled),
       models: await engine.listForPicker(null, settings),
+      families: familyList(),
+      features: featuresOf(settings),
       genres: GENRES,
       projects: await db.all(
         "SELECT p.*, (SELECT COUNT(*) FROM studio_episodes e WHERE e.project_id=p.id) AS episode_total, (SELECT COUNT(*) FROM studio_episodes e WHERE e.project_id=p.id AND e.video<>'') AS composed, (SELECT COALESCE(SUM(j.charged_lama),0) FROM ai_jobs j WHERE j.project_id=p.id AND j.status='succeeded') AS spent FROM studio_projects p WHERE p.owner_id=? ORDER BY p.updated_at DESC",
@@ -739,10 +750,44 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       ),
     });
   });
+  // 모델 센터: 작업별로 '지금 자동이면 어떤 모델을 왜 고르는지' 알려 줍니다(라마 들지 않음).
+  const DEFAULT_TAGS = { text: ['story', 'korean'], image: ['character', 'consistency'], video: ['cinematic'], tts: ['korean'], music: ['emotion'], sfx: ['scene'], lipsync: ['lipsync'] };
+  const DEFAULT_INPUT = { text: { prompt: 'x'.repeat(2000), maxTokens: 4000 }, image: { count: 1 }, video: { seconds: 5 }, tts: { text: 'x'.repeat(100) }, music: { seconds: 30 }, sfx: { seconds: 4 }, lipsync: { seconds: 5 } };
+  app.post('/api/studio/ai/models/explain', roles('pd', 'admin'), async (req, res) => {
+    const b = z
+      .object({
+        items: z.array(z.object({ capability: z.enum(['text', 'image', 'video', 'tts', 'music', 'sfx', 'lipsync']), tier: z.enum(['draft', 'standard', 'premium']).default('standard') })).max(10),
+        projectId: z.string().max(80).optional(),
+      })
+      .parse(req.body);
+    const p = b.projectId ? await project(req, b.projectId) : null;
+    const out = {};
+    for (const it of b.items) {
+      try {
+        out[it.capability] = await engine.explain({ capability: it.capability, tier: it.tier, tags: DEFAULT_TAGS[it.capability], seconds: DEFAULT_INPUT[it.capability].seconds, input: DEFAULT_INPUT[it.capability], excludeCn: !!Number(p?.exclude_cn) });
+      } catch {
+        out[it.capability] = [];
+      }
+    }
+    res.json(out);
+  });
   app.post('/api/studio/ai/terms', roles('pd', 'admin'), async (req, res) => {
     z.object({ agree: z.literal(true), version: z.literal(TERMS_VERSION) }).parse(req.body);
     await db.run('UPDATE user_profiles SET studio_terms_at=? WHERE user_id=?', [now(), req.user.id]);
     res.json({ ok: true });
+  });
+  // PD 화면에 알려 줄 기능 설정(AI 조수·내 소재 올리기 제한)
+  const featuresOf = (settings) => ({
+    assistant: !!Number(settings.ai_assistant_enabled),
+    assistant_daily_limit: Number(settings.ai_assistant_daily_limit || 0),
+    upload: {
+      enabled: !!Number(settings.studio_upload_enabled),
+      image_mb: Number(settings.studio_upload_image_mb),
+      video_mb: Number(settings.studio_upload_video_mb),
+      video_seconds: Number(settings.studio_upload_video_seconds),
+      audio_mb: Number(settings.studio_upload_audio_mb),
+      audio_seconds: Number(settings.studio_upload_audio_seconds),
+    },
   });
   const requireTerms = async (req) => {
     const profile = await db.get('SELECT studio_terms_at FROM user_profiles WHERE user_id=?', [req.user.id]);
@@ -787,7 +832,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       characters: await charactersOf(p.id),
       episodes: episodes.map((e) => ({ ...e, shots: shots.filter((s) => s.episode_id === e.id) })),
       jobs: await db.all(
-        "SELECT j.id,j.kind,j.target_type,j.target_id,j.status,j.estimate_lama,j.charged_lama,j.error,j.created_at,j.finished_at,j.attempts,j.requested_model,m.label AS model_label FROM ai_jobs j LEFT JOIN ai_models m ON m.id=j.model_ref WHERE j.project_id=? AND (j.status IN ('queued','running') OR j.created_at>=?) ORDER BY j.created_at DESC LIMIT 300",
+        "SELECT j.id,j.kind,j.target_type,j.target_id,j.status,j.estimate_lama,j.charged_lama,j.error,j.created_at,j.finished_at,j.attempts,j.requested_model,j.model_ref,j.tier,m.label AS model_label FROM ai_jobs j LEFT JOIN ai_models m ON m.id=j.model_ref WHERE j.project_id=? AND (j.status IN ('queued','running') OR j.created_at>=?) ORDER BY j.created_at DESC LIMIT 300",
         [p.id, new Date(Date.now() - 3 * 86400000).toISOString()],
       ),
       // 결과 버전: 대상(인물·컷·포스터)마다 최근 12개씩(큰 프로젝트에서도 예전 버전이 목록에서 사라지지 않게)
@@ -813,6 +858,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         ? await db.get('SELECT id,title,status,review_note,tagline,free,episode_pings,free_episodes,image FROM dramas WHERE id=?', [p.drama_id])
         : null,
       wallet: await lamaWalletOf(db, req.user.id),
+      chat: chatApi ? await chatApi.chatOf(p.id) : [],
     });
   });
   app.patch('/api/studio/ai/projects/:id', roles('pd', 'admin'), async (req, res) => {
@@ -1063,6 +1109,56 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     });
     res.json({ ok: true });
   });
+  // 컷 순서 한 번에 바꾸기(스토리보드 끌어 놓기)
+  app.post('/api/studio/ai/projects/:id/episodes/:eid/shots/order', roles('pd', 'admin'), async (req, res) => {
+    const p = await project(req);
+    const b = z.object({ ids: z.array(z.string().max(80)).min(1).max(200) }).parse(req.body);
+    await db.transaction(async () => {
+      const e = await db.get('SELECT id FROM studio_episodes WHERE id=? AND project_id=?', [req.params.eid, p.id]);
+      if (!e) fail(404, '회차를 찾을 수 없어요.');
+      const shots = await shotsOf(e.id);
+      if (b.ids.length !== shots.length || new Set(b.ids).size !== b.ids.length || !b.ids.every((id) => shots.some((s) => s.id === id)))
+        fail(409, '컷 목록이 바뀌었어요. 새로고침한 뒤 다시 옮겨 주세요.');
+      for (let k = 0; k < b.ids.length; k++) await db.run('UPDATE studio_shots SET sort_order=? WHERE id=?', [k, b.ids[k]]);
+      if (b.ids.some((id, k) => shots[k].id !== id)) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+    });
+    res.json({ ok: true });
+  });
+  // 여러 컷 한 번에 고치기(감정·말 빠르기·카메라 움직임·전환·말하는 인물·길이)
+  app.patch('/api/studio/ai/projects/:id/episodes/:eid/shots/bulk', roles('pd', 'admin'), async (req, res) => {
+    const p = await project(req);
+    const b = z
+      .object({
+        ids: z.array(z.string().max(80)).min(1).max(200),
+        emotion: z.string().trim().max(20).optional(),
+        speed: z.number().min(0.5).max(2).optional(),
+        camera_move: z.string().trim().max(30).optional(),
+        transition: z.enum(['cut', 'fade', 'dip', 'flash']).optional(),
+        speaker_id: z.string().max(80).nullable().optional(),
+        seconds: z.number().int().min(2).max(10).optional(),
+      })
+      .parse(req.body);
+    const e = await db.get('SELECT id FROM studio_episodes WHERE id=? AND project_id=?', [req.params.eid, p.id]);
+    if (!e) fail(404, '회차를 찾을 수 없어요.');
+    if (b.speaker_id !== undefined) await checkSpeaker(p.id, b.speaker_id);
+    const fields = ['emotion', 'speed', 'camera_move', 'transition', 'speaker_id', 'seconds'].filter((k) => b[k] !== undefined);
+    if (!fields.length) fail(400, '바꿀 내용을 골라 주세요.');
+    let changed = 0;
+    let reset = 0;
+    await db.transaction(async () => {
+      for (const s of (await shotsOf(e.id)).filter((x) => b.ids.includes(x.id))) {
+        const diff = fields.filter((k) => String(b[k] ?? '') !== String(s[k] ?? ''));
+        if (!diff.length) continue;
+        // 대사 목소리에 영향을 주는 값이 바뀌면 이전 음성(과 입 모양)은 맞지 않으므로 뺍니다(버전 기록에는 남음).
+        const audioReset = diff.some((k) => ['emotion', 'speed', 'speaker_id'].includes(k)) && (s.audio || s.lipsync);
+        await db.run(`UPDATE studio_shots SET ${diff.map((k) => `${k}=?`).join(',')}${audioReset ? ",audio='',audio_seconds=0,lipsync=''" : ''}${b.speaker_id !== undefined && diff.includes('speaker_id') ? ',narration=0' : ''} WHERE id=?`, [...diff.map((k) => b[k]), s.id]);
+        changed++;
+        if (audioReset) reset++;
+      }
+      if (changed) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+    });
+    res.json({ changed, audioReset: reset });
+  });
   // 결과 버전 고르기: 예전에 만든 이미지·음성·영상으로 되돌립니다.
   app.post('/api/studio/ai/assets/:aid/use', roles('pd', 'admin'), async (req, res) => {
     const a = await db.get('SELECT * FROM studio_assets WHERE id=?', [req.params.aid]);
@@ -1086,30 +1182,71 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   });
 
   // ── AI 실행 · 예상 라마 ─────────────────────────────────────
+  // 프로젝트 예산(라마): 쓴 라마 + 진행 중 예약 라마
+  async function budgetOf(p) {
+    const limit = Number(p.budget_lama || 0);
+    const spent = Number(
+      (
+        await db.get(
+          "SELECT COALESCE(SUM(CASE WHEN status='succeeded' THEN charged_lama WHEN status IN ('queued','running') THEN estimate_lama ELSE 0 END),0) AS n FROM ai_jobs WHERE project_id=? AND billed=1",
+          [p.id],
+        )
+      )?.n || 0,
+    );
+    return { limit, spent, left: limit > 0 ? Math.max(0, limit - spent) : null };
+  }
+  async function priceSpecs(p, b, specs, exclude = []) {
+    let lama = 0;
+    let label = '';
+    for (const spec of specs) {
+      const e = await engine.estimate({ capability: spec.capability, requested: spec.requestedOverride || b.requested, tier: b.tier, tags: spec.tags, seconds: spec.input.seconds, needImage: needsImage(spec.input), input: spec.input, excludeCn: !!Number(p.exclude_cn), exclude });
+      lama += e.lama;
+      label = e.model.label;
+    }
+    return { lama, label };
+  }
   app.post('/api/studio/ai/projects/:id/estimate', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req);
     const b = runSchema.parse(req.body);
     const specs = await plan(req, p, b);
     const settings = await settingsOf();
-    let lama = 0;
-    let label = '';
-    for (const spec of specs) {
-      const e = await engine.estimate({ capability: spec.capability, requested: spec.requestedOverride || b.requested, tier: b.tier, tags: spec.tags, seconds: spec.input.seconds, needImage: needsImage(spec.input), input: spec.input, excludeCn: !!Number(p.exclude_cn) });
-      lama += e.lama;
-      label = e.model.label;
+    const { lama, label } = await priceSpecs(p, b, specs);
+    // 자동 선택이면 '왜 이 모델?' 이유와 다른 후보를 함께 보여 줍니다(목소리를 정해 둔 음성 작업 제외).
+    let why = [];
+    const first = specs[0];
+    if (b.requested === 'auto' && first && !first.requestedOverride) {
+      try {
+        why = await engine.explain({ capability: first.capability, tier: b.tier, tags: first.tags, seconds: first.input.seconds, needImage: needsImage(first.input), input: first.input, excludeCn: !!Number(p.exclude_cn) });
+      } catch {}
     }
-    res.json({ lama, jobs: specs.length, model: b.requested === 'auto' ? `자동 선택 (예: ${label})` : label, won: lama * 10, wallet: await lamaWalletOf(db, req.user.id), daily_limit: settings.ai_daily_limit_lama });
+    const budget = await budgetOf(p);
+    res.json({
+      lama,
+      jobs: specs.length,
+      model: b.requested === 'auto' ? `자동 선택 (예: ${label})` : label,
+      won: lama * 10,
+      wallet: await lamaWalletOf(db, req.user.id),
+      daily_limit: settings.ai_daily_limit_lama,
+      capability: first?.capability || '',
+      why,
+      budget: { ...budget, over: budget.limit > 0 && budget.spent + lama > budget.limit },
+    });
   });
-  app.post('/api/studio/ai/projects/:id/run', roles('pd', 'admin'), async (req, res) => {
-    await requireTerms(req);
-    const p = await project(req);
-    const b = runSchema.parse(req.body);
-    const specs = await plan(req, p, b);
-    // 입력 검사는 먼저, 중복 검사와 라마 예약은 같은 트랜잭션 안에서 합니다.
+  // 실행: 입력 검사 → (프로젝트 예산 확인) → 중복 검사·라마 예약(한 트랜잭션). AI 조수·다시 시도에서도 씁니다.
+  async function runSpecs(req, p, b, specs, { exclude = [] } = {}) {
     for (const spec of specs) {
       await engine.screen({ userId: req.user.id, kind: spec.kind, texts: [spec.input.userText, spec.input.text] });
     }
-    const jobs = await db.transaction(async () => {
+    if (Number(p.budget_lama) > 0 && !b.budgetOk) {
+      const budget = await budgetOf(p);
+      const { lama } = await priceSpecs(p, b, specs, exclude);
+      if (budget.spent + lama > budget.limit)
+        throw Object.assign(new Error(`프로젝트 예산(${budget.limit.toLocaleString('ko-KR')}라마)을 넘어요. 지금까지 ${budget.spent.toLocaleString('ko-KR')}라마를 썼고, 이번 작업은 약 ${lama.toLocaleString('ko-KR')}라마예요.`), {
+          status: 409,
+          code: 'project_budget',
+        });
+    }
+    return db.transaction(async () => {
       if (db.engine === 'postgresql') await db.get('SELECT id FROM studio_projects WHERE id=? FOR UPDATE', [p.id]);
       const out = [];
       for (const spec of specs) {
@@ -1144,17 +1281,60 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
             projectId: p.id,
             excludeCn: !!Number(p.exclude_cn),
             idempotencyKey: requestKey,
+            exclude,
           }),
         );
       }
       await db.run("UPDATE studio_projects SET status=CASE WHEN status='draft' THEN 'producing' ELSE status END,updated_at=? WHERE id=?", [now(), p.id]);
       return out;
     });
-    res.status(201).json({
-      jobs: jobs.map((j) => ({ id: j.id, kind: j.kind, estimate_lama: Number(j.estimate_lama), status: j.status })),
-      lama: jobs.reduce((n, j) => n + Number(j.estimate_lama), 0),
-      wallet: await lamaWalletOf(db, req.user.id),
+  }
+  const jobsView = async (req, jobs) => ({
+    jobs: jobs.map((j) => ({ id: j.id, kind: j.kind, estimate_lama: Number(j.estimate_lama), status: j.status })),
+    lama: jobs.reduce((n, j) => n + Number(j.estimate_lama), 0),
+    wallet: await lamaWalletOf(db, req.user.id),
+  });
+  app.post('/api/studio/ai/projects/:id/run', roles('pd', 'admin'), async (req, res) => {
+    await requireTerms(req);
+    const p = await project(req);
+    const b = runSchema.parse(req.body);
+    const specs = await plan(req, p, b);
+    res.status(201).json(await jobsView(req, await runSpecs(req, p, b, specs)));
+  });
+  // 실패한 작업 다시 시도: 같은 작업을 다시 만들되, 자동 선택이면 실패한 모델은 빼고 다음 후보로(직접 고르면 그 모델로).
+  const RETRYABLE = new Set(['plan', 'poster', 'adapt', 'bible', 'season', 'metadata', 'music', 'script', 'diagnose', 'rewrite_range', 'character_image', 'character_ref', 'location_image', 'voice_sample', 'shot_image', 'shot_image_edit', 'shot_tts', 'shot_video', 'shot_lipsync', 'shot_sfx', 'rewrite_shot']);
+  app.post('/api/studio/ai/jobs/:jid/retry', roles('pd', 'admin'), async (req, res) => {
+    await requireTerms(req);
+    const job = await db.get('SELECT * FROM ai_jobs WHERE id=?', [req.params.jid]);
+    if (!job || !job.project_id) fail(404, '작업을 찾을 수 없어요.');
+    const p = await project(req, job.project_id);
+    if (!['failed', 'canceled'].includes(job.status)) fail(400, '실패하거나 취소한 작업만 다시 시도할 수 있어요.');
+    if (!RETRYABLE.has(job.kind)) fail(400, '이 작업은 원래 화면에서 다시 시작해 주세요.');
+    const body = z.object({ requested: z.string().max(80).default('auto'), tier: z.enum(['draft', 'standard', 'premium']).optional(), budgetOk: z.boolean().optional() }).parse(req.body || {});
+    let input = {};
+    try {
+      input = JSON.parse(job.input || '{}');
+    } catch {}
+    const options = {};
+    if (job.kind === 'character_ref') options.pose = input.pose;
+    if (job.kind === 'rewrite_range') options.shotIds = input.shotIds;
+    if (job.kind === 'music') {
+      options.seconds = input.seconds;
+      if (input.userText) options.mood = String(input.userText).slice(0, 200);
+    }
+    const instruction = ['rewrite_range', 'script'].includes(job.kind) ? input.userInstruction : ['rewrite_shot', 'shot_image_edit'].includes(job.kind) ? input.userText : undefined;
+    const b = runSchema.parse({
+      action: job.kind,
+      targetId: job.target_type === 'project' || job.target_type === 'music' ? p.id : job.target_id,
+      ...(instruction ? { instruction: String(instruction).slice(0, 300) } : {}),
+      options,
+      requested: body.requested,
+      tier: body.tier || job.tier,
+      budgetOk: body.budgetOk,
     });
+    const specs = await plan(req, p, b);
+    const exclude = body.requested === 'auto' && job.model_ref ? [job.model_ref] : [];
+    res.status(201).json(await jobsView(req, await runSpecs(req, p, b, specs, { exclude })));
   });
   app.post('/api/studio/ai/jobs/:jid/cancel', roles('pd', 'admin'), async (req, res) => {
     res.json(await engine.cancel(req.params.jid, req.user));
@@ -1748,6 +1928,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     res.type('text/vtt; charset=utf-8').sendFile(path.join(subsDir, e.subtitles));
   });
   studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, uploadDir, project, touch, queueTranslate, shotsOf, charactersOf, episodesOf });
+  shotMediaRoutes({ app, db, fail, now, roles, uploadDir, loadShot, project });
+  qualityRoutes({ app, db, fail, now, roles, project, charactersOf, episodesOf, shotsOf });
+  chatApi = assistantRoutes({ app, db, fail, now, roles, engine, project, requireTerms, plan, runSpecs, runSchema, estimateSpecs: priceSpecs, charactersOf, episodesOf, shotsOf, locationsOf, queueTranslate, settingsOf });
   // 목소리 라이브러리 샘플은 모든 PD가 함께 들을 수 있습니다.
   app.get('/api/studio/ai/voices/sample/:file', roles('pd', 'admin'), async (req, res) => {
     if (!/^[a-f0-9-]+\.(mp3|wav)$/.test(req.params.file)) fail(404, '파일을 찾을 수 없어요.');

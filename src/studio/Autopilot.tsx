@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Bot, Loader2, Pause, Play, Rocket, Square } from 'lucide-react';
 import { api, lama, won, type AiModelOption, type AutopilotEstimate, type StudioProjectDetail } from '../api';
-import { ModelPicker, loadChoices, type Choices } from './parts';
+import { ModelPicker, OptionRow, effectiveChoices, type Choices } from './parts';
 
 const stageName: Record<string, string> = {
   plan: '기획안',
@@ -38,7 +38,7 @@ export default function AutopilotPanel({
   const ap = data.autopilot;
   const running = ap?.status === 'running';
   const [open, setOpen] = useState(!compact);
-  const [choices, setChoices] = useState<Choices>(() => ({ ...loadChoices(), ...((ap?.choices as Partial<Choices>) || {}) }));
+  const [choices, setChoices] = useState<Choices>(() => ({ ...effectiveChoices(), ...((ap?.choices as Partial<Choices>) || {}) }));
   const [includeVideo, setIncludeVideo] = useState(!!ap?.includeVideo);
   const has = (c: string) => models.some((m) => m.capability === c);
   const [extra, setExtra] = useState({
@@ -179,25 +179,20 @@ export default function AutopilotPanel({
                 <ModelPicker key={c} capability={c} models={models} value={choices[c]} onChange={(v) => setChoices({ ...choices, [c]: v })} />
               ))}
             </div>
-            <div className="form-columns autopilot-options">
-              <label className="inline-check">
-                <input type="checkbox" checked={extra.includeBible} onChange={(e) => setExtra({ ...extra, includeBible: e.target.checked })} />설정집 · 시즌 설계 먼저
-              </label>
-              <label className="inline-check">
-                <input type="checkbox" checked={includeVideo} onChange={(e) => setIncludeVideo(e.target.checked)} />컷 영상까지 만들기 (비용 큼)
-              </label>
-              <label className="inline-check" title={has('lipsync') ? '' : '관리자가 모델을 준비하면 쓸 수 있어요'}>
-                <input type="checkbox" checked={opts.includeLipsync} disabled={!has('lipsync') || !includeVideo} onChange={(e) => setExtra({ ...extra, includeLipsync: e.target.checked })} />
-                입 모양 맞추기{has('lipsync') ? '' : ' (준비 중)'}
-              </label>
-              <label className="inline-check">
-                <input type="checkbox" checked={opts.includeSfx} disabled={!has('sfx')} onChange={(e) => setExtra({ ...extra, includeSfx: e.target.checked })} />
-                효과음{has('sfx') ? '' : ' (준비 중)'}
-              </label>
-              <label className="inline-check">
-                <input type="checkbox" checked={opts.includeMusic} disabled={!has('music')} onChange={(e) => setExtra({ ...extra, includeMusic: e.target.checked })} />
-                배경음악{has('music') ? '' : ' (준비 중)'}
-              </label>
+            <div className="opt-list">
+              <OptionRow checked={extra.includeBible} onChange={(v) => setExtra({ ...extra, includeBible: v })} title="설정집 · 시즌 설계 먼저" desc="회차끼리 이야기가 잘 이어져요." />
+              <OptionRow checked={includeVideo} onChange={setIncludeVideo} title="컷 영상까지 만들기" desc="비용이 커요. 끄면 이미지에 카메라 움직임을 넣어 무료로 합성해요." />
+              <OptionRow
+                checked={opts.includeLipsync}
+                disabled={!has('lipsync') || !includeVideo}
+                onChange={(v) => setExtra({ ...extra, includeLipsync: v })}
+                title={'입 모양 맞추기' + (has('lipsync') ? '' : ' (준비 중)')}
+                desc={has('lipsync') ? '컷 영상을 만들 때만 쓸 수 있어요.' : '관리자가 모델을 준비하면 쓸 수 있어요.'}
+              />
+              <OptionRow checked={opts.includeSfx} disabled={!has('sfx')} onChange={(v) => setExtra({ ...extra, includeSfx: v })} title={'효과음' + (has('sfx') ? '' : ' (준비 중)')} desc="장면에 맞는 소리를 더해요." />
+              <OptionRow checked={opts.includeMusic} disabled={!has('music')} onChange={(v) => setExtra({ ...extra, includeMusic: v })} title={'배경음악' + (has('music') ? '' : ' (준비 중)')} desc="작품 분위기에 맞는 음악을 깔아요." />
+            </div>
+            <div className="form-columns">
               {opts.includeMusic && (
                 <label>
                   음악 분위기

@@ -53,6 +53,7 @@ type Tab =
   | 'overview'
   | 'providers'
   | 'models'
+  | 'matrix'
   | 'routes'
   | 'policy'
   | 'jobs'
@@ -64,6 +65,7 @@ const tabs: { id: Tab; name: string; icon: typeof Cpu }[] = [
   { id: 'overview', name: '사용 현황', icon: Activity },
   { id: 'providers', name: 'AI 공급사 · API 키', icon: KeyRound },
   { id: 'models', name: '모델 · 가격', icon: Cpu },
+  { id: 'matrix', name: '모델 능력표', icon: Activity },
   { id: 'routes', name: '라우팅 규칙', icon: Route },
   { id: 'policy', name: '비용 한도 · 정책', icon: Settings2 },
   { id: 'jobs', name: '작업 모니터', icon: Plug },
@@ -140,6 +142,7 @@ export default function AdminAiPanel({ notify }: { notify: (s: string) => void }
       {tab === 'overview' && <Overview data={data} />}
       {tab === 'providers' && <Providers data={data} busy={busy} run={run} />}
       {tab === 'models' && <Models data={data} busy={busy} run={run} notify={notify} />}
+      {tab === 'matrix' && <ModelMatrix data={data} />}
       {tab === 'policy' && <Policy data={data} busy={busy} run={run} />}
       {tab === 'jobs' && <Jobs data={data} busy={busy} run={run} reload={load} />}
       {tab === 'limits' && <Limits data={data} busy={busy} run={run} />}
@@ -1315,6 +1318,17 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
     ai_allow_cn: n(s.ai_allow_cn),
     ai_breaker_failures: n(s.ai_breaker_failures) || 5,
     ai_breaker_cooldown_min: n(s.ai_breaker_cooldown_min) || 10,
+    ai_weight_cost: s.ai_weight_cost === undefined ? 50 : n(s.ai_weight_cost),
+    ai_weight_speed: n(s.ai_weight_speed),
+    ai_weight_reliability: n(s.ai_weight_reliability),
+    ai_assistant_enabled: s.ai_assistant_enabled === undefined ? 1 : n(s.ai_assistant_enabled),
+    ai_assistant_daily_limit: s.ai_assistant_daily_limit === undefined ? 100 : n(s.ai_assistant_daily_limit),
+    studio_upload_enabled: s.studio_upload_enabled === undefined ? 1 : n(s.studio_upload_enabled),
+    studio_upload_image_mb: n(s.studio_upload_image_mb) || 10,
+    studio_upload_video_mb: n(s.studio_upload_video_mb) || 200,
+    studio_upload_video_seconds: n(s.studio_upload_video_seconds) || 60,
+    studio_upload_audio_mb: n(s.studio_upload_audio_mb) || 25,
+    studio_upload_audio_seconds: n(s.studio_upload_audio_seconds) || 120,
   });
   // 빈 칸은 빈 칸으로 두고(저장 시 막음), 숫자만 숫자로 바꿉니다. 지운 칸이 0(무제한)으로 저장되지 않게 합니다.
   const num = (k: keyof typeof f) => (e: { target: { value: string } }) =>
@@ -1469,6 +1483,75 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
             onChange={(e) => setF({ ...f, ai_blocked_terms: e.target.value })}
           />
         </label>
+        <fieldset className="policy-group">
+          <legend>자동 모델 선택 기준</legend>
+          <p className="muted settings-note">
+            PD가 ‘자동’으로 둘 때 무엇을 더 중요하게 볼지 정해요(0~100). 기본값(비용 50 · 속도 0 · 안정성 0)은 품질 등급과 장면 특성을 먼저 보고
+            가격을 적당히 고려하는 방식이에요. 속도·안정성은 최근 14일 실적(평균 처리 시간·성공률)으로 계산해요.
+          </p>
+          <div className="form-columns">
+            {(
+              [
+                ['ai_weight_cost', '비용 (저렴할수록 우선)'],
+                ['ai_weight_speed', '속도 (빠를수록 우선)'],
+                ['ai_weight_reliability', '안정성 (성공률 높을수록 우선)'],
+              ] as const
+            ).map(([k, label]) => (
+              <label key={k}>
+                {label} <small className="muted">{f[k]}</small>
+                <input type="range" min={0} max={100} step={5} value={f[k]} onChange={(e) => setF({ ...f, [k]: Number(e.target.value) })} />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset className="policy-group">
+          <legend>AI 조수 (작업 공간 채팅)</legend>
+          <label className="check-row">
+            <input type="checkbox" checked={!!f.ai_assistant_enabled} onChange={(e) => setF({ ...f, ai_assistant_enabled: e.target.checked ? 1 : 0 })} />
+            <span>AI 조수 사용 (대화는 PD에게 무료 · 원가는 플랫폼 부담 · 실행 계획 속 AI 작업만 라마 차감)</span>
+          </label>
+          <label>
+            PD 1명의 하루 대화 수 (0 = 무제한)
+            <input type="number" min={0} max={10000} required value={f.ai_assistant_daily_limit} onChange={num('ai_assistant_daily_limit')} />
+          </label>
+          {data.assistant && (
+            <small className="muted">
+              최근 24시간 대화 {data.assistant.today.toLocaleString('ko-KR')}번 · 이번 달 실행된 계획 {data.assistant.applied.toLocaleString('ko-KR')}개 · 이번 달 조수 원가 {won(data.assistant.cost_won)}
+            </small>
+          )}
+        </fieldset>
+        <fieldset className="policy-group">
+          <legend>내 소재 올리기 (컷마다 PD의 사진 · 영상 · 목소리)</legend>
+          <label className="check-row">
+            <input type="checkbox" checked={!!f.studio_upload_enabled} onChange={(e) => setF({ ...f, studio_upload_enabled: e.target.checked ? 1 : 0 })} />
+            <span>PD가 AI 대신 자기 파일을 올리거나 목소리를 녹음해 쓸 수 있게 하기</span>
+          </label>
+          <div className="form-columns">
+            <label>
+              사진 최대 크기 (MB · 1~50)
+              <input type="number" min={1} max={50} required value={f.studio_upload_image_mb} onChange={num('studio_upload_image_mb')} />
+            </label>
+            <label>
+              영상 최대 크기 (MB · 1~500)
+              <input type="number" min={1} max={500} required value={f.studio_upload_video_mb} onChange={num('studio_upload_video_mb')} />
+            </label>
+            <label>
+              영상 최대 길이 (초 · 3~300)
+              <input type="number" min={3} max={300} required value={f.studio_upload_video_seconds} onChange={num('studio_upload_video_seconds')} />
+            </label>
+          </div>
+          <div className="form-columns">
+            <label>
+              음성 최대 크기 (MB · 1~100)
+              <input type="number" min={1} max={100} required value={f.studio_upload_audio_mb} onChange={num('studio_upload_audio_mb')} />
+            </label>
+            <label>
+              음성·녹음 최대 길이 (초 · 3~600)
+              <input type="number" min={3} max={600} required value={f.studio_upload_audio_seconds} onChange={num('studio_upload_audio_seconds')} />
+            </label>
+          </div>
+          <small className="muted">영상은 MP4로, 음성은 MP3로 바꿔 저장해요. 컷 하나에는 영상 앞부분 최대 10초가 쓰여요.</small>
+        </fieldset>
         <div className="info-box">
           예) Veo 3.1 원가 $0.75/초 × {f.usd_krw_rate}원 × {f.ai_margin_rate}% = 1초당 약{' '}
           {lama((0.75 * f.usd_krw_rate * f.ai_margin_rate) / 100 / 10)}· 5초 컷{' '}
@@ -1478,6 +1561,101 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           정책 저장
         </button>
       </form>
+    </section>
+  );
+}
+
+// 모델 능력표: AI 계열(브랜드)마다 어떤 작업을 할 수 있는지 · 실제 연결된 모델 · 최근 실적을 한눈에
+const MATRIX_CAPS = ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'] as const;
+function ModelMatrix({ data }: { data: AdminAi }) {
+  const families = data.families || [];
+  const models = data.models;
+  const famOf = (m: AiModelRow) => m.family || 'other';
+  const shown = families.filter((f) => models.some((m) => famOf(m) === f.id) || f.id !== 'mock');
+  const other = models.filter((m) => !families.some((f) => f.id === famOf(m)));
+  return (
+    <section className="management-panel">
+      <div className="panel-heading">
+        <div>
+          <h3>모델 능력표</h3>
+          <p>
+            AI 계열마다 원래 할 수 있는 작업(●)과 숏핑에 연결된 모델 수를 보여 줘요. PD 화면에서는 이 표를 바탕으로 “Claude는 영상을 만들 수 없어요 → 다른 모델
+            추천”처럼 안내해요.
+          </p>
+        </div>
+      </div>
+      <div className="table-scroll">
+        <table className="management-table matrix-table">
+          <thead>
+            <tr>
+              <th>AI 계열</th>
+              {MATRIX_CAPS.map((c) => (
+                <th key={c}>{data.capabilities[c] || c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((f) => (
+              <tr key={f.id}>
+                <td>
+                  <b>{f.name}</b>
+                  <small className="muted"> {f.maker}</small>
+                </td>
+                {MATRIX_CAPS.map((c) => {
+                  const list = models.filter((m) => famOf(m) === f.id && m.capability === c);
+                  const on = list.filter((m) => Number(m.active)).length;
+                  const can = f.caps.includes(c);
+                  return (
+                    <td key={c} className={on ? 'on' : can ? 'can' : 'no'} title={list.map((m) => m.label).join(', ')}>
+                      {on ? `● ${on}` : can ? '○' : '—'}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted settings-note">● 연결·사용 중인 모델 수 · ○ 할 수 있지만 연결 안 됨 · — 할 수 없는 작업</p>
+      <h4 className="matrix-sub">연결된 모델 실적 (최근 14일)</h4>
+      <div className="table-scroll">
+        <table className="management-table">
+          <thead>
+            <tr>
+              <th>모델</th>
+              <th>작업</th>
+              <th>등급</th>
+              <th>잘하는 것</th>
+              <th>단가</th>
+              <th>작업 수</th>
+              <th>성공률</th>
+              <th>평균 시간</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...models]
+              .sort((a, b) => a.capability.localeCompare(b.capability) || Number(b.priority) - Number(a.priority))
+              .map((m) => (
+                <tr key={m.id} className={Number(m.active) ? '' : 'muted'}>
+                  <td>
+                    <b>{m.label}</b>
+                    <small className="muted"> {m.provider_name}</small>
+                  </td>
+                  <td>{data.capabilities[m.capability] || m.capability}</td>
+                  <td>{tierLabel[m.tier] || m.tier}</td>
+                  <td>{m.tags || '-'}</td>
+                  <td>
+                    {lama(m.lama_per_unit)}/{unitLabel[m.unit] || m.unit}
+                  </td>
+                  <td>{m.stats?.jobs ?? 0}</td>
+                  <td className={m.stats?.success != null && m.stats.success < 0.8 ? 'danger' : ''}>{m.stats?.success != null ? Math.round(m.stats.success * 100) + '%' : '-'}</td>
+                  <td>{m.stats?.seconds ? m.stats.seconds + '초' : '-'}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+      {other.length > 0 && <p className="muted settings-note">계열을 알 수 없는 모델: {other.map((m) => m.label).join(', ')} — PD 화면에는 그대로 보이지만 계열 안내는 나오지 않아요.</p>}
     </section>
   );
 }

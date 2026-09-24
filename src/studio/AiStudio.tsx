@@ -19,7 +19,7 @@ import { Empty, Modal, navigate } from '../App';
 import Workspace from './Workspace';
 import { TABS, hasModel, type TabId } from './ws/shared';
 import { STYLES, TEMPLATES, type Template } from './presets';
-import { loadChoices } from './parts';
+import { effectiveChoices, OptionRow } from './parts';
 import TemplateIcon from './TemplateIcon';
 import { asset } from '../platform';
 
@@ -135,6 +135,8 @@ export default function AiStudio({
       <Workspace
         projectId={open}
         models={data.models}
+        families={data.families || []}
+        features={data.features}
         genres={data.genres}
         notify={notify}
         goLama={goLama}
@@ -476,7 +478,7 @@ export default function AiStudio({
                   if (quick.on) {
                     try {
                       await api(`/studio/ai/projects/${r.id}/autopilot`, 'POST', {
-                        choices: loadChoices(),
+                        choices: effectiveChoices(),
                         includeBible: quick.bible,
                         includeVideo: quick.video,
                         includeLipsync: quick.video && quick.lipsync,
@@ -581,14 +583,9 @@ export default function AiStudio({
                   </button>
                 ))}
               </div>
-              <label className="inline-check">
-                <input
-                  type="checkbox"
-                  checked={form.exclude_cn}
-                  onChange={(e) => setForm({ ...form, exclude_cn: e.target.checked })}
-                />
-                중국 AI 모델 쓰지 않기
-              </label>
+              <div className="opt-list">
+                <OptionRow checked={form.exclude_cn} onChange={(v) => setForm({ ...form, exclude_cn: v })} title="중국 AI 모델 쓰지 않기" desc="Kling · Hailuo · Wan 같은 중국 모델을 이 프로젝트에서 빼요." />
+              </div>
               <div className="mode-choice" role="radiogroup" aria-label="제작 방식">
                 <button type="button" role="radio" aria-checked={quick.on} className={quick.on ? 'active' : ''} onClick={() => setQuick({ ...quick, on: true })}>
                   <Bot size={16} />
@@ -605,34 +602,21 @@ export default function AiStudio({
               </div>
               {quick.on ? (
                 <div className="quick-options">
-                  <label className="inline-check">
-                    <input type="checkbox" checked={quick.bible} onChange={(e) => setQuick({ ...quick, bible: e.target.checked })} />
-                    설정집 · 시즌 설계 먼저 (회차끼리 잘 이어져요)
-                  </label>
-                  <label className="inline-check">
-                    <input type="checkbox" checked={quick.video} onChange={(e) => setQuick({ ...quick, video: e.target.checked, lipsync: e.target.checked && quick.lipsync })} />
-                    컷 영상까지 (비용 큼 · 없으면 이미지가 움직이는 화면)
-                  </label>
-                  {hasModel(data.models, 'lipsync') && (
-                    <label className="inline-check">
-                      <input type="checkbox" checked={quick.lipsync} disabled={!quick.video} onChange={(e) => setQuick({ ...quick, lipsync: e.target.checked })} />
-                      대사 컷 입 모양 맞추기
-                    </label>
-                  )}
-                  {hasModel(data.models, 'sfx') && (
-                    <label className="inline-check">
-                      <input type="checkbox" checked={quick.sfx} onChange={(e) => setQuick({ ...quick, sfx: e.target.checked })} />
-                      효과음 넣기
-                    </label>
-                  )}
-                  {hasModel(data.models, 'music') ? (
-                    <label className="inline-check">
-                      <input type="checkbox" checked={quick.music} onChange={(e) => setQuick({ ...quick, music: e.target.checked })} />
-                      배경음악 만들기
-                    </label>
-                  ) : (
-                    <small className="muted">배경음악 · 효과음 · 입 모양 맞추기는 관리자가 모델을 준비하면 고를 수 있어요.</small>
-                  )}
+                  <div className="opt-list">
+                    <OptionRow checked={quick.bible} onChange={(v) => setQuick({ ...quick, bible: v })} title="설정집 · 시즌 설계 먼저" desc="회차끼리 이야기가 잘 이어져요." />
+                    <OptionRow
+                      checked={quick.video}
+                      onChange={(v) => setQuick({ ...quick, video: v, lipsync: v && quick.lipsync })}
+                      title="컷 영상까지 만들기"
+                      desc="비용이 커요. 끄면 이미지에 카메라 움직임을 넣은 화면으로 무료 합성해요."
+                    />
+                    {hasModel(data.models, 'lipsync') && (
+                      <OptionRow checked={quick.lipsync} disabled={!quick.video} onChange={(v) => setQuick({ ...quick, lipsync: v })} title="대사 컷 입 모양 맞추기" desc="컷 영상을 만들 때만 쓸 수 있어요." />
+                    )}
+                    {hasModel(data.models, 'sfx') && <OptionRow checked={quick.sfx} onChange={(v) => setQuick({ ...quick, sfx: v })} title="효과음 넣기" desc="문 닫히는 소리처럼 장면에 맞는 소리를 더해요." />}
+                    {hasModel(data.models, 'music') && <OptionRow checked={quick.music} onChange={(v) => setQuick({ ...quick, music: v })} title="배경음악 만들기" desc="작품 분위기에 맞는 음악을 만들어 깔아요." />}
+                  </div>
+                  {!hasModel(data.models, 'music') && <small className="muted">배경음악 · 효과음 · 입 모양 맞추기는 관리자가 모델을 준비하면 고를 수 있어요.</small>}
                   <label>
                     최대 사용 라마 <small className="muted">비우면 예상치의 1.3배 · 보유 {lama(data.wallet.total)}</small>
                     <input type="number" min={1} value={quick.cap} placeholder="자동" onChange={(e) => setQuick({ ...quick, cap: e.target.value.replace(/\D/g, '') })} />

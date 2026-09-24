@@ -346,3 +346,96 @@ export function blockedTerm(texts, extra = '') {
   const hay = texts.filter(Boolean).join('\n').toLowerCase();
   return list.find((w) => matches(hay, w)) || null;
 }
+
+// ── AI 조수(작업 공간 채팅, 2026-09-24) ─────────────────────────────────
+// PD의 말을 '실행 계획'으로 바꿉니다. 바로 실행하지 않고, PD가 계획을 보고 승인하면 숏핑이 실행합니다.
+export const ASSISTANT_ACTIONS = {
+  // 라마가 드는 AI 작업
+  shot_image: '컷 이미지 새로 만들기 (target: 컷)',
+  shot_image_edit: '컷 이미지 일부만 고치기 (target: 컷, instruction: 바꿀 내용)',
+  shot_video: '컷 영상 만들기 (target: 컷)',
+  shot_tts: '대사 음성 만들기 (target: 컷)',
+  shot_sfx: '효과음 만들기 (target: 컷, prompt: 효과음 설명)',
+  shot_lipsync: '입 모양 맞추기 (target: 컷, 영상·음성이 있어야 함)',
+  rewrite_shot: '컷 하나 AI로 다시 쓰기 (target: 컷, instruction)',
+  rewrite_range: '여러 컷 AI로 다시 쓰기 (targets: 같은 회차 컷 목록, instruction)',
+  script: '회차 대본 새로 쓰기 (target: 회차, instruction)',
+  diagnose: '회차 대본 진단 (target: 회차)',
+  character_image: '인물 기준 이미지 만들기 (target: 인물)',
+  location_image: '장소 이미지 만들기 (target: 장소)',
+  batch_shot_image: '회차의 빈 컷 이미지 모두 만들기 (target: 회차)',
+  batch_shot_tts: '회차의 빈 대사 음성 모두 만들기 (target: 회차)',
+  batch_shot_video: '회차의 빈 컷 영상 모두 만들기 (target: 회차)',
+  music: '배경음악 만들기 (target: 회차 또는 비움, mood: 분위기)',
+  poster: '작품 포스터 만들기',
+  metadata: '작품 제목·소개·해시태그 추천',
+  // 라마가 들지 않는 직접 수정
+  edit_shot: '컷 내용 직접 고치기 (target: 컷, fields: dialogue·visual·emotion·seconds·camera·camera_move·speed 중 필요한 것만)',
+  edit_character: '인물 설정 고치기 (target: 인물, fields: description·look·voice_style)',
+  edit_episode: '회차 제목·줄거리 고치기 (target: 회차, fields: title·summary)',
+  edit_project: '작품 톤·스타일 고치기 (fields: tone·style)',
+};
+const assistantAction = z.object({
+  type: z.enum(Object.keys(ASSISTANT_ACTIONS)),
+  target: z.string().max(40).optional().default(''),
+  targets: z.array(z.string().max(40)).max(20).optional().default([]),
+  instruction: z.string().max(300).optional().default(''),
+  prompt: z.string().max(200).optional().default(''),
+  mood: z.string().max(200).optional().default(''),
+  fields: z.record(z.string(), z.union([z.string(), z.number()])).optional().default({}),
+  reason: z.string().max(200).optional().default(''),
+});
+export const assistantSchema = z.object({
+  reply: z.string().max(1500),
+  actions: z.array(z.unknown()).max(12).optional().default([]),
+});
+export const assistantActionSchema = assistantAction;
+export function assistantPrompt({ project, characters, episodes, episode, shots, locations, message, history, focus }) {
+  const cast = characters.map((c, i) => `C${i + 1} ${c.name}(${c.role}) · ${String(c.description || '').slice(0, 80)} · 이미지 ${c.image ? '있음' : '없음'}`).join('\n');
+  const eps = episodes.map((e) => `E${e.number} ${e.title} — ${String(e.summary || '').slice(0, 80)} · 컷 ${e.shot_count}개`).join('\n');
+  const places = locations.map((l, i) => `L${i + 1} ${l.name}`).join(', ');
+  const shotLines = episode
+    ? shots
+        .map(
+          (s, i) =>
+            `E${episode.number}S${i + 1} [${s.seconds}초] ${String(s.scene || '').slice(0, 30)} / 화면: ${String(s.visual || '').slice(0, 90)} / 대사(${s.speaker || '-'}): ${String(s.dialogue || '').slice(0, 60)} / 감정: ${s.emotion || '-'} / 이미지 ${s.image ? 'O' : 'X'} 음성 ${s.audio ? 'O' : 'X'} 영상 ${s.video ? 'O' : 'X'}`,
+        )
+        .join('\n')
+    : '(회차 없음)';
+  const talk = history.map((h) => `${h.role === 'user' ? 'PD' : '조수'}: ${String(h.content).slice(0, 300)}`).join('\n');
+  return {
+    system: `당신은 숏폼 드라마 제작 도구 '숏핑 스튜디오'의 AI 조수입니다. PD의 요청을 듣고, 숏핑이 실행할 수 있는 작업 목록(실행 계획)으로 바꿉니다.
+- 직접 실행하지 말고 계획만 제안합니다. PD가 승인하면 숏핑이 실행합니다.
+- 라마(비용)가 드는 AI 작업은 꼭 필요한 것만 넣고, 글만 바꾸면 되는 요청은 edit_* 작업(무료)으로 처리하세요.
+- 질문·조언만 필요한 요청이면 actions는 빈 배열로 두고 reply로 답합니다.
+- 대상은 아래 목록의 코드(E1S3=1화 3번 컷, E2=2화, C1=첫 번째 인물, L1=첫 번째 장소)로만 가리킵니다. 없는 대상을 만들지 마세요.
+- 이미지·영상·음성을 만들 수 없는 글쓰기 AI라서 직접 그리지는 못하지만, 숏핑의 이미지·영상·음성 작업을 계획에 넣으면 연결된 모델이 만들어 줍니다.
+- reply는 친근한 한국어 존댓말로 2~4문장. 무엇을 왜 하는지 짧게 설명합니다.
+- 반드시 JSON 하나만 출력합니다.`,
+    json: true,
+    maxTokens: 2500,
+    purpose: 'assistant',
+    context: { message, focus, episode: episode ? { number: episode.number } : null, shots: shots.map((s, i) => ({ ref: episode ? `E${episode.number}S${i + 1}` : '', dialogue: s.dialogue, visual: s.visual, image: !!s.image, audio: !!s.audio, video: !!s.video })), characters: characters.map((c, i) => ({ ref: `C${i + 1}`, name: c.name })) },
+    prompt: `작품: "${project.title}" (${project.genre}) · 톤: ${project.tone || '-'} · 스타일: ${String(project.style || '').slice(0, 120)}
+로그라인: ${project.logline}
+인물:
+${cast || '(아직 없음)'}
+회차:
+${eps || '(아직 없음)'}
+장소: ${places || '(없음)'}
+지금 보고 있는 회차의 컷:
+${shotLines}
+${focus ? `PD가 지금 고른 컷: ${focus}\n` : ''}
+쓸 수 있는 작업(type):
+${Object.entries(ASSISTANT_ACTIONS)
+  .map(([k, v]) => `- ${k}: ${v}`)
+  .join('\n')}
+
+최근 대화:
+${talk || '(없음)'}
+
+PD 요청: ${message}
+
+JSON 형식: {"reply":"설명","actions":[{"type":"shot_image_edit","target":"E1S3","instruction":"배경을 밤으로","reason":"요청한 분위기"},{"type":"edit_shot","target":"E1S3","fields":{"dialogue":"새 대사"}}]}`,
+  };
+}

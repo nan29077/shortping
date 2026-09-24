@@ -4,6 +4,7 @@ import { loadSettings } from '../settings.mjs';
 import { encrypt, decrypt, hintOf } from './secret.mjs';
 import { adapterOf, lamaPerUnit, TAGS } from './engine.mjs';
 import { kindCatalog, presets, unitOf, capabilityLabel } from './providers.mjs';
+import { familyList, familyOf } from './model-guide.mjs';
 
 // 슈퍼관리자: AI 공급사·모델 등록(중국 모델 포함), 키 암호화 저장, 연결 테스트, 가격·자동 선택 규칙,
 // 작업 모니터(취소·환불), PD별 한도.
@@ -67,6 +68,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
     const settings = await loadSettings(db);
     const since = monthStart();
     const models = await db.all('SELECT m.*, p.name AS provider_name, p.kind FROM ai_models m JOIN ai_providers p ON p.id=m.provider_id ORDER BY m.capability, m.priority DESC, m.label');
+    const modelStats = await engine.modelStats({ fresh: true });
     res.json({
       settings,
       catalog: kindCatalog,
@@ -80,7 +82,13 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
         )
       ).map(providerView),
       routes: await db.all('SELECT * FROM ai_route_rules ORDER BY capability, tier'),
-      models: models.map((m) => ({ ...m, lama_per_unit: Math.round(lamaPerUnit(m, settings) * 100) / 100 })),
+      models: models.map((m) => ({ ...m, lama_per_unit: Math.round(lamaPerUnit(m, settings) * 100) / 100, family: familyOf(m), stats: modelStats.get(m.id) || null })),
+      families: familyList(),
+      assistant: {
+        today: Number((await db.get("SELECT COUNT(*) AS n FROM studio_chat WHERE role='user' AND created_at>=?", [new Date(Date.now() - 86400000).toISOString()]))?.n || 0),
+        applied: Number((await db.get("SELECT COUNT(*) AS n FROM studio_chat WHERE role='assistant' AND status IN ('applied','undone') AND created_at>=?", [since]))?.n || 0),
+        cost_won: Number((await db.get("SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_jobs WHERE kind='assistant' AND status='succeeded' AND created_at>=?", [since]))?.n || 0),
+      },
       usage: {
         month: await db.get(
           "SELECT COUNT(*) AS jobs, COALESCE(SUM(CASE WHEN status='succeeded' THEN cost_won ELSE 0 END),0) AS cost_won, COALESCE(SUM(CASE WHEN status='succeeded' THEN charged_lama ELSE 0 END),0) AS lama, COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) AS failed, COALESCE(SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END),0) AS active FROM ai_jobs WHERE created_at>=?",

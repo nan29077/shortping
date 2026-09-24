@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, Check, Loader2, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, HelpCircle, Loader2, Sparkles, X } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -13,6 +13,7 @@ import {
   type AiModelOption,
   type Capability,
   type LamaWallet,
+  type ModelWhy,
   type StudioAsset,
   type StudioJob,
 } from '../api';
@@ -97,7 +98,56 @@ export function ModelPicker({
   );
 }
 
-// 실행 전 예상 라마를 보여 주고 확인을 받습니다.
+// 모델 고르는 방식: 자동(숏핑이 작업마다 가장 알맞은 모델) / 직접(내가 고른 모델). 처음에는 자동.
+export type ModelMode = 'auto' | 'manual';
+const MODE_KEY = 'shortping.studio.modelmode';
+export function loadMode(): ModelMode {
+  try {
+    return localStorage.getItem(MODE_KEY) === 'manual' ? 'manual' : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+export function saveMode(m: ModelMode) {
+  try {
+    localStorage.setItem(MODE_KEY, m);
+  } catch {
+    // 저장 공간을 못 쓰면 이번 화면에서만 기억합니다.
+  }
+}
+
+// 지금 모드를 반영한 선택: 자동 모드면 모든 작업을 '자동 선택'으로(품질 등급은 그대로)
+export function effectiveChoices(): Choices {
+  const c = loadChoices();
+  if (loadMode() === 'manual') return c;
+  return Object.fromEntries(Object.entries(c).map(([k, v]) => [k, { ...v, requested: 'auto' }])) as Choices;
+}
+
+// 체크 옵션 한 줄(왼쪽 정렬: 체크 · 제목 · 한 줄 설명)
+export function OptionRow({ checked, onChange, title, desc, disabled }: { checked: boolean; onChange: (v: boolean) => void; title: string; desc?: string; disabled?: boolean }) {
+  return (
+    <label className={'opt-row' + (checked ? ' on' : '') + (disabled ? ' disabled' : '')}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      <span>
+        <b>{title}</b>
+        {desc && <small>{desc}</small>}
+      </span>
+    </label>
+  );
+}
+
+type Estimate = {
+  lama: number;
+  jobs: number;
+  model: string;
+  won: number;
+  wallet: LamaWallet;
+  capability?: string;
+  why?: ModelWhy[];
+  budget?: { limit: number; spent: number; left: number | null; over: boolean };
+};
+const tierShort: Record<string, string> = { draft: '초안', standard: '표준', premium: '고급' };
+// 실행 전 예상 라마를 보여 주고 확인을 받습니다. 자동 선택이면 '왜 이 모델?'과 다른 후보, 품질 바꾸기, 예산 확인까지.
 export function useRunner({
   projectId,
   notify,
@@ -109,53 +159,110 @@ export function useRunner({
   onRan: () => void;
   onNeedLama: () => void;
 }) {
-  const [pending, setPending] = useState<{
-    idempotencyKey: string;
-    label: string;
-    body: Record<string, unknown>;
-    estimate: { lama: number; jobs: number; model: string; won: number; wallet: LamaWallet };
-  } | null>(null);
+  const [pending, setPending] = useState<{ idempotencyKey: string; label: string; body: Record<string, unknown>; estimate: Estimate } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [budgetOk, setBudgetOk] = useState(false);
+  const [showWhy, setShowWhy] = useState(false);
   const ask = async (label: string, body: Record<string, unknown>) => {
     try {
-      const estimate = await api<{ lama: number; jobs: number; model: string; won: number; wallet: LamaWallet }>(
-        `/studio/ai/projects/${projectId}/estimate`,
-        'POST',
-        body,
-      );
+      const estimate = await api<Estimate>(`/studio/ai/projects/${projectId}/estimate`, 'POST', body);
       setPending({ label, body, estimate, idempotencyKey: uuid() });
+      setBudgetOk(false);
     } catch (e) {
       notify((e as Error).message);
     }
   };
-  const confirm = pending && (
+  const est = pending?.estimate;
+  const auto = pending?.body.requested === 'auto';
+  const lacking = !!est && est.wallet.total < est.lama;
+  const overBudget = !!est?.budget?.over;
+  const top = est?.why?.[0];
+  const confirm = pending && est && (
     <Modal title={pending.label} close={() => !busy && setPending(null)}>
       <div className="run-confirm">
         <div>
           <span>AI 모델</span>
-          <strong>{pending.estimate.model}</strong>
+          <strong>{est.model}</strong>
         </div>
         <div>
           <span>작업 수</span>
-          <strong>{pending.estimate.jobs}건</strong>
+          <strong>{est.jobs}건</strong>
         </div>
         <div>
           <span>예상 라마 (최대)</span>
           <strong className="lime">
-            {lama(pending.estimate.lama)} <small>≈ {won(pending.estimate.won)}</small>
+            {lama(est.lama)} <small>≈ {won(est.won)}</small>
           </strong>
         </div>
         <div>
           <span>사용 가능 라마</span>
-          <strong className={pending.estimate.wallet.total < pending.estimate.lama ? 'danger' : ''}>
-            {lama(pending.estimate.wallet.total)}
-          </strong>
+          <strong className={lacking ? 'danger' : ''}>{lama(est.wallet.total)}</strong>
         </div>
       </div>
-      <p className="muted settings-note">
-        예상치만큼 먼저 예약하고, 끝나면 실제 사용량만 차감해요. 실패하면 전액 돌려드려요.
-      </p>
-      {pending.estimate.wallet.total < pending.estimate.lama ? (
+      <div className="run-tier" role="radiogroup" aria-label="품질">
+        {(['draft', 'standard', 'premium'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="radio"
+            aria-checked={pending.body.tier === t}
+            className={pending.body.tier === t ? 'active' : ''}
+            disabled={busy}
+            onClick={() => pending.body.tier !== t && void ask(pending.label, { ...pending.body, tier: t })}
+          >
+            {tierShort[t]}
+            <small>{t === 'draft' ? '싸고 빠르게' : t === 'premium' ? '가장 좋게' : '균형'}</small>
+          </button>
+        ))}
+      </div>
+      {auto && top && (
+        <div className="run-why">
+          <button type="button" className="run-why-toggle" aria-expanded={showWhy} onClick={() => setShowWhy(!showWhy)}>
+            <HelpCircle size={14} /> 왜 {top.label}인가요? <ChevronDown size={13} />
+          </button>
+          {showWhy && (
+            <>
+              <ul>
+                {(top.why.length ? top.why : ['이 작업에 쓸 수 있는 모델 중 점수가 가장 높아요']).map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+                {top.success !== null && <li>최근 성공률 {Math.round(top.success * 100)}%{top.seconds ? ` · 평균 ${top.seconds}초` : ''}</li>}
+              </ul>
+              {est.why!.length > 1 && (
+                <div className="run-alts">
+                  <span>다른 후보로 실행</span>
+                  {est.why!.slice(1).map((m) => (
+                    <button key={m.id} type="button" className="chip" disabled={busy} onClick={() => void ask(pending.label, { ...pending.body, requested: m.id })}>
+                      {m.label} · {lama(m.lama)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      {!auto && (
+        <p className="muted settings-note">
+          직접 고른 모델로 실행해요.{' '}
+          <button type="button" className="text-link" onClick={() => void ask(pending.label, { ...pending.body, requested: 'auto' })}>
+            자동 추천으로 바꾸기
+          </button>
+        </p>
+      )}
+      {overBudget && est.budget && (
+        <label className="opt-row warn">
+          <input type="checkbox" checked={budgetOk} onChange={(e) => setBudgetOk(e.target.checked)} />
+          <span>
+            <b>프로젝트 예산을 넘어요</b>
+            <small>
+              예산 {lama(est.budget.limit)} 중 {lama(est.budget.spent)} 사용 · 이번 작업 {lama(est.lama)}. 확인하고 진행하려면 체크해 주세요.
+            </small>
+          </span>
+        </label>
+      )}
+      <p className="muted settings-note">예상치만큼 먼저 예약하고, 끝나면 실제 사용량만 차감해요. 실패하면 전액 돌려드려요.</p>
+      {lacking ? (
         <button
           className="primary full"
           onClick={() => {
@@ -168,14 +275,11 @@ export function useRunner({
       ) : (
         <button
           className="primary full"
-          disabled={busy}
+          disabled={busy || (overBudget && !budgetOk)}
           onClick={async () => {
             setBusy(true);
             try {
-              await api(`/studio/ai/projects/${projectId}/run`, 'POST', {
-                ...pending.body,
-                idempotencyKey: pending.idempotencyKey,
-              });
+              await api(`/studio/ai/projects/${projectId}/run`, 'POST', { ...pending.body, idempotencyKey: pending.idempotencyKey, ...(overBudget ? { budgetOk: true } : {}) });
               setPending(null);
               notify('AI가 작업을 시작했어요. 끝나면 화면에 바로 반영돼요.');
               onRan();
@@ -187,7 +291,7 @@ export function useRunner({
             }
           }}
         >
-          <Sparkles size={16} /> {busy ? '시작하는 중…' : `${lama(pending.estimate.lama)}로 실행`}
+          <Sparkles size={16} /> {busy ? '시작하는 중…' : `${lama(est.lama)}로 실행`}
         </button>
       )}
     </Modal>

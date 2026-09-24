@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, Loader2, Settings2 } from 'lucide-react';
-import type { AiModelOption, StudioEpisode, StudioJob, StudioProjectDetail } from '../../api';
-import { ModelPicker, type Choice, type ChoiceKey, type Choices } from '../parts';
+import type { AiFamily, AiModelOption, StudioEpisode, StudioFeatures, StudioJob, StudioProjectDetail } from '../../api';
+import { type Choice, type ChoiceKey, type Choices, type ModelMode } from '../parts';
+import { capabilityLabel } from '../../api';
 import type { SaveState } from '../hooks';
 
 export type TabId = 'plan' | 'script' | 'scene' | 'finish';
@@ -12,13 +13,19 @@ export const TABS: { id: TabId; name: string; hint: string }[] = [
   { id: 'finish', name: '완성 · 공개', hint: '합성 · 예고편 · 썸네일 · 공개' },
 ];
 
-export type RunOpts = { targetId?: string; instruction?: string; options?: Record<string, unknown> };
+export type RunOpts = { targetId?: string; instruction?: string; options?: Record<string, unknown>; tier?: 'draft' | 'standard' | 'premium'; requested?: string };
 // 작업 공간의 탭들이 함께 쓰는 값과 함수
 export type WS = {
   data: StudioProjectDetail;
   load: () => Promise<void>;
   notify: (s: string) => void;
   models: AiModelOption[];
+  families: AiFamily[];
+  features?: StudioFeatures;
+  mode: ModelMode;
+  openModels: () => void;
+  setFocus: (shotId: string) => void;
+  focus: string;
   choices: Choices;
   setChoice: (k: ChoiceKey, c: Choice) => void;
   run: (label: string, action: string, cap: ChoiceKey, opts?: RunOpts) => void;
@@ -79,26 +86,24 @@ export function SaveBadge({ state, error, dirty, hint }: { state: SaveState; err
   return null;
 }
 
-// AI 모델 · 품질 설정(접어 두고 필요할 때만 엶)
+// AI 모델 · 품질 요약(누르면 모델 센터가 열려요)
+const tierShort: Record<string, string> = { draft: '초안', standard: '표준', premium: '고급' };
 export function ModelSettings({ ws, caps }: { ws: WS; caps: ChoiceKey[] }) {
-  const [open, setOpen] = useState(false);
   const summary = caps
-    .map((c) => (ws.choices[c].requested === 'auto' ? null : ws.models.find((m) => m.id === ws.choices[c].requested)?.label))
-    .filter(Boolean)
-    .join(', ');
+    .filter((c) => ws.models.some((m) => m.capability === c))
+    .map((c) => {
+      const ch = ws.choices[c];
+      const m = ws.mode === 'manual' && ch.requested !== 'auto' ? ws.models.find((x) => x.id === ch.requested) : null;
+      return `${capabilityLabel[c]} ${m ? m.label : '자동'}·${tierShort[ch.tier]}`;
+    })
+    .join('  ');
   return (
-    <div className={'ws-models' + (open ? ' open' : '')}>
-      <button type="button" className="ws-models-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <Settings2 size={13} /> AI 모델 · 품질 <small>{summary || '자동 선택'}</small>
+    <div className="ws-models">
+      <button type="button" className="ws-models-toggle" onClick={ws.openModels}>
+        <Settings2 size={13} /> AI 모델 · 품질 <b className={'mode-pill ' + ws.mode}>{ws.mode === 'auto' ? '자동' : '직접'}</b>
+        <small>{summary}</small>
         <ChevronDown size={13} />
       </button>
-      {open && (
-        <div className="picker-bar">
-          {caps.map((c) => (
-            <ModelPicker key={c} capability={c} models={ws.models} value={ws.choices[c]} onChange={(v) => ws.setChoice(c, v)} />
-          ))}
-        </div>
-      )}
     </div>
   );
 }

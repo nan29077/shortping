@@ -9,6 +9,7 @@ import { mockAdapter } from './mock.mjs';
 import { decrypt } from './secret.mjs';
 import { download, VendorError } from './http.mjs';
 import { blockedTerm } from './prompts.mjs';
+import { familyOf } from './model-guide.mjs';
 
 // AI 작업 엔진: 모델 고르기(자동/직접) → 라마 예약 → 대기열 → 공급사 호출·결과 확인 → 파일 저장 →
 // 실제 사용량만 차감(나머지 반환) / 실패 시 다른 모델로 한 번 더 시도하거나 전액 반환.
@@ -89,23 +90,56 @@ export function createAiEngine({ db, uploadDir, demo }) {
     (!PRICE_REQUIRED.includes(r.capability) || Number(r.price_lama) > 0) &&
     (r.kind === 'mock' ? demo : !!r.api_key_enc) &&
     !!adapterOf(r.kind);
+  // 모델별 최근 14일 실적(성공률·평균 소요 시간). 자동 선택 가중치와 PD 화면의 모델 카드에 씁니다(1분 캐시).
+  let statsCache = { at: 0, map: new Map() };
+  async function modelStats({ fresh = false } = {}) {
+    if (!fresh && Date.now() - statsCache.at < 60000) return statsCache.map;
+    const rows = await db.all(
+      "SELECT model_ref,status,started_at,finished_at FROM ai_jobs WHERE created_at>=? AND status IN ('succeeded','failed') ORDER BY created_at DESC LIMIT 3000",
+      [new Date(Date.now() - 14 * 86400000).toISOString()],
+    );
+    const map = new Map();
+    for (const r of rows) {
+      const m = map.get(r.model_ref) || { jobs: 0, ok: 0, secs: 0, timed: 0 };
+      m.jobs++;
+      if (r.status === 'succeeded') {
+        m.ok++;
+        const d = (new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000;
+        if (d > 0 && d < 3600) (m.secs += d), m.timed++;
+      }
+      map.set(r.model_ref, m);
+    }
+    const out = new Map([...map].map(([k, m]) => [k, { jobs: m.jobs, success: m.jobs ? m.ok / m.jobs : null, seconds: m.timed ? Math.round(m.secs / m.timed) : null }]));
+    statsCache = { at: Date.now(), map: out };
+    return out;
+  }
   // 자동 선택 점수: 품질 등급 일치 > 장면 특성 태그 > 관리자 우선순위 > 가격(초안 등급은 저렴할수록 가산)
-  function score(r, { tier, tags, seconds, needImage }, settings) {
-    let s = 0;
+  // 관리자 가중치(비용·속도·안정성)로 조정합니다. 기본값(비용 50·속도 0·안정성 0)은 예전 방식과 같습니다.
+  function scoreParts(r, { tier, tags, seconds, needImage }, settings, stats) {
+    const parts = [];
+    const add = (n, why) => parts.push({ n, why });
     const ti = TIERS.indexOf(tier || 'standard');
     const mi = TIERS.indexOf(r.tier);
-    s += ti === mi ? 40 : Math.abs(ti - mi) === 1 ? 15 : 0;
+    add(ti === mi ? 40 : Math.abs(ti - mi) === 1 ? 15 : 0, ti === mi ? 'tier' : '');
     const mt = String(r.tags || '').split(',').map((x) => x.trim()).filter(Boolean);
-    s += (tags || []).filter((t) => mt.includes(t)).length * 10;
-    s += Number(r.priority || 0) * 0.3;
-    if (r.provider_status === 'ok') s += 5;
-    if (r.provider_status === 'error') s -= 60;
-    if (seconds && r.capability === 'video' && Number(r.max_seconds) < seconds) s -= 25;
-    if (needImage && Number(r.image_input) === 1) s += 8;
+    const hit = (tags || []).filter((t) => mt.includes(t));
+    add(hit.length * 10, hit.length ? 'tags:' + hit.join(',') : '');
+    add(Number(r.priority || 0) * 0.3, Number(r.priority || 0) >= 70 ? 'priority' : '');
+    if (r.provider_status === 'ok') add(5, '');
+    if (r.provider_status === 'error') add(-60, 'error');
+    if (seconds && r.capability === 'video' && Number(r.max_seconds) < seconds) add(-25, 'short');
+    if (needImage && Number(r.image_input) === 1) add(8, 'image_input');
     const price = lamaPerUnit(r, settings);
-    s -= tier === 'draft' ? price * 2 : price * 0.2;
-    return s;
+    const wc = Number(settings.ai_weight_cost ?? 50) / 50;
+    add(-(tier === 'draft' ? price * 2 : price * 0.2) * wc, '');
+    const st = stats?.get(r.id);
+    const ws = Number(settings.ai_weight_speed || 0);
+    if (ws > 0 && st?.seconds) add(-Math.min(60, st.seconds / 10) * (ws / 50), st.seconds <= 30 ? 'fast' : '');
+    const wr = Number(settings.ai_weight_reliability || 0);
+    if (wr > 0 && st?.jobs >= 5 && st.success != null) add((st.success - 0.8) * 50 * (wr / 50), st.success >= 0.95 ? 'reliable' : '');
+    return parts;
   }
+  const score = (r, opts, settings, stats) => scoreParts(r, opts, settings, stats).reduce((n, p) => n + p.n, 0);
   // 공급사 이번 달 원가(공급사별 월 예산 확인용)
   async function providerSpend() {
     const rows = await db.all(
@@ -123,9 +157,12 @@ export function createAiEngine({ db, uploadDir, demo }) {
       return `${r.provider_name}의 이번 달 예산을 모두 썼어요.`;
     return '';
   }
-  async function candidates({ capability, requested = 'auto', tier, tags, seconds, needImage, excludeCn = false }, settings) {
+  async function candidates({ capability, requested = 'auto', tier, tags, seconds, needImage, excludeCn = false, exclude = [] }, settings) {
     const spend = await providerSpend();
-    const all = (await modelRows()).filter((r) => r.capability === capability && usable(r));
+    const stats = await modelStats();
+    const every = (await modelRows()).filter((r) => r.capability === capability && usable(r));
+    // 다른 모델로 다시 시도할 때: 실패한 모델은 빼되, 남는 모델이 없으면 그대로 둡니다.
+    const all = requested === 'auto' && exclude.length && every.some((r) => !exclude.includes(r.id)) ? every.filter((r) => !exclude.includes(r.id)) : every;
     const allowed = all.filter((r) => !blockedReason(r, { excludeCn }, settings, spend));
     if (requested && requested !== 'auto') {
       const one = all.find((r) => r.id === requested);
@@ -139,7 +176,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const rows = healthy.length ? healthy : allowed;
     if (!rows.length) throw error(503, '이 작업에 쓸 수 있는 AI 모델이 아직 연결되지 않았어요. 관리자에게 문의해 주세요.', { code: 'no_model' });
     const ranked = rows
-      .map((r) => ({ r, s: score(r, { tier, tags, seconds, needImage }, settings) }))
+      .map((r) => ({ r, s: score(r, { tier, tags, seconds, needImage }, settings, stats) }))
       .sort((a, b) => b.s - a.s)
       .map((x) => x.r);
     // 관리자 라우팅 규칙(작업·등급별 우선 모델 순서)이 있으면 그 순서를 먼저 따릅니다.
@@ -161,6 +198,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     throw error(400, `사용할 수 없는 표현이 포함돼 있어요: "${banned}"`, { code: 'blocked_term' });
   }
   async function listForPicker(capability, settings) {
+    const stats = await modelStats();
     return (await modelRows())
       .filter((r) => (!capability || r.capability === capability) && usable(r) && (r.country !== 'CN' || Number(settings.ai_allow_cn)))
       .map((r) => ({
@@ -175,7 +213,39 @@ export function createAiEngine({ db, uploadDir, demo }) {
         max_seconds: Number(r.max_seconds),
         tags: r.tags,
         cooling: !!cooling(r),
+        kind: r.kind,
+        family: familyOf(r),
+        image_input: Number(r.image_input) === 1,
+        stats: stats.get(r.id) || null,
       }));
+  }
+  // 왜 이 모델인가: 자동 선택 순위 상위 모델과 이유(PD 화면의 '왜 이 모델?' 안내)
+  const WHY = {
+    tier: (o) => `${{ draft: '초안', standard: '표준', premium: '고급' }[o.tier] || '표준'} 품질 등급에 맞아요`,
+    priority: () => '숏핑이 이 작업에 우선 추천하는 모델이에요',
+    image_input: () => '참고 이미지(인물·장면)를 받아 얼굴·구도를 이어 가요',
+    fast: () => '최근 처리 속도가 빨라요',
+    reliable: () => '최근 성공률이 높아요',
+  };
+  const TAG_KO = { dialogue: '대사', closeup: '클로즈업', action: '액션', landscape: '풍경', cinematic: '영화 같은 화면', character: '인물', consistency: '인물 일관성', lipsync: '입 모양', poster: '포스터', korean: '한국어', story: '이야기 구성', emotion: '감정 표현', fast: '빠름', cheap: '저렴', scene: '장면' };
+  async function explain(opts) {
+    const settings = await loadSettings(db);
+    const stats = await modelStats();
+    const list = await candidates({ ...opts, requested: 'auto' }, settings);
+    const units = opts.units ?? unitsFor(opts.capability, opts.input || {});
+    const cheapest = Math.min(...list.map((r) => lamaFor(r, settings, units)));
+    return list.slice(0, 4).map((r, i) => {
+      const why = [];
+      for (const p of scoreParts(r, opts, settings, stats)) {
+        if (!p.why || p.n <= 0) continue;
+        if (p.why.startsWith('tags:')) why.push(p.why.slice(5).split(',').map((t) => TAG_KO[t] || t).join('·') + '에 강해요');
+        else if (WHY[p.why]) why.push(WHY[p.why](opts));
+      }
+      const l = lamaFor(r, settings, units);
+      if (l === cheapest && list.length > 1) why.push('후보 중 가장 저렴해요');
+      const st = stats.get(r.id);
+      return { id: r.id, label: r.label, provider: r.provider_name, tier: r.tier, lama: l, rank: i + 1, why: why.slice(0, 3), success: st?.jobs >= 3 ? st.success : null, seconds: st?.seconds ?? null };
+    });
   }
   async function estimate(opts) {
     const settings = await loadSettings(db);
@@ -229,7 +299,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     }
   }
   // 작업 등록. 호출한 쪽 트랜잭션 안에서 실행되어야 대상(컷·캐릭터 등) 상태 변경과 함께 묶입니다.
-  async function enqueue({ userId, kind, capability, requested = 'auto', tier = 'standard', tags = [], input, units, target = {}, projectId = null, idempotencyKey, bill = true, excludeCn = false }) {
+  async function enqueue({ userId, kind, capability, requested = 'auto', tier = 'standard', tags = [], input, units, target = {}, projectId = null, idempotencyKey, bill = true, excludeCn = false, exclude = [] }) {
     if (!handlers.has(kind)) throw error(500, 'unknown job kind ' + kind);
     const settings = await loadSettings(db);
     // 같은 PD의 동시 요청이 일일·월 한도를 함께 넘지 않도록 사용자 단위로 순서를 세웁니다.
@@ -249,7 +319,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     // 이미지·영상·음성 프롬프트는 PD가 쓴 묘사로 만들어지므로 프롬프트 전체를 검사합니다.
     const banned = blockedTerm([input.userText, capability === 'text' ? '' : input.prompt, input.text], settings.ai_blocked_terms);
     if (banned) throw error(400, `사용할 수 없는 표현이 포함돼 있어요: "${banned}"`, { code: 'blocked_term' });
-    const list = await candidates({ capability, requested, tier, tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), excludeCn }, settings);
+    const list = await candidates({ capability, requested, tier, tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), excludeCn, exclude }, settings);
     const model = list[0];
     const u = units ?? unitsFor(capability, input);
     const lama = bill ? lamaFor(model, settings, u) : 0;
@@ -637,6 +707,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
     estimate,
     candidates,
     listForPicker,
+    explain,
+    modelStats,
     start,
     stop: () => timer && clearInterval(timer),
     tick,

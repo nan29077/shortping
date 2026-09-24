@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Film, ImageIcon, Lock, Mic, Music, PlayCircle, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react';
+import { CheckSquare, ChevronLeft, ChevronRight, Film, ImageIcon, Lock, Mic, Music, PlayCircle, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react';
 import { api, parseJson, studioMedia, type StudioEpisode, type StudioShot } from '../../api';
 import { Empty } from '../../App';
 import { useAutosave, useSyncedForm } from '../hooks';
@@ -7,6 +7,7 @@ import { JobBadge, Versions, isBusy } from '../parts';
 import { CAMERAS, CAMERA_MOVES, EMOTIONS, shotBase } from './ScriptTab';
 import { EpisodeSwitcher, ModelSettings, NotReady, SaveBadge, Section, hasModel, runningCount, type WS } from './shared';
 import { asset } from '../../platform';
+import MyMedia from './MyMedia';
 
 const TRANSITIONS = [
   { id: 'cut', name: '바로 전환' },
@@ -34,10 +35,17 @@ export default function SceneTab({ ws }: { ws: WS }) {
 
 function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
   const { data } = ws;
-  const [selId, setSelId] = useState(e.shots[0]?.id || '');
+  const [selId, setSelId] = useState(ws.focus && e.shots.some((s) => s.id === ws.focus) ? ws.focus : e.shots[0]?.id || '');
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
   const index = Math.max(0, e.shots.findIndex((s) => s.id === selId));
   const shot = e.shots[index];
   const jobs = data.jobs;
+  // AI 조수가 '지금 보는 컷'을 알 수 있게 알려 줍니다.
+  const setFocus = ws.setFocus;
+  useEffect(() => {
+    setFocus(shot?.id || '');
+  }, [shot?.id, setFocus]);
   const lines = e.shots.filter((s) => s.dialogue.trim());
   const counts = {
     image: e.shots.filter((s) => s.image).length,
@@ -97,7 +105,21 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
           </button>
         )}
       </div>
-      <Timeline e={e} selected={shot?.id || ''} select={setSelId} jobs={jobs} />
+      <div className="ws-board-tools">
+        <button type="button" className={'chip' + (picking ? ' active' : '')} aria-pressed={picking} onClick={() => (setPicking(!picking), setPicked([]))}>
+          <CheckSquare size={12} /> {picking ? '여러 컷 고르기 끝' : '여러 컷 고르기'}
+        </button>
+        <small className="muted">{picking ? '컷을 눌러 고르세요.' : 'PC에서는 컷을 끌어 순서를 바꿀 수 있어요.'}</small>
+      </div>
+      <Timeline
+        e={e}
+        selected={shot?.id || ''}
+        select={(id) => (picking ? setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]) : setSelId(id))}
+        jobs={jobs}
+        picked={picking ? picked : null}
+        reorder={(ids) => void ws.act(() => api(`/studio/ai/projects/${data.project.id}/episodes/${e.id}/shots/order`, 'POST', { ids }), '컷 순서를 바꿨어요.')}
+      />
+      {picking && picked.length > 0 && <BulkBar ws={ws} e={e} picked={picked} clear={() => setPicked([])} />}
       {shot && (
         <ShotDetail
           key={shot.id}
@@ -114,8 +136,30 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
 }
 
 // 타임라인: 컷 길이에 비례한 칸으로 한 회차를 한눈에 보여 줘요.
-function Timeline({ e, selected, select, jobs }: { e: StudioEpisode; selected: string; select: (id: string) => void; jobs: WS['data']['jobs'] }) {
+function Timeline({
+  e,
+  selected,
+  select,
+  jobs,
+  picked,
+  reorder,
+}: {
+  e: StudioEpisode;
+  selected: string;
+  select: (id: string) => void;
+  jobs: WS['data']['jobs'];
+  picked: string[] | null;
+  reorder: (ids: string[]) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState('');
+  const [over, setOver] = useState('');
+  const drop = (target: string) => {
+    if (!drag || drag === target) return;
+    const ids = e.shots.map((s) => s.id).filter((id) => id !== drag);
+    ids.splice(ids.indexOf(target), 0, drag);
+    reorder(ids);
+  };
   useEffect(() => {
     ref.current?.querySelector<HTMLElement>('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [selected]);
@@ -129,11 +173,41 @@ function Timeline({ e, selected, select, jobs }: { e: StudioEpisode; selected: s
           <button
             key={s.id}
             role="option"
-            aria-selected={selected === s.id}
-            className={'ws-clip' + (selected === s.id ? ' active' : '') + (busy ? ' busy' : '') + (failed ? ' failed' : '')}
+            aria-selected={picked ? picked.includes(s.id) : selected === s.id}
+            className={
+              'ws-clip' +
+              ((picked ? picked.includes(s.id) : selected === s.id) ? ' active' : '') +
+              (busy ? ' busy' : '') +
+              (failed ? ' failed' : '') +
+              (drag === s.id ? ' dragging' : '') +
+              (over === s.id && drag && drag !== s.id ? ' drop-here' : '')
+            }
             style={{ flexGrow: Number(s.seconds), minWidth: Math.max(64, (Number(s.seconds) / Math.max(1, total)) * 900) }}
             onClick={() => select(s.id)}
+            draggable={!picked}
+            onDragStart={(ev) => {
+              setDrag(s.id);
+              ev.dataTransfer.effectAllowed = 'move';
+              ev.dataTransfer.setData('text/plain', s.id);
+            }}
+            onDragOver={(ev) => {
+              if (!drag) return;
+              ev.preventDefault();
+              setOver(s.id);
+            }}
+            onDragLeave={() => setOver((o) => (o === s.id ? '' : o))}
+            onDrop={(ev) => {
+              ev.preventDefault();
+              drop(s.id);
+              setDrag('');
+              setOver('');
+            }}
+            onDragEnd={() => {
+              setDrag('');
+              setOver('');
+            }}
           >
+            {picked && <i className={'ws-clip-pick' + (picked.includes(s.id) ? ' on' : '')} aria-hidden="true">{picked.includes(s.id) ? picked.indexOf(s.id) + 1 : ''}</i>}
             {s.image ? <img src={asset(s.image)} alt="" loading="lazy" /> : <span className="ws-clip-empty">이미지 없음</span>}
             <b>
               {i + 1} · {s.seconds}초
@@ -181,7 +255,7 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
   );
   const [editText, setEditText] = useState('');
   // AI 작업 전에는 입력 중인 변경을 먼저 저장합니다(최신 내용으로 만들도록).
-  const run = async (label: string, action: string, cap: 'image' | 'tts' | 'video' | 'lipsync' | 'sfx', opts: { instruction?: string; options?: Record<string, unknown> } = {}) => {
+  const run = async (label: string, action: string, cap: 'image' | 'tts' | 'video' | 'lipsync' | 'sfx', opts: { instruction?: string; options?: Record<string, unknown>; tier?: 'premium' } = {}) => {
     if (!(await save.flush()) && save.dirty) return;
     ws.run(`${index + 1}번 컷 ${label}`, action, cap, { targetId: s.id, ...opts });
   };
@@ -213,10 +287,16 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
             )}
             {s.lipsync && <em className="ws-frame-tag">입 모양 맞춤</em>}
           </div>
+          <MyMedia ws={ws} s={s} index={index} />
           <div className="ws-tools">
             <button className="secondary compact" disabled={isBusy(jobs, s.id, 'shot_image') || !f.visual.trim()} onClick={() => void run('이미지', 'shot_image', 'image')}>
               <ImageIcon size={13} /> {s.image ? '이미지 다시' : '이미지'}
             </button>
+            {s.image && ws.choices.image.tier !== 'premium' && (
+              <button className="secondary compact upgrade" title="마음에 드는 컷만 고급 품질로 다시 만들어요" disabled={isBusy(jobs, s.id, 'shot_image') || !f.visual.trim()} onClick={() => void run('이미지 고급으로 다시', 'shot_image', 'image', { tier: 'premium' })}>
+                <Sparkles size={13} /> 고급으로
+              </button>
+            )}
             <JobBadge jobs={jobs} targetId={s.id} kind="shot_image" onRetry={() => void run('이미지', 'shot_image', 'image')} />
             <Versions assets={data.assets} targetId={s.id} kind="image" current={s.image} onUse={ws.useAsset} />
           </div>
@@ -245,6 +325,11 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
             <button className="secondary compact" disabled={isBusy(jobs, s.id, 'shot_video') || !f.visual.trim()} onClick={() => void run(`영상 (${f.seconds}초)`, 'shot_video', 'video')}>
               <Film size={13} /> {s.video ? '영상 다시' : '영상 만들기'}
             </button>
+            {s.video && ws.choices.video.tier !== 'premium' && (
+              <button className="secondary compact upgrade" title="이 컷만 고급 품질 영상으로 다시 만들어요" disabled={isBusy(jobs, s.id, 'shot_video') || !f.visual.trim()} onClick={() => void run(`영상 고급으로 다시 (${f.seconds}초)`, 'shot_video', 'video', { tier: 'premium' })}>
+                <Sparkles size={13} /> 고급으로
+              </button>
+            )}
             <JobBadge jobs={jobs} targetId={s.id} kind="shot_video" onRetry={() => void run(`영상 (${f.seconds}초)`, 'shot_video', 'video')} />
             <Versions assets={data.assets} targetId={s.id} kind="video" current={s.video} onUse={ws.useAsset} />
           </div>
@@ -416,6 +501,83 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
             </label>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// 여러 컷 한 번에: 다시 만들기(이미지·음성·영상) · 감정·빠르기·카메라 움직임·전환 바꾸기 · 순서 옮기기
+function BulkBar({ ws, e, picked, clear }: { ws: WS; e: StudioEpisode; picked: string[]; clear: () => void }) {
+  const shots = e.shots.filter((s) => picked.includes(s.id));
+  const withLines = shots.filter((s) => s.dialogue.trim()).length;
+  const regen = (label: string, action: string, cap: 'image' | 'tts' | 'video') => ws.run(`${e.number}화 고른 ${shots.length}컷 ${label}`, action, cap, { targetId: e.id, options: { shotIds: picked.slice(0, 20) } });
+  const patch = (body: Record<string, unknown>, what: string) =>
+    void ws.act(async () => {
+      const r = await api<{ changed: number; audioReset: number }>(`/studio/ai/projects/${ws.data.project.id}/episodes/${e.id}/shots/bulk`, 'PATCH', { ids: picked, ...body });
+      if (r.audioReset) ws.notify(`${r.audioReset}컷은 목소리 설정이 바뀌어 음성을 다시 만들어야 해요.`);
+    }, `고른 컷의 ${what}을(를) 바꿨어요.`);
+  const move = (d: -1 | 1) => {
+    const ids = e.shots.map((s) => s.id);
+    const order = d < 0 ? [...ids] : [...ids].reverse();
+    for (let i = 1; i < order.length; i++) if (picked.includes(order[i]) && !picked.includes(order[i - 1])) [order[i - 1], order[i]] = [order[i], order[i - 1]];
+    void ws.act(() => api(`/studio/ai/projects/${ws.data.project.id}/episodes/${e.id}/shots/order`, 'POST', { ids: d < 0 ? order : order.reverse() }), '고른 컷을 옮겼어요.');
+  };
+  return (
+    <div className="bulk-bar" role="toolbar" aria-label="고른 컷 한 번에">
+      <b>{shots.length}컷 골랐어요</b>
+      <div className="bulk-row">
+        <button type="button" className="secondary compact" onClick={() => regen('이미지 다시', 'batch_shot_image', 'image')}>
+          <ImageIcon size={13} /> 이미지 다시
+        </button>
+        <button type="button" className="secondary compact" disabled={!withLines} onClick={() => regen('음성 다시', 'batch_shot_tts', 'tts')}>
+          <Mic size={13} /> 음성 다시 {withLines ? withLines : ''}
+        </button>
+        <button type="button" className="secondary compact" onClick={() => regen('영상 만들기', 'batch_shot_video', 'video')}>
+          <Film size={13} /> 영상
+        </button>
+        <button type="button" className="secondary compact" aria-label="앞으로 옮기기" disabled={ws.busy} onClick={() => move(-1)}>
+          <ChevronLeft size={13} /> 앞으로
+        </button>
+        <button type="button" className="secondary compact" aria-label="뒤로 옮기기" disabled={ws.busy} onClick={() => move(1)}>
+          뒤로 <ChevronRight size={13} />
+        </button>
+      </div>
+      <div className="bulk-row">
+        <select aria-label="감정 한 번에" value="" disabled={ws.busy} onChange={(ev) => ev.target.value && patch({ emotion: ev.target.value === '_' ? '' : ev.target.value }, '감정')}>
+          <option value="">감정 바꾸기…</option>
+          {EMOTIONS.map((x) => (
+            <option key={x || '_'} value={x || '_'}>
+              {x || '기본'}
+            </option>
+          ))}
+        </select>
+        <select aria-label="카메라 움직임 한 번에" value="" disabled={ws.busy} onChange={(ev) => ev.target.value && patch({ camera_move: ev.target.value === '_' ? '' : ev.target.value }, '카메라 움직임')}>
+          <option value="">카메라 움직임…</option>
+          {CAMERA_MOVES.map((x) => (
+            <option key={x || '_'} value={x || '_'}>
+              {x || '자동'}
+            </option>
+          ))}
+        </select>
+        <select aria-label="전환 한 번에" value="" disabled={ws.busy} onChange={(ev) => ev.target.value && patch({ transition: ev.target.value }, '전환')}>
+          <option value="">전환 바꾸기…</option>
+          {TRANSITIONS.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+        <select aria-label="말 빠르기 한 번에" value="" disabled={ws.busy} onChange={(ev) => ev.target.value && patch({ speed: Number(ev.target.value) }, '말 빠르기')}>
+          <option value="">말 빠르기…</option>
+          {[0.8, 0.9, 1, 1.1, 1.2, 1.3].map((x) => (
+            <option key={x} value={x}>
+              {x.toFixed(1)}배
+            </option>
+          ))}
+        </select>
+        <button type="button" className="text-link" onClick={clear}>
+          선택 해제
+        </button>
       </div>
     </div>
   );

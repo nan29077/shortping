@@ -38,6 +38,8 @@ import {
   Cpu,
   Gem,
   HardDrive,
+  Menu,
+  X,
 } from 'lucide-react';
 import {
   api,
@@ -272,7 +274,50 @@ export default function Studio({
       ];
   const tabs = groups.flatMap((g) => g.items);
   const tab = tabs.some((t) => t.id === section) ? section || 'overview' : 'overview';
-  const setTab = (next: string) => navigate('studio/' + next);
+  // 메뉴: 왼쪽 위 햄버거 버튼으로 엽니다. 넓은 화면은 옆 메뉴를 접었다 펴고, 좁은 화면(휴대폰)은 서랍처럼 열려요.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('shortping.studio.menu') === 'closed';
+    } catch {
+      return false;
+    }
+  });
+  const narrow = () => window.matchMedia('(max-width: 800px)').matches;
+  const toggleMenu = () => {
+    if (narrow()) setMenuOpen((v) => !v);
+    else
+      setCollapsed((v) => {
+        try {
+          localStorage.setItem('shortping.studio.menu', v ? 'open' : 'closed');
+        } catch {
+          // 저장 공간을 못 써도 이번 화면에서는 동작해요.
+        }
+        return !v;
+      });
+  };
+  useEffect(() => {
+    document.body.classList.toggle('studio-menu-collapsed', collapsed);
+    return () => document.body.classList.remove('studio-menu-collapsed');
+  }, [collapsed]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const old = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false);
+    const onResize = () => !narrow() && setMenuOpen(false);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.body.style.overflow = old;
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [menuOpen]);
+  const setTab = (next: string) => {
+    setMenuOpen(false);
+    navigate('studio/' + next);
+  };
   async function reload() {
     try {
       setData(await api<StudioData>('/studio'));
@@ -320,6 +365,16 @@ export default function Studio({
   return (
     <>
       <header className="management-topbar">
+        <button
+          type="button"
+          className="menu-toggle"
+          aria-label={menuOpen ? '메뉴 닫기' : '메뉴 열기'}
+          aria-expanded={menuOpen || !collapsed}
+          aria-controls="studio-menu"
+          onClick={toggleMenu}
+        >
+          {menuOpen ? <X size={22} /> : <Menu size={22} />}
+        </button>
         <a href="#/studio">
           <Brand small />
           <span>{admin ? 'ADMIN CONSOLE' : 'CREATOR STUDIO'}</span>
@@ -338,7 +393,8 @@ export default function Studio({
           </button>
         </div>
       </header>
-      <aside className="management-sidebar">
+      {menuOpen && <div className="studio-menu-backdrop" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+      <aside id="studio-menu" className={'management-sidebar' + (menuOpen ? ' open' : '')}>
         <span className="sidebar-caption">WORKSPACE</span>
         <nav aria-label="관리자 메뉴">
           {groups.map((group) => (
@@ -417,15 +473,6 @@ export default function Studio({
           <div className="studio-avatar">
             <Avatar user={user} />
           </div>
-        </div>
-        <div className="studio-tabs">
-          {tabs.map(({ id, name, icon: Icon }) => (
-            <button key={id} onClick={() => setTab(id)} className={tab === id ? 'active' : ''}>
-              <Icon size={16} />
-              {name}
-              {id === 'contents' && pending.length > 0 && <i>{pending.length}</i>}
-            </button>
-          ))}
         </div>
         {tab === 'overview' && (
           <>

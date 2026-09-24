@@ -223,7 +223,7 @@ export async function seed(db) {
     categories,
   ] of seedChannels) {
     await db.run(
-      "INSERT INTO channels (id,owner_id,name,slug,tagline,description,banner,logo,accent,status,featured,featured_order,created_at) VALUES (?,?,?,?,?,?,?,'',?,'active',?,?,?) ON CONFLICT(id) DO NOTHING",
+      "INSERT INTO channels (id,owner_id,name,slug,tagline,description,banner,logo,accent,status,featured,featured_order,created_at,banner_fit) VALUES (?,?,?,?,?,?,?,'',?,'active',?,?,?,'cover') ON CONFLICT(id) DO NOTHING",
       [id, owner, name, slug, tagline, description, banner, accent, featured, order, now],
     );
     await db.run('UPDATE dramas SET channel_id=? WHERE owner_id=? AND channel_id IS NULL', [

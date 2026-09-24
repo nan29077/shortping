@@ -228,6 +228,17 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         ai_allow_cn: z.number().int().min(0).max(1),
         ai_breaker_failures: z.number().int().min(1).max(100),
         ai_breaker_cooldown_min: z.number().int().min(1).max(1440),
+        ai_weight_cost: z.number().int().min(0).max(100),
+        ai_weight_speed: z.number().int().min(0).max(100),
+        ai_weight_reliability: z.number().int().min(0).max(100),
+        ai_assistant_enabled: z.number().int().min(0).max(1),
+        ai_assistant_daily_limit: z.number().int().min(0).max(10000),
+        studio_upload_enabled: z.number().int().min(0).max(1),
+        studio_upload_image_mb: z.number().int().min(1).max(50),
+        studio_upload_video_mb: z.number().int().min(1).max(500),
+        studio_upload_video_seconds: z.number().int().min(3).max(300),
+        studio_upload_audio_mb: z.number().int().min(1).max(100),
+        studio_upload_audio_seconds: z.number().int().min(3).max(600),
         // 0 = 자동 정리 끔. 켤 때는 실수로 너무 짧게 잡지 않도록 최소 7일.
         media_retention_days: z
           .number()

@@ -31,6 +31,20 @@ export const settingDefaults = {
   ai_allow_cn: 1, // 중국 공급사(Kling·Hailuo·Wan·Seedance·DeepSeek 등) 사용 허용
   ai_breaker_failures: 5, // 공급사 연속 실패가 이 횟수면 잠시 자동 제외
   ai_breaker_cooldown_min: 10, // 자동 제외 시간(분)
+  // 자동 모델 선택 가중치(0~100): 비용(기본 50 = 기존 방식) · 속도 · 안정성(최근 성공률)
+  ai_weight_cost: 50,
+  ai_weight_speed: 0,
+  ai_weight_reliability: 0,
+  // AI 조수(작업 공간 채팅): 대화는 무료(플랫폼 부담). PD 1명의 하루 대화 수 한도, 0이면 무제한
+  ai_assistant_enabled: 1,
+  ai_assistant_daily_limit: 100,
+  // 내 소재 올리기(컷마다 내 사진·영상·목소리): 끄면 AI로만 만들 수 있어요.
+  studio_upload_enabled: 1,
+  studio_upload_image_mb: 10,
+  studio_upload_video_mb: 200,
+  studio_upload_video_seconds: 60,
+  studio_upload_audio_mb: 25,
+  studio_upload_audio_seconds: 120,
   // 어디에서도 쓰지 않는 업로드 파일을 만든 뒤 며칠 지나면 지울지(일). 0이면 자동 정리를 하지 않습니다.
   media_retention_days: 91,
   payout_notice:

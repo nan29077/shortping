@@ -616,7 +616,7 @@
   padding: 0;
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 .home-rotate-schedule li {
@@ -653,5 +653,80 @@
 @media (max-width: 900px) {
   .home-rotate-schedule {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+/* 지금 적용 중인 여백 */
+.home-live {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border: 1px solid #bfe95d55;
+  border-radius: 16px;
+  background: #121c18;
+}
+.home-live img {
+  width: 150px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 10px;
+  flex: none;
+}
+.home-live > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.home-live-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--lime);
+}
+.home-live strong {
+  font-size: 18px;
+  color: #f1f7f2;
+}
+.home-live small {
+  font-size: 11px;
+  color: #9fb1a6;
+  line-height: 1.6;
+}
+.home-live small b {
+  color: #e4efe7;
+}
+.home-theme-card > em {
+  position: absolute;
+  left: 9px;
+  top: 9px;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+.home-theme-live {
+  background: var(--lime);
+  color: #14200e;
+}
+.home-theme-picked {
+  top: auto !important;
+  bottom: 62px;
+  background: #0b1112d9;
+  color: #e3d6ff;
+  border: 1px solid #b28cff66;
+}
+.home-theme-card > em.home-theme-live + em.home-theme-picked {
+  bottom: 62px;
+}
+@media (max-width: 720px) {
+  .home-live {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .home-live img {
+    width: 100%;
   }
 }

@@ -8,6 +8,7 @@ import ThumbStudio from '../ThumbStudio';
 import CardMaker from '../CardMaker';
 import { ModelSettings, Section, episodeStatus, epLabel, runningCount, type WS } from './shared';
 import { asset } from '../../platform';
+import QualityCheck from './QualityCheck';
 
 type Meta = { titles: string[]; tagline: string; synopsis: string; hashtags: string[]; episode_titles: { number: number; title: string }[]; at?: string };
 const dramaStatus: Record<string, string> = { draft: '임시저장', pending: '심사 대기', published: '공개 중', rejected: '반려', hidden: '노출 중단' };
@@ -55,6 +56,7 @@ export default function FinishTab({ ws }: { ws: WS }) {
       <TrailerSection ws={ws} />
       <PosterSection ws={ws} backgrounds={backgrounds} made={made} variants={variants} setVariants={setVariants} openStudio={() => setOverlay({ kind: 'poster' })} />
       <MetaSection ws={ws} meta={meta} />
+      <QualityCheck ws={ws} />
       <ExportSection ws={ws} meta={meta} variants={variants} />
       <CostSection ws={ws} />
       {overlay && (

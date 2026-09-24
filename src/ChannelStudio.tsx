@@ -75,7 +75,7 @@ const blank = {
   logo: '',
   accent: '#c4f562',
   theme: 'lime',
-  banner_fit: 'contain',
+  banner_fit: 'cover',
   overlay: 45,
   status: 'draft',
 };
@@ -127,7 +127,7 @@ export default function ChannelStudio({
           logo: r.channel.logo,
           accent: r.channel.accent,
           theme: r.channel.theme || 'lime',
-          banner_fit: r.channel.banner_fit || 'contain',
+          banner_fit: r.channel.banner_fit || 'cover',
           overlay: r.channel.overlay ?? 45,
           status: r.channel.status,
         });
@@ -153,7 +153,8 @@ export default function ChannelStudio({
       const body = new FormData();
       body.set('file', file);
       const r = await api<{ url: string }>('/studio/upload', 'POST', body);
-      setForm((prev) => ({ ...prev, [field]: r.url }));
+      // 새 배너는 배너 영역을 가득 채우게 둡니다(표시 방식에서 원본 전체 보기로 바꿀 수 있어요).
+      setForm((prev) => ({ ...prev, [field]: r.url, ...(field === 'banner' ? { banner_fit: 'cover' } : {}) }));
       notify(field === 'banner' ? '배너를 등록했어요.' : '로고를 등록했어요.');
     } catch (e) {
       notify((e as Error).message);
@@ -281,7 +282,7 @@ export default function ChannelStudio({
         </div>
 
         <h4 className="spaced-title">
-          <ImageIcon size={15} /> 생성형 배너 선택
+          <ImageIcon size={15} /> 배너 이미지 선택
         </h4>
         <p className="channel-design-help">
           숏핑 방송국을 위해 제작한 5종의 배너입니다. 선택한 뒤 아래 저장 버튼을 눌러 적용하세요.
@@ -356,8 +357,8 @@ export default function ChannelStudio({
               value={form.banner_fit}
               onChange={(e) => setForm({ ...form, banner_fit: e.target.value })}
             >
+              <option value="cover">배너 영역 꽉 채우기 (추천)</option>
               <option value="contain">원본 전체 보이기 (잘림 없음)</option>
-              <option value="cover">배너 영역 꽉 채우기</option>
             </select>
           </label>
           <label>

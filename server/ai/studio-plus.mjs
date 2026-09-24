@@ -86,6 +86,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     bgm_volume: z.number().min(0).max(1).optional(),
     resolution: z.enum(['720p', '1080p']).optional(),
     paywall_from: z.number().int().min(1).max(60).optional(),
+    budget_lama: z.number().int().min(0).max(100000000).optional(), // 프로젝트 예산(0 = 제한 없음)
   });
   app.patch('/api/studio/ai/projects/:id/settings', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req);
@@ -114,6 +115,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     if (b.bgm !== undefined) put('bgm', b.bgm);
     if (b.bgm_volume !== undefined) put('bgm_volume', b.bgm_volume);
     if (b.resolution) put('resolution', b.resolution);
+    if (b.budget_lama !== undefined) put('budget_lama', b.budget_lama);
     if (b.paywall_from) put('season', JSON.stringify({ ...parse(p.season), paywall_from: b.paywall_from }));
     if (!sets.length) return res.json({ ok: true });
     put('updated_at', now());

@@ -133,6 +133,7 @@ function mockText(input) {
       episode_titles: (c.episodes || []).map((e) => ({ number: e.number, title: `${e.number}화 · ${['끝나지 않은 전화', '거짓말의 대가', '열리는 문'][e.number % 3]}` })),
     };
   }
+  if (input.purpose === 'assistant') return mockAssistant(c);
   if (input.purpose === 'translate') return { items: (c.items || []).map((x) => ({ id: x.id, en: `EN: ${String(x.ko).slice(0, 200)}` })) };
   if (input.purpose === 'rewrite') {
     const shot = c.shot || {};
@@ -147,6 +148,34 @@ function mockText(input) {
     };
   }
   return { text: String(input.prompt || '').slice(0, 200) };
+}
+
+// 개발용 AI 조수: 말에서 컷 번호·할 일을 대강 알아듣고 실행 계획을 만듭니다.
+function mockAssistant(c) {
+  const msg = String(c.message || '');
+  const ep = c.episode?.number || 1;
+  const n = msg.match(/(\d+)\s*번/);
+  const target = n ? `E${ep}S${n[1]}` : c.focus || (c.shots?.[0]?.ref ?? '');
+  const all = /모두|전부|전체|다 채워|다 만들/.test(msg);
+  const quoted = msg.match(/[“"'‘]([^”"'’]{1,120})[”"'’]/);
+  const actions = [];
+  if (/진단|점검/.test(msg)) actions.push({ type: 'diagnose', target: `E${ep}`, reason: '대본 흐름을 점검해요' });
+  if (/대사/.test(msg) && quoted) actions.push({ type: 'edit_shot', target, fields: { dialogue: quoted[1] }, reason: '대사를 요청대로 바꿔요' });
+  if (/감정|화나|슬프|기쁘/.test(msg) && !quoted) actions.push({ type: 'edit_shot', target, fields: { emotion: /화나/.test(msg) ? '분노' : /슬프/.test(msg) ? '슬픔' : '기쁨' }, reason: '대사 감정을 바꿔요' });
+  if (/이미지|그림|배경|밤|낮/.test(msg)) {
+    const shot = (c.shots || []).find((x) => x.ref === target);
+    if (all) actions.push({ type: 'batch_shot_image', target: `E${ep}`, reason: '빈 컷 이미지를 채워요' });
+    else if (shot?.image && /고쳐|바꿔|밤|낮|배경/.test(msg)) actions.push({ type: 'shot_image_edit', target, instruction: msg.slice(0, 100), reason: '이미지 일부만 고쳐요' });
+    else actions.push({ type: 'shot_image', target, reason: '컷 이미지를 새로 만들어요' });
+  }
+  if (/음성|목소리|녹음/.test(msg)) actions.push(all ? { type: 'batch_shot_tts', target: `E${ep}`, reason: '빈 대사 음성을 채워요' } : { type: 'shot_tts', target, reason: '대사 음성을 만들어요' });
+  if (/영상/.test(msg)) actions.push(all ? { type: 'batch_shot_video', target: `E${ep}`, reason: '빈 컷 영상을 만들어요' } : { type: 'shot_video', target, reason: '컷 영상을 만들어요' });
+  if (/음악|BGM|bgm/.test(msg)) actions.push({ type: 'music', target: `E${ep}`, mood: msg.slice(0, 60), reason: '분위기에 맞는 음악을 만들어요' });
+  if (/없는컷|엉뚱/.test(msg)) actions.push({ type: 'shot_image', target: 'E99S99' });
+  return {
+    reply: actions.length ? `요청하신 내용을 ${actions.length}가지 작업으로 정리했어요. 확인하고 실행을 눌러 주세요.` : '좋은 질문이에요. 지금 회차는 첫 컷의 긴장감이 좋아요. 구체적으로 바꾸고 싶은 컷 번호와 내용을 말씀해 주시면 계획을 만들어 드릴게요.',
+    actions,
+  };
 }
 
 async function posterFile(seed) {

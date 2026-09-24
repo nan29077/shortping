@@ -166,6 +166,9 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS home_history (id TEXT PRIMARY KEY, kind TEXT NOT NULL, data TEXT NOT NULL, actor_id TEXT, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS home_history_created ON home_history(created_at)`,
     `CREATE TABLE IF NOT EXISTS ai_route_rules (id TEXT PRIMARY KEY, capability TEXT NOT NULL, tier TEXT NOT NULL, model_ids TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, updated_by TEXT, UNIQUE(capability, tier))`,
+    // AI 조수(작업 공간 채팅, 2026-09-24): PD 말 → 실행 계획(승인 후 실행) → 결과·되돌리기 기록
+    `CREATE TABLE IF NOT EXISTS studio_chat (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', job_id TEXT, episode_id TEXT, result TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_chat_project ON studio_chat(project_id, created_at)`,
     `CREATE TABLE IF NOT EXISTS ai_safety_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, term TEXT NOT NULL, excerpt TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
   ];
   for (const sql of statements) await db.run(sql);
@@ -178,6 +181,12 @@ export async function migrate(db) {
   await ensureColumn(db, 'dramas', 'episode_price', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'channels', 'theme', "TEXT NOT NULL DEFAULT 'lime'");
   await ensureColumn(db, 'channels', 'banner_fit', "TEXT NOT NULL DEFAULT 'contain'");
+  // 2026-09-24: 방송국 배너는 배너 영역을 가득 채우는 방식이 기본입니다. 기존 방송국도 한 번만 바꿔 둡니다
+  // (PD가 이후 '원본 전체 보이기'를 다시 고르면 그대로 유지).
+  if (!(await db.get("SELECT key FROM platform_settings WHERE key='migrated_banner_cover'"))) {
+    await db.run("UPDATE channels SET banner_fit='cover'");
+    await db.run("INSERT INTO platform_settings (key,value,updated_at) VALUES ('migrated_banner_cover','1',?) ON CONFLICT(key) DO NOTHING", [new Date().toISOString()]);
+  }
   await ensureColumn(db, 'channels', 'overlay', 'INTEGER NOT NULL DEFAULT 45');
   await ensureColumn(db, 'channels', 'greeting', "TEXT NOT NULL DEFAULT ''");
   // 관리자가 숨긴 방송국은 PD가 공개 상태를 바꿀 수 없습니다.
@@ -230,6 +239,8 @@ export async function migrate(db) {
     ['studio_projects', 'meta', "TEXT NOT NULL DEFAULT ''"],
     ['studio_projects', 'thumbs', "TEXT NOT NULL DEFAULT ''"],
     ['studio_projects', 'resolution', "TEXT NOT NULL DEFAULT '720p'"],
+    // 프로젝트 예산(라마, 0 = 제한 없음): 넘는 작업은 확인을 받고, 자동 선택은 예산 안에서 고릅니다.
+    ['studio_projects', 'budget_lama', 'INTEGER NOT NULL DEFAULT 0'],
     ['studio_episodes', 'hook', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'cliffhanger', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'bgm', "TEXT NOT NULL DEFAULT ''"],
