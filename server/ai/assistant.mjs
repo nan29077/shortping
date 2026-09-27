@@ -1,3 +1,4 @@
+import { actionNeed, can, ROLE_NAME, needText } from './team.mjs';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { assistantPrompt, assistantSchema, assistantActionSchema, parseJson, ASSISTANT_ACTIONS } from './prompts.mjs';
@@ -15,6 +16,7 @@ const CAP_OF = {
   shot_image: 'image', shot_image_edit: 'image', character_image: 'image', location_image: 'image', batch_shot_image: 'image', poster: 'image',
   shot_video: 'video', batch_shot_video: 'video', shot_tts: 'tts', batch_shot_tts: 'tts', shot_sfx: 'sfx', shot_lipsync: 'lipsync', music: 'music',
   rewrite_shot: 'text', rewrite_range: 'text', script: 'text', diagnose: 'text', metadata: 'text',
+  verify_shot: 'text', batch_verify_shot: 'text', bridge_shot: 'text',
 };
 export const assistantCapOf = CAP_OF;
 const LABEL = {
@@ -22,7 +24,21 @@ const LABEL = {
   shot_lipsync: '입 모양 맞추기', rewrite_shot: '컷 다시 쓰기', rewrite_range: '여러 컷 다시 쓰기', script: '대본 새로 쓰기', diagnose: '대본 진단',
   character_image: '인물 기준 이미지', location_image: '장소 이미지', batch_shot_image: '빈 컷 이미지 모두', batch_shot_tts: '빈 대사 음성 모두',
   batch_shot_video: '빈 컷 영상 모두', music: '배경음악', poster: '포스터', metadata: '제목·소개 추천',
+  verify_shot: 'AI 검수', batch_verify_shot: '컷 이미지 모두 검수', bridge_shot: '사이 컷 넣기',
   edit_shot: '컷 내용 고치기', edit_character: '인물 설정 고치기', edit_episode: '회차 제목·줄거리 고치기', edit_project: '작품 톤·스타일 고치기',
+};
+// AI 작업 종류별로 되돌릴 때 원래대로 놓을 칸(작업이 덮어쓰는 칸만)
+const UNDO_COLS = {
+  shot_image: { table: 'studio_shots', cols: ['image'] },
+  shot_image_edit: { table: 'studio_shots', cols: ['image'] },
+  shot_video: { table: 'studio_shots', cols: ['video', 'lipsync'] },
+  shot_tts: { table: 'studio_shots', cols: ['audio', 'audio_seconds', 'lipsync'] },
+  shot_sfx: { table: 'studio_shots', cols: ['sfx'] },
+  shot_lipsync: { table: 'studio_shots', cols: ['lipsync'] },
+  rewrite_shot: { table: 'studio_shots', cols: ['scene', 'visual', 'dialogue', 'camera', 'seconds', 'emotion', 'camera_move', 'audio', 'audio_seconds', 'lipsync'] },
+  character_image: { table: 'studio_characters', cols: ['image'] },
+  location_image: { table: 'studio_locations', cols: ['image'] },
+  poster: { table: 'studio_projects', cols: ['poster'] },
 };
 // 직접 고치기에서 바꿀 수 있는 칸과 규칙
 const SHOT_FIELDS = {
@@ -118,12 +134,12 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
     // AI 작업: 대상 → run 본문
     const body = { action: a.type, options: {} };
     let what = '작품 전체';
-    if (a.type.startsWith('shot_') || a.type === 'rewrite_shot') {
+    if (a.type.startsWith('shot_') || ['rewrite_shot', 'verify_shot', 'bridge_shot'].includes(a.type)) {
       const s = r.shot(a.target);
       if (!s) return bad(`컷(${a.target || '미지정'})을 찾을 수 없어요.`);
       body.targetId = s.id;
       what = `${s.episode_number}화 ${s.ref.split('S')[1]}번 컷`;
-    } else if (['script', 'diagnose', 'batch_shot_image', 'batch_shot_tts', 'batch_shot_video'].includes(a.type)) {
+    } else if (['script', 'diagnose', 'batch_shot_image', 'batch_shot_tts', 'batch_shot_video', 'batch_verify_shot'].includes(a.type)) {
       const e = r.episode(a.target);
       if (!e) return bad('회차를 찾을 수 없어요.');
       body.targetId = e.id;
@@ -156,6 +172,7 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       if (a.instruction.trim().length < 2 && a.type !== 'script') return bad('무엇을 바꿀지 알 수 없어 뺐어요.');
       if (a.instruction.trim()) body.instruction = a.instruction.trim().slice(0, 300);
     }
+    if (a.type === 'bridge_shot' && a.instruction.trim()) body.instruction = a.instruction.trim().slice(0, 300);
     if (a.type === 'shot_sfx') {
       if (!a.prompt.trim() && !a.instruction.trim()) return bad('어떤 효과음인지 알 수 없어 뺐어요.');
       body.options.prompt = (a.prompt || a.instruction).trim().slice(0, 200);
@@ -201,18 +218,20 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
   const chatOf = async (pid) => {
     // 답을 만들던 작업이 취소·실패로 끝났는데 기록이 남아 있으면 정리합니다.
     await db.run("UPDATE studio_chat SET status='failed',content=? WHERE project_id=? AND status='thinking' AND job_id IN (SELECT id FROM ai_jobs WHERE status IN ('failed','canceled'))", ['답을 만들지 못했어요. 잠시 후 다시 말씀해 주세요. (대화는 무료예요)', pid]);
+    // 실행 도중 서버가 멈춰 '실행 중'으로 남은 계획은 10분 뒤 정리합니다(일부는 이미 실행됐을 수 있어 다시 실행하지 않음).
+    await db.run("UPDATE studio_chat SET status='done',result=? WHERE project_id=? AND status='applying' AND created_at<?", [JSON.stringify({ results: [], undo: [], jobs: [], interrupted: true, at: now() }), pid, new Date(Date.now() - 600000).toISOString()]);
     return rawChat(pid);
   };
   const rawChat = (pid) => db.all('SELECT id,role,content,plan,status,result,episode_id,created_at FROM studio_chat WHERE project_id=? ORDER BY created_at DESC LIMIT 40', [pid]);
   const view = (m) => ({ ...m, plan: parse(m.plan, []), result: parse(m.result, null) });
   app.get('/api/studio/ai/projects/:id/assistant', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, 'view');
     res.json((await chatOf(p.id)).reverse().map(view));
   });
   const choiceSchema = z.object({ requested: z.string().max(80).default('auto'), tier: z.enum(['draft', 'standard', 'premium']).default('standard') });
   app.post('/api/studio/ai/projects/:id/assistant', roles('pd', 'admin'), async (req, res) => {
     await requireTerms(req);
-    const p = await project(req);
+    const p = await project(req, req.params.id, ['script', 'scene']);
     const b = z
       .object({
         message: z.string().trim().min(1, '하고 싶은 말을 적어 주세요.').max(600),
@@ -228,8 +247,10 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       const used = Number((await db.get("SELECT COUNT(*) AS n FROM studio_chat WHERE user_id=? AND role='user' AND created_at>=?", [req.user.id, kstDayStart()]))?.n || 0);
       if (used >= limit) fail(429, `오늘 AI 조수와 나눌 수 있는 대화(${limit}번)를 모두 썼어요. 내일 다시 이용해 주세요.`);
     }
-    const thinking = await db.get("SELECT id FROM studio_chat WHERE project_id=? AND status='thinking'", [p.id]);
-    if (thinking) fail(409, 'AI 조수가 앞의 말에 답하는 중이에요. 잠시만 기다려 주세요.');
+    const busyCheck = async () => {
+      if (await db.get("SELECT id FROM studio_chat WHERE project_id=? AND status='thinking'", [p.id])) fail(409, 'AI 조수가 앞의 말에 답하는 중이에요. 잠시만 기다려 주세요.');
+    };
+    await busyCheck();
     await engine.screen({ userId: req.user.id, kind: 'assistant', texts: [b.message] });
     const eps = await episodesOf(p.id);
     const episode = eps.find((e) => e.id === b.episodeId) || eps[0] || null;
@@ -260,6 +281,9 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
     const stamp = now();
     const later = new Date(Date.parse(stamp) + 1).toISOString();
     await db.transaction(async () => {
+      // 같은 프로젝트에 동시에 두 번 보내도 한 번만 받습니다(PostgreSQL은 프로젝트 행을 잠가 순서를 세움).
+      if (db.engine === 'postgresql') await db.get('SELECT id FROM studio_projects WHERE id=? FOR UPDATE', [p.id]);
+      await busyCheck();
       await db.run('INSERT INTO studio_chat (id,project_id,user_id,role,content,status,episode_id,created_at) VALUES (?,?,?,?,?,?,?,?)', [userId, p.id, req.user.id, 'user', b.message, '', episode?.id || null, stamp]);
       await db.run('INSERT INTO studio_chat (id,project_id,user_id,role,content,status,episode_id,created_at) VALUES (?,?,?,?,?,?,?,?)', [botId, p.id, req.user.id, 'assistant', '', 'thinking', episode?.id || null, later]);
       // 대화는 무료: 라마를 예약·차감하지 않습니다(bill=false, 원가는 플랫폼 부담으로 기록).
@@ -272,8 +296,8 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
   // 계획 실행: 고른 작업만(skip으로 뺄 수 있음). 직접 수정은 바로 반영하고 되돌리기 기록을 남깁니다.
   app.post('/api/studio/ai/projects/:id/assistant/:mid/apply', roles('pd', 'admin'), async (req, res) => {
     await requireTerms(req);
-    const p = await project(req);
-    const b = z.object({ skip: z.array(z.number().int().min(0).max(20)).max(20).default([]), choices: z.record(z.string(), choiceSchema).optional(), budgetOk: z.boolean().optional() }).parse(req.body || {});
+    const p = await project(req, req.params.id, ['script', 'scene']);
+    const b = z.object({ skip: z.array(z.number().int().min(0).max(20)).max(20).default([]), choices: z.record(z.string(), choiceSchema).optional(), budgetOk: z.boolean().optional(), quoteOk: z.boolean().optional() }).parse(req.body || {});
     const m = await db.get("SELECT * FROM studio_chat WHERE id=? AND project_id=? AND role='assistant'", [req.params.mid, p.id]);
     if (!m) fail(404, '계획을 찾을 수 없어요.');
     if (m.status !== 'ready') fail(409, m.status === 'applied' ? '이미 실행한 계획이에요.' : '실행할 수 있는 계획이 아니에요.');
@@ -283,14 +307,30 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
     const acts = parse(m.plan, []);
     const results = [];
     const undo = [];
+    const noUndo = [];
     const jobIds = [];
     const req2 = { ...req, params: { id: p.id } };
     try {
-      // 예산 확인은 AI 작업 전체를 한 번에
+      // 계획을 만든 뒤 모델·등급·가격이 바뀌었을 수 있으므로 실행 직전 현재 설정으로 다시 견적합니다.
       const aiActs = acts.map((a, i) => ({ a, i })).filter(({ a, i }) => a.ok && a.body && !a.error && !b.skip.includes(i));
+      const prepared = new Map();
+      let currentTotal = 0;
+      const quoteChanges = [];
+      for (const { a, i } of aiActs) {
+        const choice = b.choices?.[a.cap];
+        const body = runSchema.parse({ ...a.body, requested: choice?.requested || 'auto', tier: choice?.tier || 'standard', budgetOk: true });
+        const specs = await plan(req2, p, body);
+        const price = await estimateSpecs(p, body, specs);
+        currentTotal += Number(price.lama || 0);
+        prepared.set(i, { body, specs, price });
+        if (Number(a.lama || 0) !== Number(price.lama || 0) || (a.model && price.label && a.model !== price.label))
+          quoteChanges.push(`${a.label}: ${Number(a.lama || 0).toLocaleString('ko-KR')} → ${Number(price.lama || 0).toLocaleString('ko-KR')}라마${price.label ? ` (${price.label})` : ''}`);
+      }
+      if (quoteChanges.length && !b.quoteOk)
+        throw Object.assign(new Error(`현재 모델 기준으로 금액이 바뀌었어요. ${quoteChanges.join(' · ')} 실행 전 새 금액을 확인해 주세요.`), { status: 409, code: 'quote_changed' });
       if (Number(p.budget_lama) > 0 && !b.budgetOk && aiActs.length) {
         const spent = Number((await db.get("SELECT COALESCE(SUM(CASE WHEN status='succeeded' THEN charged_lama WHEN status IN ('queued','running') THEN estimate_lama ELSE 0 END),0) AS n FROM ai_jobs WHERE project_id=? AND billed=1", [p.id]))?.n || 0);
-        const add = aiActs.reduce((n, { a }) => n + Number(a.lama || 0), 0);
+        const add = currentTotal;
         if (spent + add > Number(p.budget_lama))
           throw Object.assign(new Error(`프로젝트 예산(${Number(p.budget_lama).toLocaleString('ko-KR')}라마)을 넘어요. 이번 계획은 약 ${add.toLocaleString('ko-KR')}라마예요.`), { status: 409, code: 'project_budget' });
       }
@@ -301,6 +341,8 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
           continue;
         }
         try {
+          const editNeed = { edit_shot: 'script', edit_character: 'script', edit_episode: 'script', edit_project: 'script' }[a.type];
+          if (editNeed && req.teamRole && req.teamRole !== 'owner' && !can(req.teamRole, editNeed)) throw new Error(`${ROLE_NAME[req.teamRole]} 역할은 이 수정(${needText(editNeed)})을 할 수 없어요.`);
           if (a.type === 'edit_shot') {
             const s = await db.get('SELECT s.*, e.project_id FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE s.id=?', [a.targetId]);
             if (!s || s.project_id !== p.id) throw new Error('컷이 지워졌어요.');
@@ -311,7 +353,8 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
             await db.run(`UPDATE studio_shots SET ${sets.join(',')} WHERE id=?`, [...Object.values(a.fields), s.id]);
             await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
             if (a.fields.visual && a.fields.visual !== s.visual) await queueTranslate(p.id, p.owner_id, [{ id: 'shot:' + s.id, ko: a.fields.visual }]).catch(() => {});
-            undo.push({ table: 'studio_shots', id: s.id, values: before, episode: s.episode_id });
+            const after = await db.get(`SELECT ${Object.keys(before).join(',')} FROM studio_shots WHERE id=?`, [s.id]);
+            undo.push({ table: 'studio_shots', id: s.id, values: before, after, need: 'script', actor: req.user.id, episode: s.episode_id });
             results.push({ i, ok: true, message: audioReset ? '고쳤어요. 대사가 바뀌어 음성은 다시 만들어야 해요.' : '고쳤어요.' });
           } else if (a.type === 'edit_character' || a.type === 'edit_episode' || a.type === 'edit_project') {
             const table = { edit_character: 'studio_characters', edit_episode: 'studio_episodes', edit_project: 'studio_projects' }[a.type];
@@ -320,19 +363,22 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
             if (!row) throw new Error('대상이 지워졌어요.');
             const before = Object.fromEntries(Object.keys(a.fields).map((k) => [k, row[k]]));
             await db.run(`UPDATE ${table} SET ${Object.keys(a.fields).map((k) => `${k}=?`).join(',')} WHERE id=?`, [...Object.values(a.fields), row.id]);
-            undo.push({ table, id: row.id, values: before });
+            const after = await db.get(`SELECT ${Object.keys(before).join(',')} FROM ${table} WHERE id=?`, [row.id]);
+            undo.push({ table, id: row.id, values: before, after, need: 'script', actor: req.user.id });
             results.push({ i, ok: true, message: '고쳤어요.' });
           } else {
-            const choice = b.choices?.[a.cap];
-            const body = runSchema.parse({ ...a.body, requested: choice?.requested || 'auto', tier: choice?.tier || 'standard', budgetOk: true });
-            // 되돌리기용: AI 결과가 덮어쓸 컷의 지금 이미지·음성·영상
-            if (body.targetId && (a.type.startsWith('shot_') || a.type === 'rewrite_shot')) {
-              const s = await db.get('SELECT id,image,audio,audio_seconds,video,lipsync,sfx,scene,visual,dialogue,camera,seconds FROM studio_shots WHERE id=?', [body.targetId]);
-              if (s) undo.push({ table: 'studio_shots', id: s.id, values: Object.fromEntries(Object.entries(s).filter(([k]) => k !== 'id')), ai: true });
-            }
-            const specs = await plan(req2, p, body);
+            const { body, specs } = prepared.get(i);
             const jobs = await runSpecs(req2, p, body, specs);
             jobIds.push(...jobs.map((j) => j.id));
+            // 되돌리기용: 작업이 실제로 시작된 뒤, 그 작업이 덮어쓸 칸만 지금 값으로 남깁니다.
+            // 대본 새로 쓰기·구간 다시 쓰기는 컷을 통째로 바꾸므로 여기서는 되돌리지 않고 대본 탭의 버전 기록을 씁니다.
+            if (['script', 'rewrite_range', 'bridge_shot'].includes(a.type)) noUndo.push(a.label);
+            for (const j of jobs) {
+              const snap = UNDO_COLS[j.kind];
+              if (!snap || !j.target_id) continue;
+              const row = await db.get(`SELECT ${snap.cols.join(',')} FROM ${snap.table} WHERE id=?`, [j.target_id]);
+              if (row) undo.push({ table: snap.table, id: j.target_id, values: row, ai: true, jobId: j.id, need: actionNeed(a.type), actor: req.user.id });
+            }
             results.push({ i, ok: true, jobs: jobs.length, message: `시작했어요 · 예약 ${jobs.reduce((n, j) => n + Number(j.estimate_lama), 0)}라마` });
           }
         } catch (e) {
@@ -344,21 +390,70 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       throw e;
     }
     const any = results.some((r) => r.ok);
-    await db.run('UPDATE studio_chat SET status=?,result=? WHERE id=?', [any ? 'applied' : 'ready', JSON.stringify({ results, undo, jobs: jobIds, at: now() }), m.id]);
+    await db.run('UPDATE studio_chat SET status=?,result=? WHERE id=?', [any ? 'applied' : 'ready', JSON.stringify({ results, undo, noUndo, jobs: jobIds, at: now() }), m.id]);
     if (any) await db.run('UPDATE studio_projects SET updated_at=? WHERE id=?', [now(), p.id]);
     res.json({ results });
   });
-  // 되돌리기: 직접 고친 내용은 원래대로, AI 작업은 진행 중이면 멈추고(라마 반환) 이전 결과로 돌려놓습니다(새 결과는 버전 기록에 남음).
+  // 되돌리기: 직접 고친 내용은 원래대로, AI 작업은 대기 중이면 취소하고(라마 반환) 끝났으면 이전 결과로 돌려놓습니다.
+  // 만드는 중이거나 이후 팀원의 수정과 충돌하면 안전하게 중단하고 최신 내용을 보존합니다.
   app.post('/api/studio/ai/projects/:id/assistant/:mid/undo', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, 'view');
     const m = await db.get("SELECT * FROM studio_chat WHERE id=? AND project_id=? AND role='assistant'", [req.params.mid, p.id]);
     if (!m || m.status !== 'applied') fail(400, '되돌릴 수 있는 계획이 아니에요.');
+    if (req.teamRole !== 'owner' && m.user_id !== req.user.id) fail(403, '이 계획을 실행한 팀원이나 프로젝트 소유자만 되돌릴 수 있어요.');
     const r = parse(m.result, {});
     for (const id of r.jobs || []) {
       const j = await db.get('SELECT status FROM ai_jobs WHERE id=?', [id]);
-      if (j && (j.status === 'queued' || j.status === 'running')) await engine.cancel(id, req.user).catch(() => {});
+      if (j?.status === 'running') fail(409, '아직 AI가 만드는 중인 작업이 있어요. 끝난 뒤에 되돌려 주세요.');
     }
-    const allowed = { studio_shots: Object.keys(SHOT_FIELDS).concat(['audio', 'audio_seconds', 'lipsync', 'image', 'video', 'sfx', 'scene']), studio_characters: Object.keys(CHAR_FIELDS), studio_episodes: Object.keys(EP_FIELDS), studio_projects: Object.keys(PROJECT_FIELDS) };
+    const allowed = {
+      studio_shots: Object.keys(SHOT_FIELDS).concat(['audio', 'audio_seconds', 'lipsync', 'image', 'video', 'sfx', 'scene']),
+      studio_characters: Object.keys(CHAR_FIELDS).concat(['image']),
+      studio_locations: ['image'],
+      studio_episodes: Object.keys(EP_FIELDS),
+      studio_projects: Object.keys(PROJECT_FIELDS).concat(['poster']),
+    };
+    const same = (a, b) => String(a ?? '') === String(b ?? '');
+    const expectedFor = (job) => {
+      const out = parse(job?.output, {});
+      if (!job || job.status !== 'succeeded') return null;
+      if (job.kind === 'rewrite_shot') return out.values || null;
+      const url = out.url;
+      if (!url) return null;
+      if (['shot_image', 'shot_image_edit'].includes(job.kind)) return { image: url };
+      if (job.kind === 'shot_video') return { video: url, lipsync: '' };
+      if (job.kind === 'shot_tts') return { audio: url, audio_seconds: out.duration || 0, lipsync: '' };
+      if (job.kind === 'shot_sfx') return { sfx: url };
+      if (job.kind === 'shot_lipsync') return { lipsync: url };
+      if (job.kind === 'character_image') return { image: url };
+      if (job.kind === 'location_image') return { image: url };
+      if (job.kind === 'poster') return { poster: url };
+      return null;
+    };
+    // 권한과 충돌을 먼저 전부 확인한 뒤에만 취소·복원을 시작합니다. 일부만 되돌아가는 상태를 만들지 않습니다.
+    for (const u of r.undo || []) {
+      const cols = Object.keys(u.values || {}).filter((k) => allowed[u.table]?.includes(k));
+      if (!cols.length) continue;
+      const needs = Array.isArray(u.need) ? u.need : [u.need || (u.table === 'studio_shots' && cols.some((k) => ['image', 'audio', 'audio_seconds', 'video', 'lipsync', 'sfx'].includes(k)) ? 'scene' : 'script')];
+      if (req.teamRole !== 'owner' && !needs.every((need) => can(req.teamRole, need))) fail(403, `현재 역할에는 ${needText(needs)} 내용을 되돌릴 권한이 없어요.`);
+      const current = await db.get(`SELECT ${cols.join(',')} FROM ${u.table} WHERE id=?`, [u.id]);
+      if (!current) continue;
+      if ((u.ai && !u.jobId) || (!u.ai && !u.after))
+        fail(409, '이 계획은 안전한 충돌 확인 정보가 없는 이전 기록이라 자동으로 되돌리지 않았어요. 버전 기록에서 직접 선택해 주세요.');
+      let expected = u.after || null;
+      if (u.ai && u.jobId) expected = expectedFor(await db.get('SELECT kind,status,output FROM ai_jobs WHERE id=?', [u.jobId]));
+      if (u.ai && u.jobId && !expected) {
+        const state = await db.get('SELECT status FROM ai_jobs WHERE id=?', [u.jobId]);
+        if (!state || ['queued', 'failed', 'canceled'].includes(state.status)) continue;
+        fail(409, '이 AI 결과의 현재 버전을 안전하게 확인할 수 없어 되돌리지 않았어요. 버전 기록에서 직접 선택해 주세요.');
+      }
+      if (expected && Object.keys(expected).some((k) => k in current && !same(current[k], expected[k])))
+        fail(409, '계획 실행 뒤 다른 수정이 있어 자동으로 되돌리지 않았어요. 최신 내용을 확인한 뒤 버전 기록에서 선택해 주세요.');
+    }
+    for (const id of r.jobs || []) {
+      const j = await db.get('SELECT status FROM ai_jobs WHERE id=?', [id]);
+      if (j?.status === 'queued') await engine.cancel(id, req.user).catch(() => {});
+    }
     await db.transaction(async () => {
       for (const u of [...(r.undo || [])].reverse()) {
         const cols = Object.keys(u.values || {}).filter((k) => allowed[u.table]?.includes(k));
@@ -375,15 +470,15 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       }
       await db.run("UPDATE studio_chat SET status='undone' WHERE id=?", [m.id]);
     });
-    res.json({ ok: true });
+    res.json({ ok: true, skipped: r.noUndo || [] });
   });
   app.post('/api/studio/ai/projects/:id/assistant/:mid/dismiss', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, ['script', 'scene']);
     await db.run("UPDATE studio_chat SET status='declined' WHERE id=? AND project_id=? AND status='ready'", [req.params.mid, p.id]);
     res.json({ ok: true });
   });
   app.delete('/api/studio/ai/projects/:id/assistant', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, ['script', 'scene']);
     await db.run("DELETE FROM studio_chat WHERE project_id=? AND status NOT IN ('thinking','applying')", [p.id]);
     res.json({ ok: true });
   });

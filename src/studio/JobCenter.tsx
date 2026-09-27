@@ -30,8 +30,15 @@ export const jobKindLabel: Record<string, string> = {
   rewrite_shot: '컷 다시 쓰기',
   translate: '묘사 번역',
   assistant: 'AI 조수',
+  parse_script: '대본 컷 나누기',
+  prop_image: '소품 이미지',
+  verify_shot: 'AI 검수',
+  bridge_shot: '사이 컷',
+  variants: '대본 변형',
+  reverse_script: '영상에서 대본 뽑기',
 };
 export const kindCapability: Record<string, Capability> = {
+  parse_script: 'text', verify_shot: 'text', bridge_shot: 'text', variants: 'text', reverse_script: 'text', prop_image: 'image',
   plan: 'text', adapt: 'text', bible: 'text', season: 'text', metadata: 'text', script: 'text', diagnose: 'text', rewrite_range: 'text', rewrite_shot: 'text', translate: 'text', assistant: 'text',
   poster: 'image', thumb_bg: 'image', character_image: 'image', character_ref: 'image', location_image: 'image', shot_image: 'image', shot_image_edit: 'image',
   voice_sample: 'tts', shot_tts: 'tts', shot_video: 'video', shot_lipsync: 'lipsync', shot_sfx: 'sfx', music: 'music',
@@ -53,6 +60,7 @@ export function targetText(d: StudioProjectDetail, j: Pick<StudioJob, 'target_ty
   }
   if (j.target_type === 'character') return d.characters.find((c) => c.id === j.target_id)?.name || '인물';
   if (j.target_type === 'location') return (d.locations || []).find((l) => l.id === j.target_id)?.name || '장소';
+  if (j.target_type === 'prop') return (d.props || []).find((x) => x.id === j.target_id)?.name || '소품';
   return '작품 전체';
 }
 const statusText: Record<string, string> = { queued: '대기 중', running: '만드는 중', succeeded: '완료', failed: '실패', canceled: '취소됨' };
@@ -87,15 +95,19 @@ export default function JobCenter({
   const limit = Number(data.project.budget_lama || 0);
   const reserved = data.jobs.filter((j) => j.status === 'queued' || j.status === 'running').reduce((n, j) => n + Number(j.estimate_lama), 0);
   const used = Number(data.spent) + reserved;
-  const retry = async (j: StudioJob, requested: string, budgetOk = false): Promise<void> => {
+  const owner = !data.team || data.team.role === 'owner';
+  const shared = !!data.team?.members.length;
+  const retry = async (j: StudioJob, requested: string, budgetOk = false, payOwn = false): Promise<void> => {
     setBusy(j.id);
     try {
-      await api(`/studio/ai/jobs/${j.id}/retry`, 'POST', { requested, ...(budgetOk ? { budgetOk: true } : {}) });
+      await api(`/studio/ai/jobs/${j.id}/retry`, 'POST', { requested, ...(budgetOk ? { budgetOk: true } : {}), ...(payOwn ? { payOwn: true } : {}) });
       notify(requested === 'auto' ? '다른 모델로 다시 시작했어요.' : '고른 모델로 다시 시작했어요.');
       await reload();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'project_budget') {
-        if (await ask({ title: '프로젝트 예산을 넘어요', text: (e as Error).message + ' 그래도 다시 시도할까요?', ok: '예산 넘어도 진행' })) return retry(j, requested, true);
+        if (await ask({ title: '프로젝트 예산을 넘어요', text: (e as Error).message + ' 그래도 다시 시도할까요?', ok: '예산 넘어도 진행' })) return retry(j, requested, true, payOwn);
+      } else if (e instanceof ApiError && e.code === 'sponsor_limit') {
+        if (await ask({ title: '지원 한도를 넘어요', text: (e as Error).message, ok: '내 라마로 진행' })) return retry(j, requested, budgetOk, true);
       } else {
         if (e instanceof ApiError && e.code === 'insufficient_lama') goLama();
         notify((e as Error).message);
@@ -143,12 +155,12 @@ export default function JobCenter({
               <i style={{ width: Math.min(100, (used / limit) * 100) + '%', background: used > limit ? '#ff6b6b' : undefined }} />
             </div>
           )}
-          <div className="jobc-budget-form">
+          {owner && <div className="jobc-budget-form">
             <input type="number" min={0} inputMode="numeric" aria-label="프로젝트 예산(라마)" placeholder="예: 3000 (비우면 제한 없음)" value={budget} onChange={(e) => setBudget(e.target.value.replace(/\D/g, ''))} />
             <button type="button" className="secondary compact" disabled={busy === 'budget'} onClick={() => void saveBudget()}>
               저장
             </button>
-          </div>
+          </div>}
           <small className="muted">예산을 넘는 작업은 실행 전에 한 번 더 확인해요. AI 조수와의 대화는 무료예요.</small>
         </section>
         <div className="hub-seg small" role="tablist" aria-label="작업 거르기">
@@ -182,15 +194,17 @@ export default function JobCenter({
                   <em>{j.status === 'succeeded' ? lama(j.charged_lama) : j.status === 'failed' || j.status === 'canceled' ? '반환' : '예약 ' + lama(j.estimate_lama)}</em>
                 </div>
                 <small className="muted">
+                  {shared && j.actor_name ? `${j.actor_name} · ` : ''}
                   {j.model_label || '모델'} · {when(j.created_at)}
                   {Number(j.attempts) > 1 ? ` · ${j.attempts}번 시도` : ''}
                 </small>
                 {j.status === 'failed' && <p className="jobc-error">{j.error || '원인을 알 수 없어요.'}</p>}
-                {(j.status === 'queued' || j.status === 'running') && (
+                {j.status === 'queued' && (
                   <button type="button" className="text-link" disabled={busy === j.id} onClick={() => void cancel(j)}>
-                    <Square size={11} /> 멈추기
+                    <Square size={11} /> 대기 취소
                   </button>
                 )}
+                {j.status === 'running' && <small className="muted">공급사가 만드는 중이에요 · 완료 뒤 결과를 확인하거나 다시 만들 수 있어요.</small>}
                 {(j.status === 'failed' || j.status === 'canceled') && RETRYABLE.has(j.kind) && (
                   <div className="jobc-retry">
                     <button type="button" className="secondary compact" disabled={busy === j.id} onClick={() => void retry(j, 'auto')}>

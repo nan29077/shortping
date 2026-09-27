@@ -134,6 +134,38 @@ function mockText(input) {
     };
   }
   if (input.purpose === 'assistant') return mockAssistant(c);
+  if (input.purpose === 'parse_script') return mockParseScript(String(c.text || ''));
+  if (input.purpose === 'reverse_script') {
+    // 개발용: 'N화 자막' 줄을 회차로, 나머지 줄은 두 인물이 번갈아 말한 대사로 복원
+    const names = ['민준', '서연'];
+    let k = 0;
+    const out = [];
+    for (const line of String(c.transcript || '').split(/\n+/).map((x) => x.trim()).filter(Boolean)) {
+      const ep = line.match(/^(\d+)화 자막/);
+      if (ep) {
+        out.push(`${ep[1]}화`, 'S#1. 거실 - 밤', '(조용한 거실, 두 사람이 마주 앉아 있다)');
+        continue;
+      }
+      out.push(`${names[k++ % 2]}: ${line}`);
+    }
+    return { title: '복원한 이야기', synopsis: '영상 자막으로 되살린 이야기예요. 두 사람이 오래된 비밀을 두고 마주한다.', script: out.join('\n') || '1화\nS#1. 거실 - 밤\n민준: 안녕.' };
+  }
+  if (input.purpose === 'bridge')
+    return { scene: '전환', visual: `${c.prev?.scene || '장면'}에서 ${c.next?.scene || '다음 장면'}으로 넘어가는 창밖 풍경`, visual_en: 'establishing shot, window view, rain', dialogue: '', speaker: '', cast: [], camera: '와이드', camera_move: '천천히 다가가기', emotion: '', sfx: '빗소리', seconds: 2 };
+  if (input.purpose === 'variants')
+    return {
+      variants: (c.angles || ['결말 반전']).slice(0, 3).map((a, k) => ({
+        label: String(a).slice(0, 40),
+        note: `${a} 방향으로 바꿨어요.`,
+        shots: (c.shots || []).slice(0, 8).map((x) => ({ scene: x.scene || '장면', visual: `${x.visual || '장면'} (${a})`, visual_en: `variant ${k + 1}`, dialogue: x.dialogue ? `${x.dialogue} (${a})`.slice(0, 300) : '', speaker: '', cast: [], camera: '미디엄', camera_move: '고정', emotion: '', sfx: '', seconds: Number(x.seconds || 4) })),
+      })),
+    };
+  if (input.purpose === 'verify') {
+    const bad = /MOCK_BAD|이상한/.test(String(c.visual || ''));
+    return bad
+      ? { ok: false, score: 42, people: c.people, issues: [{ code: 'anatomy', text: '손가락이 어색하게 뭉개졌어요' }, { code: 'text', text: '화면 구석에 글자가 보여요' }], summary: '다시 만드는 것이 좋아요' }
+      : { ok: true, score: 88, people: c.people, issues: [], summary: '인물 · 구도 모두 자연스러워요' };
+  }
   if (input.purpose === 'translate') return { items: (c.items || []).map((x) => ({ id: x.id, en: `EN: ${String(x.ko).slice(0, 200)}` })) };
   if (input.purpose === 'rewrite') {
     const shot = c.shot || {};
@@ -148,6 +180,77 @@ function mockText(input) {
     };
   }
   return { text: String(input.prompt || '').slice(0, 200) };
+}
+
+// 개발용 대본 나누기: 한국 대본 관습(1화 / S#1. 장소 - 밤 / 이름: 대사 / (지문))을 규칙으로 읽습니다.
+const PROP_WORDS = ['편지', '반지', '휴대폰', '우산', '사진', '열쇠', '목걸이', '칼', '가방', '꽃다발'];
+function mockParseScript(text) {
+  const episodes = [];
+  let ep = null;
+  let place = '';
+  let visual = '';
+  const chars = new Map();
+  const places = new Map();
+  const props = new Set();
+  const newEp = (n) => {
+    ep = { number: n, title: `${n}화`, summary: '', shots: [] };
+    episodes.push(ep);
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const epm = line.match(/^(?:EP\.?\s*|#\s*)?(\d{1,2})\s*화/i) || line.match(/^EP\.?\s*(\d{1,2})/i);
+    if (epm && line.length < 30) {
+      newEp(Number(epm[1]));
+      continue;
+    }
+    if (!ep) newEp(1);
+    const scene = line.match(/^(?:S#|씬|#)\s*\d+\.?\s*(.+)$/i);
+    if (scene) {
+      place = scene[1].split(/[-–(]/)[0].trim().slice(0, 40);
+      if (place) places.set(place, `${place}, 드라마 세트`);
+      visual = scene[1];
+      continue;
+    }
+    for (const w of PROP_WORDS) if (line.includes(w)) props.add(w);
+    const say = line.match(/^([가-힣A-Za-z]{1,10})\s*[:：]\s*(.+)$/);
+    if (say) {
+      const name = say[1] === 'N' || say[1] === 'NA' ? '내레이션' : say[1];
+      if (name !== '내레이션' && !chars.has(name)) chars.set(name, { name, role: chars.size ? '조연' : '주인공', description: `${name}. 대본에 나오는 인물`, look: '20대 후반, 단정한 차림', look_en: 'late 20s, neat outfit' });
+      const shotProps = PROP_WORDS.filter((w) => say[2].includes(w) || visual.includes(w));
+      ep.shots.push({
+        scene: place,
+        visual: `${visual || place} — ${name}의 표정`,
+        visual_en: `${visual || place}, close-up of ${name}`,
+        dialogue: say[2].replace(/^\(.+?\)\s*/, '').slice(0, 300),
+        speaker: name,
+        cast: name === '내레이션' ? [] : [name],
+        camera: '미디엄',
+        camera_move: '고정',
+        emotion: /!/.test(say[2]) ? '분노' : '담담',
+        sfx: '',
+        seconds: Math.min(8, Math.max(3, Math.ceil(say[2].length / 6))),
+        location: place,
+        props: shotProps,
+        states: /젖/.test(visual) && name !== '내레이션' ? { [name]: '비에 젖은 머리' } : {},
+      });
+      continue;
+    }
+    // 지문
+    visual = line.replace(/^\(|\)$/g, '');
+    if (ep.shots.length === 0 || /[.다]$/.test(line))
+      ep.shots.push({ scene: place, visual: visual.slice(0, 800), visual_en: 'EN: ' + visual.slice(0, 200), dialogue: '', speaker: '', cast: [], camera: '와이드', camera_move: '천천히 다가가기', emotion: '', sfx: '', seconds: 4, location: place, props: PROP_WORDS.filter((w) => visual.includes(w)), states: {} });
+  }
+  const list = [...chars.values()];
+  return {
+    title: '',
+    synopsis: '붙여 넣은 대본을 컷으로 나눴어요.',
+    characters: list,
+    locations: [...places.entries()].map(([name, look]) => ({ name, look })),
+    props: [...props].map((name) => ({ name, look: `${name}, 소품` })),
+    relations: list.length >= 2 ? [{ a: list[0].name, b: list[1].name, kind: '연인', note: '대본에서 추정' }] : [],
+    episodes: episodes.filter((e) => e.shots.length).slice(0, 12),
+  };
 }
 
 // 개발용 AI 조수: 말에서 컷 번호·할 일을 대강 알아듣고 실행 계획을 만듭니다.
@@ -171,6 +274,8 @@ function mockAssistant(c) {
   if (/음성|목소리|녹음/.test(msg)) actions.push(all ? { type: 'batch_shot_tts', target: `E${ep}`, reason: '빈 대사 음성을 채워요' } : { type: 'shot_tts', target, reason: '대사 음성을 만들어요' });
   if (/영상/.test(msg)) actions.push(all ? { type: 'batch_shot_video', target: `E${ep}`, reason: '빈 컷 영상을 만들어요' } : { type: 'shot_video', target, reason: '컷 영상을 만들어요' });
   if (/음악|BGM|bgm/.test(msg)) actions.push({ type: 'music', target: `E${ep}`, mood: msg.slice(0, 60), reason: '분위기에 맞는 음악을 만들어요' });
+  if (/검수/.test(msg)) actions.push(all ? { type: 'batch_verify_shot', target: `E${ep}`, reason: '컷 이미지를 모두 검수해요' } : { type: 'verify_shot', target, reason: '컷 이미지를 검수해요' });
+  if (/사이 컷|연결 컷/.test(msg)) actions.push({ type: 'bridge_shot', target, instruction: quoted ? quoted[1] : '', reason: '장면 사이에 짧은 연결 컷을 넣어요' });
   if (/없는컷|엉뚱/.test(msg)) actions.push({ type: 'shot_image', target: 'E99S99' });
   return {
     reply: actions.length ? `요청하신 내용을 ${actions.length}가지 작업으로 정리했어요. 확인하고 실행을 눌러 주세요.` : '좋은 질문이에요. 지금 회차는 첫 컷의 긴장감이 좋아요. 구체적으로 바꾸고 싶은 컷 번호와 내용을 말씀해 주시면 계획을 만들어 드릴게요.',

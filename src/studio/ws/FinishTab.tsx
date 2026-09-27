@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Clapperboard, Eye, Film, ImageIcon, LayoutTemplate, Megaphone, Send, Sparkles, Tags, Trash2, Wand2 } from 'lucide-react';
-import { api, jobKindLabel, lama, parseJson, studioMedia, won, type StudioEpisode } from '../../api';
+import { api, ApiError, jobKindLabel, lama, parseJson, studioMedia, won, type StudioEpisode } from '../../api';
 import { navigate } from '../../App';
 import { useSyncedForm } from '../hooks';
 import { JobBadge, Versions, isBusy } from '../parts';
@@ -9,6 +9,7 @@ import CardMaker from '../CardMaker';
 import { ModelSettings, Section, episodeStatus, epLabel, runningCount, type WS } from './shared';
 import { asset } from '../../platform';
 import QualityCheck from './QualityCheck';
+import { ReviewBar } from './TeamParts';
 
 type Meta = { titles: string[]; tagline: string; synopsis: string; hashtags: string[]; episode_titles: { number: number; title: string }[]; at?: string };
 const dramaStatus: Record<string, string> = { draft: '임시저장', pending: '심사 대기', published: '공개 중', rejected: '반려', hidden: '노출 중단' };
@@ -57,7 +58,13 @@ export default function FinishTab({ ws }: { ws: WS }) {
       <PosterSection ws={ws} backgrounds={backgrounds} made={made} variants={variants} setVariants={setVariants} openStudio={() => setOverlay({ kind: 'poster' })} />
       <MetaSection ws={ws} meta={meta} />
       <QualityCheck ws={ws} />
-      <ExportSection ws={ws} meta={meta} variants={variants} />
+      {ws.can('manage') ? (
+        <ExportSection ws={ws} meta={meta} variants={variants} />
+      ) : (
+        <Section title="작품으로 내보내기 · 검수 신청" desc="작품 등록 · 가격 · 검수 신청 · 공개는 프로젝트 소유자가 해요.">
+          <p className="muted">합성본을 승인하거나 의견을 남기면 소유자에게 알림이 가요.</p>
+        </Section>
+      )}
       <CostSection ws={ws} />
       {overlay && (
         <div className="ws-overlay" role="dialog" aria-modal="true">
@@ -159,7 +166,10 @@ function ComposeSection({ ws, open }: { ws: WS; open: (o: Overlay) => void }) {
     >
       <div className="ws-compose">
         {ws.data.episodes.map((e) => (
-          <ComposeRow key={e.id} ws={ws} e={e} open={open} />
+          <Fragment key={e.id}>
+            <ComposeRow ws={ws} e={e} open={open} />
+            <ReviewBar ws={ws} episode={e} stage="final" />
+          </Fragment>
         ))}
       </div>
     </Section>
@@ -519,8 +529,8 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
     .map((t) => t.slice(0, 30))
     .slice(0, 12);
   const valid = f.tagline.trim().length >= 2 && f.title.trim().length >= 1 && (!f.synopsis.trim() || f.synopsis.trim().length >= 10);
-  const go = async (submit: boolean) => {
-    if (submit && !(await ws.ask({ title: serial ? '새 회차 검수 신청' : '검수 신청', text: serial ? '새로 합성한 회차만 검수를 받아요. 승인되면(예약했다면 그 시각에) 시청자에게 공개돼요.' : '작품 정보와 합성한 회차를 관리자에게 보내요. 검수 중에는 작품을 고칠 수 없어요.', ok: '검수 신청' })))
+  const go = async (submit: boolean, forceApproval = false): Promise<void> => {
+    if (submit && !forceApproval && !(await ws.ask({ title: serial ? '새 회차 검수 신청' : '검수 신청', text: serial ? '새로 합성한 회차만 검수를 받아요. 승인되면(예약했다면 그 시각에) 시청자에게 공개돼요.' : '작품 정보와 합성한 회차를 관리자에게 보내요. 검수 중에는 작품을 고칠 수 없어요.', ok: '검수 신청' })))
       return;
     setBusy(true);
     try {
@@ -536,6 +546,7 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
         attachTrailer: f.attachTrailer,
         publish_at: f.publish_at ? new Date(f.publish_at).toISOString() : null,
         submit,
+        ...(forceApproval ? { forceApproval: true } : {}),
       });
       try {
         sessionStorage.removeItem(key);
@@ -546,6 +557,12 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
       const eps = r.numbers.map((n) => n + '화').join(', ');
       ws.notify(r.submitted ? `${eps}를 내보내고 검수를 신청했어요.` : `${eps}를 작품으로 내보냈어요. 내 작품에서 이어서 수정할 수 있어요.`);
     } catch (e) {
+      // 협업 승인이 안 끝난 회차: 소유자는 확인 후 그대로 내보낼 수 있어요.
+      if (e instanceof ApiError && e.code === 'approval_required') {
+        setBusy(false);
+        if (await ws.ask({ title: '승인을 받지 않은 회차가 있어요', text: (e as Error).message, ok: '승인 없이 내보내기', danger: true })) return go(submit, true);
+        return;
+      }
       ws.notify((e as Error).message);
     } finally {
       setBusy(false);

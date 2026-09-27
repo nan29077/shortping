@@ -1,5 +1,5 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { apiUrl, authHeaders, fetchCredentials } from './platform';
+import { apiUrl, authHeaders, fetchCredentials, publicUrl } from './platform';
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -526,9 +526,12 @@ export default function App() {
           .toLowerCase()
           .includes(needle)),
   );
+  const newestFiltered = [...filtered].sort(
+    (a, b) => new Date(b.published_at || b.created_at).getTime() - new Date(a.published_at || a.created_at).getTime(),
+  );
   const feedItems =
     feed === '신작'
-      ? [...filtered].sort((a, b) => Number(b.badge === 'NEW') - Number(a.badge === 'NEW'))
+      ? newestFiltered
       : feed === '완결'
         ? filtered.filter((d) => d.badge === '완결')
         : filtered;
@@ -537,6 +540,7 @@ export default function App() {
       new Date(b.published_at || b.created_at).getTime() -
       new Date(a.published_at || a.created_at).getTime(),
   );
+  const exploreItems = route.id === 'new' ? newestFiltered : route.id === 'complete' ? filtered.filter((d) => d.badge === '완결') : filtered;
   // 무료 추천: 전 회차 무료이거나 기본 무료 회차보다 더 많이 풀어 둔 작품
   const freePicks = dramas.filter((d) => !!d.free || d.free_episodes > config.defaultFreeEpisodes);
   const featuredChannels = channels.filter((c) => c.featured);
@@ -894,7 +898,7 @@ export default function App() {
                           subtitle={subtitle()}
                           eyebrow={feed === '추천' ? 'TRENDING NOW' : undefined}
                           icon={<Flame size={21} className="lime" />}
-                          onMore={() => navigate('explore')}
+                          onMore={() => navigate(feed === '신작' ? 'explore/new' : feed === '완결' ? 'explore/complete' : 'explore')}
                         />
                         <div className="poster-grid">
                           {feedItems.slice(0, 4).map((d, i) => (
@@ -943,7 +947,7 @@ export default function App() {
                           subtitle={subtitle('가장 최근 공개된 숏핑 오리지널')}
                           eyebrow="JUST ARRIVED"
                           icon={<Sparkles size={19} className="lime" />}
-                          onMore={() => setFeed('신작')}
+                          onMore={() => navigate('explore/new')}
                         />
                         <div className="poster-row">
                           {newest.slice(0, 6).map((d) => (
@@ -1047,17 +1051,17 @@ export default function App() {
                 </div>
                 <div className="section-heading">
                   <h3>
-                    {query ? '검색 결과' : '모든 이야기'}{' '}
-                    <span className="lime">{filtered.length}</span>
+                    {query ? '검색 결과' : route.id === 'new' ? '새로 올라온 이야기' : route.id === 'complete' ? '완결 이야기' : '모든 이야기'}{' '}
+                    <span className="lime">{exploreItems.length}</span>
                   </h3>
-                  <span className="muted">인기순</span>
+                  <span className="muted">{route.id === 'new' ? '최신 공개순' : route.id === 'complete' ? '완결 작품' : '인기순'}</span>
                 </div>
                 <div className="poster-grid explore-grid">
-                  {filtered.map((d) => (
+                  {exploreItems.map((d) => (
                     <Poster d={d} key={d.id} />
                   ))}
                 </div>
-                {!filtered.length && (
+                {!exploreItems.length && (
                   <Empty
                     title="아직 찾는 이야기가 없어요"
                     text="다른 검색어나 장르를 선택해 보세요."
@@ -1947,6 +1951,8 @@ export function Empty({
     </div>
   );
 }
+// 여러 확인창이 겹쳐도 Escape·초점은 화면 맨 위 창 하나만 처리합니다.
+const modalStack: symbol[] = [];
 export function Modal({
   title,
   children,
@@ -1959,18 +1965,25 @@ export function Modal({
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const token = useRef(Symbol('shortping-modal'));
   const closeRef = useRef(close);
   closeRef.current = close;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement;
     const old = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    modalStack.push(token.current);
     const focusables = () =>
-      ref.current?.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex="0"]');
+      [...(ref.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])].filter(
+        (el) => !el.hidden && el.getAttribute('aria-hidden') !== 'true' && el.getClientRects().length > 0,
+      );
     focusables()?.[0]?.focus();
     const trap = (e: KeyboardEvent) => {
+      if (modalStack.at(-1) !== token.current) return;
       if (e.key === 'Escape') {
+        e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         closeRef.current();
         return;
       }
@@ -1989,13 +2002,15 @@ export function Modal({
     };
     document.addEventListener('keydown', trap);
     return () => {
+      const index = modalStack.lastIndexOf(token.current);
+      if (index >= 0) modalStack.splice(index, 1);
       document.body.style.overflow = old;
       document.removeEventListener('keydown', trap);
       prev?.focus();
     };
   }, []);
   return (
-    <div className="modal-backdrop" onClick={close}>
+    <div className="modal-backdrop" onClick={() => modalStack.at(-1) === token.current && close()}>
       <div
         className={'modal ' + className}
         ref={ref}
@@ -2382,15 +2397,17 @@ function DramaPage({
             <ChevronRight size={18} />
           </button>
         </div>
-        <p className="demo-footnote">
-          오리지널 콘셉트 데모 작품 · 생성형 포스터 사용
-          <br />
-          시연 영상은 재생 기능 확인용 티저입니다.
-        </p>
+        {d.episodes.some((e) => !!e.is_demo) && (
+          <p className="demo-footnote">
+            개발용 데모 작품 · 생성형 포스터 사용
+            <br />
+            시연 영상은 재생 기능 확인용 티저입니다.
+          </p>
+        )}
         <button
           className="text-link"
           onClick={async () => {
-            const url = `${location.origin}/share/drama/${encodeURIComponent(d.id)}`;
+            const url = publicUrl(`/share/drama/${encodeURIComponent(d.id)}`);
             try {
               if (navigator.share) await navigator.share({ title: `${d.title} | 숏핑`, text: d.tagline, url });
               else {

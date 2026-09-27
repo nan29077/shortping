@@ -12,6 +12,7 @@ COPY package*.json ./
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN npm ci --omit=dev --ignore-scripts && mkdir -p /app/uploads && chown -R node:node /app
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/public ./public
 COPY --chown=node:node server ./server
 COPY --chown=node:node scripts/promote-admin.mjs ./scripts/promote-admin.mjs
 USER node

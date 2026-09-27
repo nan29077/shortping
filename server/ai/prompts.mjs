@@ -41,6 +41,10 @@ const shotItem = z.object({
   emotion: z.string().max(20).default(''),
   sfx: z.string().max(120).default(''),
   seconds: z.coerce.number().min(2).max(15).default(5),
+  // 드라매직 벤치마킹(2026-09-25): 장소 이름 · 소품 이름 · 인물 상태(이 컷부터 바뀌는 외형)
+  location: z.string().max(40).optional().default(''),
+  props: z.array(z.string().max(40)).max(6).optional().default([]),
+  states: z.record(z.string().max(30), z.string().max(120)).optional().default({}),
 });
 export const scriptSchema = z.object({ shots: z.array(shotItem).min(1).max(40) });
 export const rangeSchema = z.object({ shots: z.array(shotItem).min(1).max(20) });
@@ -88,9 +92,12 @@ function safe(raw) {
 }
 export const CAMERA_MOVES = ['고정', '천천히 다가가기', '천천히 멀어지기', '왼쪽으로 패닝', '오른쪽으로 패닝', '위로 틸트', '핸드헬드', '따라가기'];
 export const EMOTIONS = ['담담', '기쁨', '설렘', '슬픔', '분노', '두려움', '놀람', '속삭임', '비꼼'];
-export function scriptPrompt({ project, characters, episode, previous, maxShotSeconds, locations = [], instruction = '', history = [] }) {
+export function scriptPrompt({ project, characters, episode, previous, maxShotSeconds, locations = [], props = [], instruction = '', history = [] }) {
   const cast = characters.map((c) => `- ${c.name} (${c.role}): ${c.description} / look: ${c.look_en || c.look}`).join('\n');
-  const places = locations.length ? '장소:\n' + locations.map((l) => `- ${l.name}: ${l.look_en || l.look}`).join('\n') + '\n' : '';
+  const places =
+    (locations.length ? '장소:\n' + locations.map((l) => `- ${l.name}: ${l.look_en || l.look}`).join('\n') + '\n' : '') +
+    (props.length ? '소품:\n' + props.map((x) => `- ${x.name}: ${x.look_en || x.look}`).join('\n') + '\n' : '') +
+    relationsText(project.relations, characters);
   const past = history.length ? '지난 회차 흐름:\n' + history.map((h) => `- ${h.number}화 ${h.title}: ${h.summary}`).join('\n') + '\n' : previous ? `이전 화 요약: ${previous}\n` : '';
   return {
     system: SYSTEM,
@@ -112,8 +119,10 @@ ${episode.hook ? `첫 3초 훅: ${episode.hook}\n` : ''}${episode.cliffhanger ? 
 - dialogue: 한국어 대사 한 줄(없으면 빈 문자열). speaker: 말하는 인물 이름(대사 없으면 빈 문자열, 내레이션이면 "내레이션").
 - cast: 화면에 나오는 인물 이름 목록. camera: 샷 크기(클로즈업, 미디엄, 와이드 등). camera_move: ${CAMERA_MOVES.join('/')} 중 하나.
 - emotion: 대사 감정(${EMOTIONS.join('/')}). sfx: 필요한 효과음을 짧은 한국어로(없으면 빈 문자열).
+- location: 위 장소 목록 중 이 컷의 장소 이름(없으면 빈 문자열). props: 화면에 꼭 보여야 하는 소품 이름 목록(위 소품 목록 우선).
+- states: 이 컷부터 인물 외형이 바뀌면 {"이름":"젖은 머리, 찢어진 소매"}처럼 적고, 원래대로 돌아가면 "기본". 바뀌지 않으면 빈 객체.
 
-JSON 형식: {"shots":[{"scene":"장소와 상황","visual":"한국어 화면 묘사","visual_en":"English visual prompt","dialogue":"대사","speaker":"이름","cast":["이름"],"camera":"클로즈업","camera_move":"천천히 다가가기","emotion":"설렘","sfx":"문 닫히는 소리","seconds":5}]}`,
+JSON 형식: {"shots":[{"scene":"장소와 상황","visual":"한국어 화면 묘사","visual_en":"English visual prompt","dialogue":"대사","speaker":"이름","cast":["이름"],"camera":"클로즈업","camera_move":"천천히 다가가기","emotion":"설렘","sfx":"문 닫히는 소리","seconds":5,"location":"카페","props":["편지"],"states":{}}]}`,
   };
 }
 // 여러 컷(구간)만 PD 요청대로 다시 씁니다.
@@ -166,8 +175,24 @@ const CAMERA_EN = {
   핸드헬드: 'handheld camera',
   따라가기: 'tracking shot following the subject',
 };
-export const shotImagePrompt = (project, shot, cast, place) =>
-  `${visualOf(shot)}. ${cast.map((c) => `${c.name}: ${lookOf(c)}`).join('; ')}${place ? `. Location: ${lookOf(place)}` : ''}. ${project.style}. Vertical 9:16 frame, cinematic still, keep the same faces and outfits as the reference images, no text, no watermark.`;
+// states: {인물ID: '젖은 머리'}(앞 컷에서 이어진 상태 포함), props: 이 컷의 소품, styleLock: 스타일 참고 이미지가 있으면 true
+export const shotImagePrompt = (project, shot, cast, place, { states = {}, props = [], styleLock = false } = {}) =>
+  `${visualOf(shot)}. ${cast.map((c) => `${c.name}: ${lookOf(c)}${c.outfit ? `, wearing ${c.outfit}` : ''}${states[c.id] ? `, currently ${states[c.id]}` : ''}`).join('; ')}${place ? `. Location: ${lookOf(place)}` : ''}${
+    props.length ? `. Props in frame: ${props.map((x) => `${x.name} (${lookOf(x)})`).join(', ')}` : ''
+  }. ${project.style}. Vertical 9:16 frame, cinematic still, keep the same faces and outfits as the reference images${styleLock ? ', match the color grading and art style of the style reference image' : ''}, no text, no watermark.`;
+export const propPrompt = (project, x) => `Prop reference, a single object on a plain neutral background, no people. ${lookOf(x)}. ${project.style}. Vertical 9:16, sharp detail, no text, no watermark.`;
+// 인물 관계(JSON 배열 [{a,b,kind,note}]) → 프롬프트 한 줄
+export function relationsText(raw, characters = []) {
+  let list = [];
+  try {
+    list = Array.isArray(raw) ? raw : raw ? JSON.parse(raw) : [];
+  } catch {
+    list = [];
+  }
+  const name = (id) => characters.find((c) => c.id === id)?.name || '';
+  const lines = list.map((r) => (name(r.a) && name(r.b) ? `${name(r.a)} ↔ ${name(r.b)}: ${r.kind}${r.note ? ` (${r.note})` : ''}` : '')).filter(Boolean);
+  return lines.length ? '인물 관계:\n' + lines.map((l) => '- ' + l).join('\n') + '\n' : '';
+}
 export const shotVideoPrompt = (project, shot, speaker) =>
   `${visualOf(shot)}. Camera: ${shot.camera || 'medium shot'}${shot.camera_move ? `, ${CAMERA_EN[shot.camera_move] || shot.camera_move}` : ''}. ${project.style}. Vertical 9:16, natural motion, no text overlay.${
     shot.dialogue && speaker ? ` ${speaker.name} speaks in Korean${shot.emotion ? ` (${shot.emotion})` : ''}: "${shot.dialogue}"` : ''
@@ -369,6 +394,9 @@ export const ASSISTANT_ACTIONS = {
   music: '배경음악 만들기 (target: 회차 또는 비움, mood: 분위기)',
   poster: '작품 포스터 만들기',
   metadata: '작품 제목·소개·해시태그 추천',
+  verify_shot: 'AI가 만든 컷 이미지 검수(얼굴·손·글자·소품 이상 찾기) (target: 이미지가 있는 컷)',
+  batch_verify_shot: '회차의 컷 이미지 모두 검수 (target: 회차)',
+  bridge_shot: '컷 뒤에 2~3초 연결 컷 넣기 (target: 컷, instruction: 원하는 연결 장면·비워도 됨)',
   // 라마가 들지 않는 직접 수정
   edit_shot: '컷 내용 직접 고치기 (target: 컷, fields: dialogue·visual·emotion·seconds·camera·camera_move·speed 중 필요한 것만)',
   edit_character: '인물 설정 고치기 (target: 인물, fields: description·look·voice_style)',
@@ -437,5 +465,153 @@ ${talk || '(없음)'}
 PD 요청: ${message}
 
 JSON 형식: {"reply":"설명","actions":[{"type":"shot_image_edit","target":"E1S3","instruction":"배경을 밤으로","reason":"요청한 분위기"},{"type":"edit_shot","target":"E1S3","fields":{"dialogue":"새 대사"}}]}`,
+  };
+}
+
+// ── 완성 대본 붙여 넣기 → 컷으로 나누기(드라매직 벤치마킹, 2026-09-25) ─────────────────
+// 한국 드라마 대본 관습(S#1. 장소 - 낮 / 인물: 대사 / (지문))을 읽어 회차·컷·인물·장소·소품·상태로 구조화합니다.
+export const parseScriptSchema = z.object({
+  title: z.string().max(70).optional().default(''),
+  synopsis: z.string().max(3000).optional().default(''),
+  characters: z
+    .array(z.object({ name: z.string().min(1).max(30), role: z.string().max(60).default(''), description: z.string().max(500).default(''), look: z.string().max(500).default(''), look_en: z.string().max(500).default('') }))
+    .max(12)
+    .default([]),
+  locations: z.array(z.object({ name: z.string().min(1).max(40), look: z.string().max(500).default('') })).max(12).default([]),
+  props: z.array(z.object({ name: z.string().min(1).max(40), look: z.string().max(500).default('') })).max(20).default([]),
+  relations: z.array(z.object({ a: z.string().max(30), b: z.string().max(30), kind: z.string().max(20), note: z.string().max(120).default('') })).max(30).default([]),
+  episodes: z
+    .array(z.object({ number: z.coerce.number().int().min(1).max(60), title: z.string().max(100).default(''), summary: z.string().max(800).default(''), shots: z.array(shotItem).min(1).max(40) }))
+    .min(1)
+    .max(12),
+});
+export function parseScriptPrompt({ project, text, characters = [], locations = [], props = [] }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 16000,
+    purpose: 'parse_script',
+    context: { text, project: { title: project.title, episode_seconds: project.episode_seconds } },
+    prompt: `아래는 PD가 직접 쓴 숏폼 드라마 대본입니다. 내용은 바꾸지 말고 제작용 데이터로 나눠 주세요.
+작품: "${project.title}" (${project.genre}) · 회당 약 ${project.episode_seconds}초 · 영상 스타일: ${project.style || '실사 드라마'}
+${characters.length ? '이미 등록된 인물(이름을 그대로 쓰세요): ' + characters.map((c) => c.name).join(', ') + '\n' : ''}${locations.length ? '이미 등록된 장소: ' + locations.map((l) => l.name).join(', ') + '\n' : ''}${props.length ? '이미 등록된 소품: ' + props.map((x) => x.name).join(', ') + '\n' : ''}
+규칙:
+- 대본에 회차 구분(1화, EP.1, #1 등)이 있으면 그대로, 없으면 전체를 1화로 봅니다. 최대 12화까지.
+- 장면 머리글(S#, 씬, 장소-시간)과 지문을 읽어 컷으로 나눕니다. 컷 하나는 2~8초, 대사 한 줄 또는 동작 하나.
+- 대사는 원문 그대로(맞춤법만 고침). speaker는 인물 이름, 내레이션·독백(N/NA)은 "내레이션".
+- visual은 한국어 화면 묘사(인물 동작·표정·조명·구도), visual_en은 같은 내용의 영어 영상 프롬프트(인물 외모 반복, 세로 구도).
+- location은 장소 이름, props는 화면에 꼭 나와야 하는 소품, states는 이 컷부터 바뀌는 인물 외형({"이름":"비에 젖은 머리"}, 원래대로는 "기본").
+- characters·locations·props는 대본에 나오는 것 모두(외모·모습은 대본 단서로 추정, look_en은 영어). relations는 인물 사이 관계(연인·가족·친구·라이벌·적·비밀·상하·기타).
+
+대본:
+"""
+${String(text).slice(0, 30000)}
+"""
+
+JSON 형식: {"title":"제목(대본에 있으면)","synopsis":"줄거리 3~5문장","characters":[{"name":"","role":"","description":"","look":"","look_en":""}],"locations":[{"name":"","look":""}],"props":[{"name":"","look":""}],"relations":[{"a":"이름","b":"이름","kind":"연인","note":""}],"episodes":[{"number":1,"title":"","summary":"","shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":4,"location":"","props":[],"states":{}}]}]}`,
+  };
+}
+
+// ── AI 결과 검수(이미지 → 글 모델, 라마 차감) ─────────────────────────────
+export const verifySchema = z.object({
+  ok: z.boolean(),
+  score: z.coerce.number().min(0).max(100).default(0),
+  people: z.coerce.number().int().min(0).max(20).optional(),
+  issues: z
+    .array(z.object({ code: z.enum(['face', 'count', 'text', 'anatomy', 'style', 'composition', 'prop', 'state', 'mismatch', 'other']).catch('other'), text: z.string().max(200) }))
+    .max(8)
+    .default([]),
+  summary: z.string().max(300).default(''),
+});
+export function verifyPrompt({ shot, people, props = [], states = {}, styleLock = false }) {
+  const names = people.map((c) => c.name);
+  return {
+    system: '당신은 한국 세로형 숏폼 드라마의 화면 품질 검수자입니다. 이미지를 꼼꼼히 보고 사실대로만 판단하며, 반드시 JSON 하나만 출력합니다.',
+    json: true,
+    maxTokens: 900,
+    purpose: 'verify',
+    context: { visual: shot.visual, people: names.length },
+    prompt: `첫 번째 이미지는 AI가 만든 컷 장면입니다.${names.length ? ` 그 뒤 이미지들은 등장인물의 기준 얼굴입니다(순서대로: ${names.join(', ')}).` : ''}
+이 컷의 설명: ${shot.visual}
+화면에 나와야 하는 인물 수: ${names.length || '제한 없음'}${names.length ? ` (${names.join(', ')})` : ''}
+${props.length ? `꼭 보여야 하는 소품: ${props.map((x) => x.name).join(', ')}\n` : ''}${Object.keys(states).length ? `인물 상태: ${people.filter((c) => states[c.id]).map((c) => `${c.name}=${states[c.id]}`).join(', ')}\n` : ''}검사 항목:
+1) face: 인물 얼굴이 기준 얼굴과 같은 사람으로 보이는가
+2) count: 인물 수가 맞는가
+3) text: 화면에 글자·워터마크·로고가 있는가(있으면 문제)
+4) anatomy: 손가락·팔다리·얼굴이 어색하게 뭉개지거나 기형인가
+5) composition: 세로 화면에서 주인공이 잘리지 않고 구도가 자연스러운가
+6) prop / state: 소품·인물 상태가 설명대로 보이는가
+7) mismatch: 설명과 크게 다른 장면인가${styleLock ? '\n8) style: 작품 스타일(색감·화풍)에서 크게 벗어났는가' : ''}
+문제가 없으면 ok=true, 있으면 ok=false와 issues에 한국어로 짧게(무엇이 어떻게 이상한지). score는 전체 품질 0~100.
+JSON 형식: {"ok":true,"score":85,"people":2,"issues":[{"code":"face","text":"오른쪽 인물 얼굴이 기준과 달라요"}],"summary":"한 줄 평가"}`,
+  };
+}
+
+// ── 사이 컷(전환 컷) · 대본 변형(드라매직 벤치마킹) ──────────────────────────
+// 두 컷 사이에 짧은 연결 컷(인서트 · 장소 전경 · 표정 리액션)을 한 개 넣어 흐름을 부드럽게 합니다.
+export function bridgePrompt({ project, characters, prev, next, instruction = '' }) {
+  const brief = (s) => (s ? JSON.stringify({ scene: s.scene, visual: s.visual, dialogue: s.dialogue, camera: s.camera }) : '(없음 · 회차 마지막)');
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 1200,
+    purpose: 'bridge',
+    context: { prev, next, instruction },
+    prompt: `작품 "${project.title}" (${project.genre})에서 두 컷 사이에 들어갈 짧은 연결 컷 하나를 써 주세요.
+등장인물: ${characters.map((c) => `${c.name}(${c.role})`).join(', ')}
+앞 컷: ${brief(prev)}
+뒤 컷: ${brief(next)}
+${instruction ? `요청: ${instruction}\n` : ''}규칙: 2~3초짜리 인서트(소품 클로즈업) · 장소 전경 · 인물 표정 리액션 중 흐름에 가장 맞는 것. 대사는 없거나 아주 짧게. visual은 한국어, visual_en은 영어.
+JSON 형식: {"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":2,"location":"","props":[],"states":{}}`,
+  };
+}
+export const variantsSchema = z.object({
+  variants: z.array(z.object({ label: z.string().max(40), note: z.string().max(200).default(''), shots: z.array(shotItem).min(1).max(40) })).min(1).max(3),
+});
+// 같은 회차를 다른 방향(결말 반전 · 다른 시점 · 톤)으로 다시 쓴 변형 대본 여러 개. 지금 대본은 그대로 두고 버전으로만 남깁니다.
+export function variantsPrompt({ project, characters, episode, shots, angles }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 12000,
+    purpose: 'variants',
+    context: { shots, angles },
+    prompt: `작품 "${project.title}" (${project.genre}) ${episode.number}화 대본의 변형을 ${angles.length}개 만들어 주세요. 인물과 큰 줄거리는 유지하고 방향만 바꿉니다.
+${bibleText(project.bible)}등장인물: ${characters.map((c) => `${c.name}(${c.role})`).join(', ')}
+${relationsText(project.relations, characters)}지금 대본(컷): ${JSON.stringify(shots.map((s) => ({ scene: s.scene, visual: s.visual, dialogue: s.dialogue, seconds: s.seconds })))}
+변형 방향: ${angles.map((a, i) => `${i + 1}) ${a}`).join(' / ')}
+규칙: 각 변형은 전체 길이 약 ${project.episode_seconds}초, 컷 형식은 대본과 같음(visual 한국어, visual_en 영어), label은 변형 방향을 짧게.
+JSON 형식: {"variants":[{"label":"결말 반전","note":"무엇이 달라졌는지 한 줄","shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":4,"location":"","props":[],"states":{}}]}]}`,
+  };
+}
+
+// ── 영상 → 대본 복원(2026-09-25): 올린 완성 영상의 자막(대사)으로 제작용 대본을 되살립니다 ──
+export const reverseScriptSchema = z.object({
+  script: z.string().min(10).max(30000),
+  title: z.string().max(70).optional().default(''),
+  synopsis: z.string().max(1000).optional().default(''),
+});
+export function reverseScriptPrompt({ project, transcript }) {
+  return {
+    system: SYSTEM,
+    json: true,
+    maxTokens: 12000,
+    purpose: 'reverse_script',
+    context: { transcript },
+    prompt: `아래는 이미 완성된 숏폼 드라마 영상에서 뽑은 자막(대사)입니다. 이 영상을 AI로 다시 만들 수 있도록 제작용 대본으로 복원해 주세요.
+작품: "${project.title}" (${project.genre}) · 회당 약 ${project.episode_seconds}초
+규칙:
+- 회차 구분("N화 자막")을 그대로 지켜 "1화", "2화"처럼 씁니다.
+- 대사 흐름으로 장면을 나누고 "S#1. 장소 - 낮/밤" 머리글과 괄호 지문(인물 동작·표정·분위기)을 채웁니다.
+- 대사 줄은 "인물 이름: 대사" 형식. 누가 말했는지 문맥으로 추정하고, 이름이 드러나지 않으면 역할로 이름을 지어 끝까지 같은 이름을 씁니다.
+- 대사는 자막 원문을 그대로(맞춤법만 고침) 쓰고, 새 대사를 지어내지 않습니다. 나레이션은 "내레이션: ..."으로.
+- 실존 인물 이름이나 상표는 쓰지 않습니다.
+
+자막:
+"""
+${String(transcript).slice(0, 30000)}
+"""
+
+JSON 형식: {"title":"작품 제목 제안","synopsis":"줄거리 3~5문장","script":"1화\nS#1. 장소 - 밤\n(지문)\n이름: 대사\n..."}`,
   };
 }

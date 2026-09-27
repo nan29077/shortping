@@ -13,13 +13,15 @@ export default function QualityCheck({ ws }: { ws: WS }) {
   const pid = ws.data.project.id;
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [showInfo, setShowInfo] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     try {
       setReport(await api<Report>(`/studio/ai/projects/${pid}/check`));
+      setError('');
     } catch (e) {
-      ws.notify((e as Error).message);
+      setError((e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -59,7 +61,9 @@ export default function QualityCheck({ ws }: { ws: WS }) {
         </button>
       }
     >
-      {!report ? (
+      {error && !report ? (
+        <p className="danger">점검하지 못했어요 · {error}</p>
+      ) : !report ? (
         <p className="muted">점검하는 중…</p>
       ) : !report.issues.length ? (
         <p className="qc-ok">

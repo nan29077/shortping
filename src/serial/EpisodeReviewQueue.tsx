@@ -52,6 +52,8 @@ export default function EpisodeReviewQueue({
   const [error, setError] = useState('');
   const [open, setOpen] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
+  const [media, setMedia] = useState<Record<string, 'loading' | 'ready' | 'error'>>({});
   const [busy, setBusy] = useState('');
   const [local, toastUi] = useSerialToast();
   const say = notify || local;
@@ -179,6 +181,9 @@ export default function EpisodeReviewQueue({
                       preload="metadata"
                       poster={asset(e.drama_image)}
                       src={asset(`/api/play/${e.drama_id}/${e.number}`)}
+                      onLoadStart={() => setMedia((x) => ({ ...x, [e.id]: 'loading' }))}
+                      onCanPlay={() => setMedia((x) => ({ ...x, [e.id]: 'ready' }))}
+                      onError={() => setMedia((x) => ({ ...x, [e.id]: 'error' }))}
                     >
                       {e.has_subtitles ? (
                         <track
@@ -190,6 +195,13 @@ export default function EpisodeReviewQueue({
                         />
                       ) : null}
                     </video>
+                    <small className={media[e.id] === 'error' ? 'danger' : 'muted'}>
+                      {media[e.id] === 'ready'
+                        ? '영상 재생 준비를 확인했어요.'
+                        : media[e.id] === 'error'
+                          ? '영상을 불러오지 못했어요. 승인하지 말고 PD에게 다시 업로드하도록 안내해 주세요.'
+                          : '영상을 불러와 재생 준비를 확인하는 중이에요.'}
+                    </small>
                   </div>
                   <div className="serial-queue-decision">
                     <dl>
@@ -226,6 +238,14 @@ export default function EpisodeReviewQueue({
                         onChange={(ev) => setNotes((x) => ({ ...x, [e.id]: ev.target.value }))}
                       />
                     </label>
+                    <label className="review-confirm">
+                      <input
+                        type="checkbox"
+                        checked={!!confirmed[e.id]}
+                        onChange={(ev) => setConfirmed((x) => ({ ...x, [e.id]: ev.target.checked }))}
+                      />
+                      회차 영상을 직접 확인했으며 공개에 동의합니다.
+                    </label>
                     <div className="form-actions">
                       <button
                         type="button"
@@ -238,7 +258,7 @@ export default function EpisodeReviewQueue({
                       <button
                         type="button"
                         className="primary"
-                        disabled={!!busy}
+                        disabled={!!busy || media[e.id] !== 'ready' || !confirmed[e.id]}
                         onClick={() => void decide(e, 'approved')}
                       >
                         <Check size={16} />{' '}

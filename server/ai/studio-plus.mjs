@@ -68,7 +68,7 @@ const PREVIEW_TEXT = '안녕하세요. 오늘 밤, 모든 비밀이 밝혀질 �
 export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, uploadDir, project, touch, queueTranslate, shotsOf, charactersOf, episodesOf }) {
   // ── 작품 설정집 ─────────────────────────────────────────────
   app.put('/api/studio/ai/projects/:id/bible', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, 'script');
     const b = bibleSchema.parse(req.body);
     await db.run('UPDATE studio_projects SET bible=?,updated_at=? WHERE id=?', [JSON.stringify(b), now(), p.id]);
     res.json({ ok: true });
@@ -87,10 +87,25 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     resolution: z.enum(['720p', '1080p']).optional(),
     paywall_from: z.number().int().min(1).max(60).optional(),
     budget_lama: z.number().int().min(0).max(100000000).optional(), // 프로젝트 예산(0 = 제한 없음)
+    // 드라매직 벤치마킹(2026-09-25)
+    script_text: z.string().max(30000).optional(), // 붙여 넣은 완성 대본
+    style_refs: z.array(z.string().regex(/^\/uploads\/[a-f0-9-]+\.(jpg|png|webp)$/)).max(3).optional(), // 스타일 잠금 참고 이미지
+    style: z.string().trim().max(500).optional(),
+    relations: z
+      .array(z.object({ a: z.string().max(80), b: z.string().max(80), kind: z.string().trim().min(1).max(20), note: z.string().trim().max(120).default('') }))
+      .max(40)
+      .optional(),
   });
   app.patch('/api/studio/ai/projects/:id/settings', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
     const b = settingsSchema.parse(req.body);
+    // 바꾸는 칸에 따라 필요한 권한: 예산·해상도·유료 회차는 소유자만, 원작·대본·관계는 글 권한, 자막·내레이션·음악·스타일은 장면 권한
+    const needs = new Set();
+    for (const k of Object.keys(b)) {
+      if (b[k] === undefined) continue;
+      needs.add(['budget_lama', 'resolution', 'paywall_from'].includes(k) ? 'manage' : ['source_text', 'script_text', 'relations'].includes(k) ? 'script' : 'scene');
+    }
+    let p = await project(req, req.params.id, 'view');
+    for (const n of needs) p = await project(req, req.params.id, n);
     if (b.bgm) {
       const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [b.bgm]);
       if (!f || f.owner_id !== p.owner_id) fail(403, '이 프로젝트에서 만들거나 올린 음악만 쓸 수 있어요.');
@@ -116,6 +131,29 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     if (b.bgm_volume !== undefined) put('bgm_volume', b.bgm_volume);
     if (b.resolution) put('resolution', b.resolution);
     if (b.budget_lama !== undefined) put('budget_lama', b.budget_lama);
+    if (b.script_text !== undefined) put('script_text', b.script_text);
+    if (b.style !== undefined) put('style', b.style);
+    if (b.style_refs !== undefined) {
+      // 이 프로젝트 주인이 만들거나 올린 이미지만 스타일 참고로 쓸 수 있어요.
+      for (const url of b.style_refs) {
+        const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [url]);
+        if (!f || f.owner_id !== p.owner_id) fail(403, '이 프로젝트에서 만들거나 올린 이미지만 스타일 참고로 쓸 수 있어요.');
+      }
+      put('style_refs', JSON.stringify([...new Set(b.style_refs)]));
+    }
+    if (b.relations !== undefined) {
+      const ids = new Set((await charactersOf(p.id)).map((c) => c.id));
+      const seen = new Set();
+      const list = [];
+      for (const r of b.relations) {
+        if (!ids.has(r.a) || !ids.has(r.b) || r.a === r.b) fail(400, '관계의 인물을 다시 골라 주세요.');
+        const key = [r.a, r.b].sort().join(':');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        list.push(r);
+      }
+      put('relations', JSON.stringify(list));
+    }
     if (b.paywall_from) put('season', JSON.stringify({ ...parse(p.season), paywall_from: b.paywall_from }));
     if (!sets.length) return res.json({ ok: true });
     put('updated_at', now());
@@ -129,7 +167,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
   // ── 장소(로케이션): 장면 배경을 고정해 컷마다 같은 장소로 보이게 합니다 ─────────
   const locationSchema = z.object({ name: z.string().trim().min(1).max(40), look: z.string().trim().max(500).default('') });
   app.post('/api/studio/ai/projects/:id/locations', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, ['script', 'scene']);
     const b = locationSchema.parse(req.body);
     const count = Number((await db.get('SELECT COUNT(*) AS n FROM studio_locations WHERE project_id=?', [p.id]))?.n || 0);
     if (count >= 12) fail(400, '장소는 12곳까지 만들 수 있어요.');
@@ -140,7 +178,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     res.status(201).json({ id });
   });
   app.patch('/api/studio/ai/projects/:id/locations/:lid', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, ['script', 'scene']);
     const b = locationSchema.parse(req.body);
     const l = await db.get('SELECT * FROM studio_locations WHERE id=? AND project_id=?', [req.params.lid, p.id]);
     if (!l) fail(404, '장소를 찾을 수 없어요.');
@@ -149,11 +187,46 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     res.json({ ok: true });
   });
   app.delete('/api/studio/ai/projects/:id/locations/:lid', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, ['script', 'scene']);
     const l = await db.get('SELECT id FROM studio_locations WHERE id=? AND project_id=?', [req.params.lid, p.id]);
     if (!l) fail(404, '장소를 찾을 수 없어요.');
     await db.run('UPDATE studio_shots SET location_id=NULL WHERE location_id=?', [l.id]);
     await db.run('DELETE FROM studio_locations WHERE id=?', [l.id]);
+    res.json({ ok: true });
+  });
+
+  // ── 소품(드라매직 벤치마킹): 편지·반지처럼 이야기에 중요한 물건을 컷마다 같은 모습으로 ─────────
+  app.post('/api/studio/ai/projects/:id/props', roles('pd', 'admin'), async (req, res) => {
+    const p = await project(req, req.params.id, ['script', 'scene']);
+    const b = locationSchema.parse(req.body);
+    const count = Number((await db.get('SELECT COUNT(*) AS n FROM studio_props WHERE project_id=?', [p.id]))?.n || 0);
+    if (count >= 30) fail(400, '소품은 30개까지 만들 수 있어요.');
+    const id = randomUUID();
+    await db.run('INSERT INTO studio_props (id,project_id,name,look,sort_order) VALUES (?,?,?,?,?)', [id, p.id, b.name, b.look, count]);
+    await touch(p.id);
+    await queueTranslate(p.id, p.owner_id, [{ id: 'prop:' + id, ko: b.look }]);
+    res.status(201).json({ id });
+  });
+  app.patch('/api/studio/ai/projects/:id/props/:xid', roles('pd', 'admin'), async (req, res) => {
+    const p = await project(req, req.params.id, ['script', 'scene']);
+    const b = locationSchema.parse(req.body);
+    const x = await db.get('SELECT * FROM studio_props WHERE id=? AND project_id=?', [req.params.xid, p.id]);
+    if (!x) fail(404, '소품을 찾을 수 없어요.');
+    await db.run('UPDATE studio_props SET name=?,look=? WHERE id=?', [b.name, b.look, x.id]);
+    if (b.look !== x.look && b.look !== x.look_en_src) await queueTranslate(p.id, p.owner_id, [{ id: 'prop:' + x.id, ko: b.look }]);
+    res.json({ ok: true });
+  });
+  app.delete('/api/studio/ai/projects/:id/props/:xid', roles('pd', 'admin'), async (req, res) => {
+    const p = await project(req, req.params.id, ['script', 'scene']);
+    const x = await db.get('SELECT id FROM studio_props WHERE id=? AND project_id=?', [req.params.xid, p.id]);
+    if (!x) fail(404, '소품을 찾을 수 없어요.');
+    await db.transaction(async () => {
+      // 컷에 연결된 이 소품을 뺍니다.
+      const shots = await db.all("SELECT s.id, s.prop_ids FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=? AND s.prop_ids LIKE ?", [p.id, '%' + x.id + '%']);
+      for (const s of shots)
+        await db.run('UPDATE studio_shots SET prop_ids=? WHERE id=?', [String(s.prop_ids).split(',').filter((v) => v && v !== x.id).join(','), s.id]);
+      await db.run('DELETE FROM studio_props WHERE id=?', [x.id]);
+    });
     res.json({ ok: true });
   });
 
@@ -164,13 +237,13 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     return e;
   };
   app.get('/api/studio/ai/projects/:id/episodes/:eid/versions', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, 'view');
     const e = await episodeOf(p, req.params.eid);
     const rows = await db.all('SELECT id,version,source,note,created_at,shots FROM studio_script_versions WHERE episode_id=? ORDER BY version DESC', [e.id]);
     res.json(rows.map((r) => ({ id: r.id, version: r.version, source: r.source, note: r.note, created_at: r.created_at, shots: JSON.parse(r.shots) })));
   });
   app.post('/api/studio/ai/projects/:id/episodes/:eid/versions/:vid/restore', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, 'script');
     const e = await episodeOf(p, req.params.eid);
     const v = await db.get('SELECT * FROM studio_script_versions WHERE id=? AND episode_id=?', [req.params.vid, e.id]);
     if (!v) fail(404, '버전을 찾을 수 없어요.');
@@ -178,7 +251,18 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
       fail(409, '이 회차의 AI 작업이 끝난 뒤 되돌려 주세요.');
     const cast = new Set((await charactersOf(p.id)).map((c) => c.id));
     const places = new Set((await db.all('SELECT id FROM studio_locations WHERE project_id=?', [p.id])).map((l) => l.id));
+    const things = new Set((await db.all('SELECT id FROM studio_props WHERE project_id=?', [p.id])).map((x) => x.id));
     const shots = JSON.parse(v.shots);
+    // 지금 없는 인물의 상태는 뺍니다.
+    const keepStates = (raw) => {
+      try {
+        const o = raw ? JSON.parse(raw) : {};
+        const f = Object.fromEntries(Object.entries(o).filter(([k]) => cast.has(k)));
+        return Object.keys(f).length ? JSON.stringify(f) : '';
+      } catch {
+        return '';
+      }
+    };
     await db.transaction(async () => {
       // 지금 상태도 버전으로 남긴 뒤 되돌립니다.
       const current = await shotsOf(e.id);
@@ -195,13 +279,14 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
         const speaker = s.speaker_id && cast.has(s.speaker_id) ? s.speaker_id : null;
         const castIds = String(s.cast_ids || '').split(',').filter((x) => cast.has(x)).join(',');
         await db.run(
-          `INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,location_id,camera,camera_move,emotion,speed,narration,seconds,image,audio,audio_seconds,video,lipsync,sfx,sfx_prompt,sfx_volume,transition,caption)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,location_id,camera,camera_move,emotion,speed,narration,seconds,image,audio,audio_seconds,video,lipsync,sfx,sfx_prompt,sfx_volume,transition,caption,prop_ids,states)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             randomUUID(), e.id, i++, s.scene || '', s.visual || '', s.visual_en || '', s.visual_en_src || '', s.dialogue || '', speaker, castIds,
             s.location_id && places.has(s.location_id) ? s.location_id : null, s.camera || '', s.camera_move || '', s.emotion || '', Number(s.speed) || 1, Number(s.narration) ? 1 : 0,
             Math.round(Math.min(10, Math.max(2, Number(s.seconds) || 5))), s.image || '', s.audio || '', Number(s.audio_seconds) || 0, s.video || '', s.lipsync || '', s.sfx || '', s.sfx_prompt || '',
             s.sfx_volume ?? 0.6, s.transition || 'cut', s.caption ?? null,
+            String(s.prop_ids || '').split(',').filter((x) => things.has(x)).join(','), keepStates(s.states),
           ],
         );
       }
@@ -288,12 +373,12 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     const f = req.file;
     let p;
     try {
-      p = await project(req);
+      p = await project(req, req.params.id, 'scene');
       if (!f) fail(400, 'MP3 또는 WAV 파일만 올릴 수 있어요(25MB 이하).');
       const meta = await probeMedia(f.path).catch(() => null);
       if (!meta || !meta.hasAudio || meta.hasVideo || meta.duration < 3 || meta.duration > 900) fail(400, '3초~15분 길이의 음악 파일만 올릴 수 있어요.');
       const url = '/uploads/' + f.filename;
-      await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [url, p.owner_id, /\.wav$/.test(url) ? 'audio/wav' : 'audio/mpeg', now()]);
+      await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [url, p.owner_id, /\.wav$/.test(url) ? 'audio/wav' : 'audio/mpeg', now(), p.id]);
       await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,0,0,1)', [url, Math.ceil(meta.duration)]);
       await db.run(
         'INSERT INTO studio_assets (id,owner_id,project_id,target_type,target_id,kind,url,job_id,model_label,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -313,7 +398,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
 
   // ── 예고편: 고른 컷(없으면 회차마다 첫·마지막 컷)을 짧게 이어 붙여 15~30초로 ────────
   app.post('/api/studio/ai/projects/:id/trailer', roles('pd', 'admin'), async (req, res) => {
-    const p = await project(req);
+    const p = await project(req, req.params.id, 'scene');
     const b = z
       .object({
         shotIds: z.array(z.string().max(80)).max(12).default([]),

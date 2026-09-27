@@ -30,7 +30,13 @@ async function chat(base, key, model, input, { maxField = 'max_tokens', extraHea
       model: model.model_id,
       messages: [
         ...(input.system ? [{ role: 'system', content: input.system }] : []),
-        { role: 'user', content: input.prompt },
+        // 이미지를 함께 보내면(AI 결과 검수 등) 이미지 입력 형식으로 보냅니다.
+        {
+          role: 'user',
+          content: refList(input).length
+            ? [{ type: 'text', text: input.prompt }, ...refList(input).slice(0, 4).map((r) => ({ type: 'image_url', image_url: { url: `data:${r.mime};base64,${r.buffer.toString('base64')}` } }))]
+            : input.prompt,
+        },
       ],
       [maxField]: input.maxTokens || 4000,
       ...(input.json ? { response_format: { type: 'json_object' } } : {}),
@@ -162,7 +168,17 @@ const anthropic = {
         model: model.model_id,
         max_tokens: input.maxTokens || 4000,
         ...(input.system ? { system: input.system } : {}),
-        messages: [{ role: 'user', content: input.prompt + (input.json ? '\n\nJSON 객체 하나만 출력하세요.' : '') }],
+        messages: [
+          {
+            role: 'user',
+            content: refList(input).length
+              ? [
+                  ...refList(input).slice(0, 4).map((r) => ({ type: 'image', source: { type: 'base64', media_type: r.mime, data: r.buffer.toString('base64') } })),
+                  { type: 'text', text: input.prompt + (input.json ? '\n\nJSON 객체 하나만 출력하세요.' : '') },
+                ]
+              : input.prompt + (input.json ? '\n\nJSON 객체 하나만 출력하세요.' : ''),
+          },
+        ],
       },
     });
     const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
@@ -196,7 +212,7 @@ const gemini = {
     }
     const spoken = capability === 'tts' && ttsStyle(input) ? `${ttsStyle(input)} 말해 주세요: ${input.text}` : input.prompt || input.text;
     const parts = [{ text: spoken }];
-    if (capability === 'image') for (const r of refList(input).slice(0, 3)) parts.push({ inlineData: { mimeType: r.mime, data: r.buffer.toString('base64') } });
+    if (capability === 'image' || capability === 'text') for (const r of refList(input).slice(0, capability === 'text' ? 4 : 3)) parts.push({ inlineData: { mimeType: r.mime, data: r.buffer.toString('base64') } });
     const generationConfig =
       capability === 'image'
         ? { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: input.aspect || '9:16' } }
@@ -700,8 +716,8 @@ export const presets = [
   {
     kind: 'openai', name: 'OpenAI', country: 'US', base_url: openai.base,
     models: [
-      m('text', 'gpt-5', 'GPT-5', 'premium', 0.006, 'korean,story'),
-      m('text', 'gpt-5-mini', 'GPT-5 mini', 'draft', 0.0012, 'korean,fast'),
+      m('text', 'gpt-5', 'GPT-5', 'premium', 0.006, 'korean,story,vision', { image_input: 1 }),
+      m('text', 'gpt-5-mini', 'GPT-5 mini', 'draft', 0.0012, 'korean,fast,vision', { image_input: 1 }),
       m('image', 'gpt-image-1', 'GPT Image', 'standard', 0.04, 'character,poster'),
       m('tts', 'gpt-4o-mini-tts', 'OpenAI TTS', 'standard', 0.015, 'korean'),
       m('stt', 'whisper-1', 'Whisper', 'standard', 0.006, 'korean'),
@@ -711,15 +727,15 @@ export const presets = [
   {
     kind: 'anthropic', name: 'Anthropic Claude', country: 'US', base_url: anthropic.base,
     models: [
-      m('text', 'claude-opus-4-5', 'Claude Opus', 'premium', 0.04, 'korean,story'),
-      m('text', 'claude-sonnet-4-5', 'Claude Sonnet', 'standard', 0.009, 'korean,story'),
+      m('text', 'claude-opus-4-5', 'Claude Opus', 'premium', 0.04, 'korean,story,vision', { image_input: 1 }),
+      m('text', 'claude-sonnet-4-5', 'Claude Sonnet', 'standard', 0.009, 'korean,story,vision', { image_input: 1 }),
     ],
   },
   {
     kind: 'gemini', name: 'Google Gemini · Veo', country: 'US', base_url: gemini.base,
     models: [
-      m('text', 'gemini-2.5-pro', 'Gemini 2.5 Pro', 'standard', 0.006, 'korean,story'),
-      m('text', 'gemini-2.5-flash', 'Gemini 2.5 Flash', 'draft', 0.0012, 'korean,fast'),
+      m('text', 'gemini-2.5-pro', 'Gemini 2.5 Pro', 'standard', 0.006, 'korean,story,vision', { image_input: 1 }),
+      m('text', 'gemini-2.5-flash', 'Gemini 2.5 Flash', 'draft', 0.0012, 'korean,fast,vision', { image_input: 1 }),
       m('image', 'gemini-2.5-flash-image', 'Gemini 이미지', 'standard', 0.039, 'character,poster,consistency'),
       m('video', 'veo-3.1-generate-preview', 'Veo 3.1', 'premium', 0.75, 'dialogue,closeup,cinematic,lipsync', { max_seconds: 8, image_input: 1 }),
       m('video', 'veo-3.1-fast-generate-preview', 'Veo 3.1 Fast', 'standard', 0.15, 'dialogue,cinematic', { max_seconds: 8, image_input: 1 }),

@@ -35,17 +35,19 @@ export default function Assistant({ ws, focus, close }: { ws: WS; focus: string;
       setSending(false);
     }
   };
-  const apply = async (m: StudioChat, budgetOk = false): Promise<void> => {
+  const apply = async (m: StudioChat, budgetOk = false, quoteOk = false): Promise<void> => {
     setBusy(m.id);
     try {
-      const r = await api<{ results: { ok?: boolean; message?: string }[] }>(`/studio/ai/projects/${ws.data.project.id}/assistant/${m.id}/apply`, 'POST', { skip: skip[m.id] || [], choices, ...(budgetOk ? { budgetOk: true } : {}) });
+      const r = await api<{ results: { ok?: boolean; message?: string }[] }>(`/studio/ai/projects/${ws.data.project.id}/assistant/${m.id}/apply`, 'POST', { skip: skip[m.id] || [], choices, ...(budgetOk ? { budgetOk: true } : {}), ...(quoteOk ? { quoteOk: true } : {}) });
       const ok = r.results.filter((x) => x.ok).length;
       const bad = r.results.filter((x) => x.ok === false).length;
       ws.notify(bad ? `${ok}개 실행, ${bad}개는 실행하지 못했어요.` : `${ok}개 작업을 실행했어요.`);
       await ws.load();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'project_budget') {
-        if (await ws.ask({ title: '프로젝트 예산을 넘어요', text: (e as Error).message + ' 그래도 실행할까요?', ok: '예산 넘어도 실행' })) return apply(m, true);
+        if (await ws.ask({ title: '프로젝트 예산을 넘어요', text: (e as Error).message + ' 그래도 실행할까요?', ok: '예산 넘어도 실행' })) return apply(m, true, quoteOk);
+      } else if (e instanceof ApiError && e.code === 'quote_changed') {
+        if (await ws.ask({ title: '실행 금액이 바뀌었어요', text: (e as Error).message, ok: '새 금액으로 실행' })) return apply(m, budgetOk, true);
       } else {
         if (e instanceof ApiError && e.code === 'insufficient_lama') ws.goLama();
         ws.notify((e as Error).message);
@@ -55,11 +57,11 @@ export default function Assistant({ ws, focus, close }: { ws: WS; focus: string;
     }
   };
   const act = async (m: StudioChat, what: 'undo' | 'dismiss') => {
-    if (what === 'undo' && !(await ws.ask({ title: '되돌릴까요?', text: '이 계획으로 고친 내용을 실행 전으로 돌려요. 진행 중인 AI 작업은 멈추고 라마를 돌려드려요(이미 만든 결과는 버전 기록에 남아요).', ok: '되돌리기' }))) return;
+    if (what === 'undo' && !(await ws.ask({ title: '되돌릴까요?', text: '이 계획으로 고친 내용을 실행 전으로 돌려요. 대기 중인 AI 작업은 취소하고 라마를 돌려드려요. 이미 만드는 중이면 완료 후 다시 시도해야 하며, 다른 팀원이 뒤에 수정했다면 그 내용은 보호돼요.', ok: '되돌리기' }))) return;
     setBusy(m.id);
     try {
-      await api(`/studio/ai/projects/${ws.data.project.id}/assistant/${m.id}/${what}`, 'POST');
-      if (what === 'undo') ws.notify('되돌렸어요.');
+      const r = await api<{ skipped?: string[] }>(`/studio/ai/projects/${ws.data.project.id}/assistant/${m.id}/${what}`, 'POST');
+      if (what === 'undo') ws.notify(r.skipped?.length ? `되돌렸어요. ${r.skipped.join(', ')}은(는) 대본 탭의 버전 기록에서 되돌릴 수 있어요.` : '되돌렸어요.');
       await ws.load();
     } catch (e) {
       ws.notify((e as Error).message);
@@ -176,7 +178,7 @@ export default function Assistant({ ws, focus, close }: { ws: WS; focus: string;
             placeholder={thinking ? '답을 만드는 중이에요…' : '무엇을 바꿀까요? 예: 3번 컷 표정을 더 화나게'}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
                 e.preventDefault();
                 void send();
               }

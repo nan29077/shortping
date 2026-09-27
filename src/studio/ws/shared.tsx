@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, Loader2, Settings2 } from 'lucide-react';
-import type { AiFamily, AiModelOption, StudioEpisode, StudioFeatures, StudioJob, StudioProjectDetail } from '../../api';
+import type { AiFamily, AiModelOption, StudioEpisode, StudioFeatures, StudioJob, StudioProjectDetail, TeamPerm } from '../../api';
 import { type Choice, type ChoiceKey, type Choices, type ModelMode } from '../parts';
 import { capabilityLabel } from '../../api';
 import type { SaveState } from '../hooks';
@@ -38,6 +38,9 @@ export type WS = {
   goTab: (t: TabId) => void;
   goLama: () => void;
   preview: (e: StudioEpisode) => void;
+  // 협업: 내 역할로 할 수 있는지(소유자·혼자 작업은 늘 true) · 의견 창 열기
+  can: (need: TeamPerm | TeamPerm[]) => boolean;
+  comment: (target: { type: 'project' | 'episode' | 'shot'; id: string; label: string }) => void;
 };
 
 export const episodeStatus: Record<string, string> = {

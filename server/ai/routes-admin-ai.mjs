@@ -89,6 +89,20 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
         applied: Number((await db.get("SELECT COUNT(*) AS n FROM studio_chat WHERE role='assistant' AND status IN ('applied','undone') AND created_at>=?", [since]))?.n || 0),
         cost_won: Number((await db.get("SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_jobs WHERE kind='assistant' AND status='succeeded' AND created_at>=?", [since]))?.n || 0),
       },
+      // 협업(팀 제작) 현황
+      collab: {
+        projects: Number((await db.get('SELECT COUNT(DISTINCT project_id) AS n FROM studio_members'))?.n || 0),
+        members: Number((await db.get('SELECT COUNT(*) AS n FROM studio_members'))?.n || 0),
+        people: Number((await db.get('SELECT COUNT(DISTINCT user_id) AS n FROM studio_members'))?.n || 0),
+        open_invites: Number((await db.get('SELECT COUNT(*) AS n FROM studio_invites WHERE active=1 AND uses<max_uses AND expires_at>?', [new Date().toISOString()]))?.n || 0),
+        comments: Number((await db.get('SELECT COUNT(*) AS n FROM studio_comments WHERE created_at>=?', [since]))?.n || 0),
+        sponsored_lama: Number(
+          (await db.get("SELECT COALESCE(SUM(j.charged_lama),0) AS n FROM ai_jobs j JOIN studio_projects p ON p.id=j.project_id WHERE j.status='succeeded' AND j.user_id=p.owner_id AND j.actor_id IS NOT NULL AND j.actor_id<>j.user_id AND j.created_at>=?", [since]))?.n || 0,
+        ),
+        member_lama: Number(
+          (await db.get("SELECT COALESCE(SUM(j.charged_lama),0) AS n FROM ai_jobs j JOIN studio_projects p ON p.id=j.project_id WHERE j.status='succeeded' AND j.user_id<>p.owner_id AND j.created_at>=?", [since]))?.n || 0,
+        ),
+      },
       usage: {
         month: await db.get(
           "SELECT COUNT(*) AS jobs, COALESCE(SUM(CASE WHEN status='succeeded' THEN cost_won ELSE 0 END),0) AS cost_won, COALESCE(SUM(CASE WHEN status='succeeded' THEN charged_lama ELSE 0 END),0) AS lama, COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) AS failed, COALESCE(SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END),0) AS active FROM ai_jobs WHERE created_at>=?",

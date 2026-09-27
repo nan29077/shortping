@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MessageCircle, Send, Search } from 'lucide-react';
 import { api, type User } from './api';
-import { Empty, navigate } from './App';
+import { Empty, loginWithReturn } from './App';
 
 type Ticket = {
   id: string;
@@ -56,7 +56,7 @@ export default function Support({
           title="무엇을 도와드릴까요?"
           text="로그인 후 문의를 남기면 답변을 이곳에서 확인할 수 있어요."
           label="로그인하고 문의하기"
-          action={() => navigate('login')}
+          action={() => loginWithReturn()}
         />
       </div>
     );

@@ -14,7 +14,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { api, lama, type AiOverview } from '../api';
+import { api, lama, teamRoleName, type AiOverview } from '../api';
 import { Empty, Modal, navigate } from '../App';
 import Workspace from './Workspace';
 import { TABS, hasModel, type TabId } from './ws/shared';
@@ -22,6 +22,9 @@ import { STYLES, TEMPLATES, type Template } from './presets';
 import { effectiveChoices, OptionRow } from './parts';
 import TemplateIcon from './TemplateIcon';
 import { asset } from '../platform';
+import { JoinInvite } from './ws/TeamParts';
+import ReverseStart from './ReverseStart';
+import './ws/team.css';
 
 // 숏핑 스튜디오(AI 제작) 첫 화면: 이용 약관 동의 → 프로젝트 목록 → 작업 공간
 const TERMS = [
@@ -32,8 +35,10 @@ const TERMS = [
   '라마는 작업을 시작할 때 예상치만큼 예약되고, 끝나면 실제 사용량만 차감돼요. 실패한 작업은 전액 돌려드려요. AI 결과물의 품질은 모델에 따라 다를 수 있어요.',
 ];
 
-const readStudioRoute = (): { id: string | null; tab: TabId } => {
+const readStudioRoute = (): { id: string | null; tab: TabId; join?: string } => {
   const p = location.hash.replace(/^#\/?/, '').split('/');
+  // 협업 초대 링크: #/studio/ai/join/<토큰>
+  if (p[0] === 'studio' && p[1] === 'ai' && p[2] === 'join' && p[3]) return { id: null, tab: 'plan', join: p[3] };
   const tab = (TABS.some((t) => t.id === p[3]) ? p[3] : 'plan') as TabId;
   return p[0] === 'studio' && p[1] === 'ai' && p[2] ? { id: p[2], tab } : { id: null, tab: 'plan' };
 };
@@ -71,7 +76,8 @@ export default function AiStudio({
     [filter, setFilter] = useState('all'),
     [sort, setSort] = useState('recent'),
     [form, setForm] = useState(blank),
-    [quick, setQuick] = useState(quickDefault);
+    [quick, setQuick] = useState(quickDefault),
+    [reverse, setReverse] = useState(false);
   const pick = (t: Template | null) => {
     setForm(
       t
@@ -133,6 +139,7 @@ export default function AiStudio({
   if (open)
     return (
       <Workspace
+        key={open}
         projectId={open}
         models={data.models}
         families={data.families || []}
@@ -191,6 +198,19 @@ export default function AiStudio({
         </button>
       </section>
     );
+  if (route.join)
+    return (
+      <JoinInvite
+        token={route.join}
+        notify={notify}
+        done={(id) => {
+          void load();
+          navigate(id ? 'studio/ai/' + id : 'studio/ai', { replace: true });
+        }}
+      />
+    );
+  const shared = data.shared || [];
+  const invites = data.invites || [];
   const projects = data.projects
     .filter(
       (p) =>
@@ -222,11 +242,24 @@ export default function AiStudio({
           <button className="wallet-chip lama-chip" onClick={goLama}>
             <Sparkles size={14} /> {lama(data.wallet.total)}
           </button>
+          <button className="secondary" disabled={!data.enabled} onClick={() => setReverse(true)} title="내가 올린 완성 영상의 자막으로 대본을 복원해 새 프로젝트를 만들어요">
+            <Clapperboard size={16} /> 영상에서 대본 뽑기
+          </button>
           <button className="primary" disabled={!data.enabled} onClick={startCreate}>
             <Plus size={16} /> 새 프로젝트
           </button>
         </div>
       </div>
+      {reverse && (
+        <ReverseStart
+          close={() => setReverse(false)}
+          notify={notify}
+          opened={(id) => {
+            setReverse(false);
+            navigate(`studio/ai/${id}/plan`);
+          }}
+        />
+      )}
       <div className="creator-start-grid">
         <button
           onClick={() => {
@@ -300,6 +333,45 @@ export default function AiStudio({
           ),
         )}
       </ol>
+      {invites.length > 0 && (
+        <section className="team-inbox" aria-label="받은 초대">
+          <h3>받은 초대 <small>{invites.length}</small></h3>
+          <ul>
+            {invites.map((i) => (
+              <li key={i.id}>
+                <span>
+                  <b>{i.title}</b>
+                  <small>
+                    {i.owner_name}님 · {i.role_name}로 초대 · {new Date(i.expires_at).toLocaleDateString('ko-KR')}까지
+                  </small>
+                </span>
+                <button className="primary compact" onClick={() => navigate('studio/ai/join/' + i.token)}>
+                  보고 수락하기
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {shared.length > 0 && (
+        <section className="team-shared" aria-label="함께 만드는 프로젝트">
+          <h3>함께 만드는 프로젝트 <small>{shared.length}</small></h3>
+          <div className="team-shared-list">
+            {shared.map((x) => (
+              <button key={x.id} className="team-shared-card" onClick={() => setOpen(x.id)}>
+                {x.poster ? <img src={asset(x.poster)} alt="" /> : <span className="team-join-poster" aria-hidden="true" />}
+                <span>
+                  <b>{x.title}</b>
+                  <small>
+                    {x.owner_name}님 · {teamRoleName[x.role]} · {x.genre} · 합성 {x.composed}/{x.episode_total}화
+                  </small>
+                </span>
+                <ArrowRight size={15} />
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="creator-project-toolbar">
         <h3>
           내 프로젝트 <small>{data.projects.length}</small>

@@ -12,8 +12,8 @@ import {
   Users,
 } from 'lucide-react';
 import { api, count, type Channel, type ChannelDetail, type Library, type User } from './api';
-import { Empty, Poster, goBack, navigate } from './App';
-import { asset } from './platform';
+import { Empty, Poster, goBack, loginWithReturn, navigate } from './App';
+import { asset, publicUrl } from './platform';
 
 // 방송국 분위기 프리셋. PD가 고르면 대표 색과 배경 톤이 함께 바뀝니다.
 export const channelThemes = [
@@ -256,7 +256,7 @@ export function ChannelPage({
     category === 'all' ? channel.dramas : channel.dramas.filter((d) => d.category_id === category);
   const latest = channel.dramas[0];
   const follow = async () => {
-    if (!user) return navigate('login');
+    if (!user) return loginWithReturn();
     setBusy(true);
     try {
       await api('/channels/' + channel.id + '/follow', 'POST', { active: !following });
@@ -271,7 +271,7 @@ export function ChannelPage({
     }
   };
   const share = async () => {
-    const url = `${location.origin}/share/channel/${encodeURIComponent(channel.id)}`;
+    const url = publicUrl(`/share/channel/${encodeURIComponent(channel.id)}`);
     try {
       if (navigator.share) await navigator.share({ title: `${channel.name} 방송국 | 숏핑`, text: channel.tagline, url });
       else {

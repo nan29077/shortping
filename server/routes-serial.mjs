@@ -77,6 +77,7 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
       if (!e) fail(404, '회차를 찾을 수 없어요.');
       if (e.review_status !== 'pending') fail(409, '검수 대기 중인 회차만 처리할 수 있어요.');
       if (b.status === 'rejected' && !b.note.trim()) fail(400, '반려 사유를 입력해 주세요.');
+      if (b.status === 'approved' && (!e.video || !existsSync(mediaPath(e.video)))) fail(400, '회차 영상 파일을 확인할 수 없어 승인하지 않았어요. PD에게 다시 업로드하도록 안내해 주세요.');
       const status = b.status === 'rejected' ? 'rejected' : future(e.publish_at) ? 'scheduled' : 'approved';
       await db.run('UPDATE episodes SET review_status=?,review_note=? WHERE id=?', [status, b.note.trim(), e.id]);
       await audit(req.user.id, `episode:${status}`, e.id);
@@ -117,22 +118,26 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
   // ── 썸네일 A/B: PD가 결과를 보고, 후보를 더하거나 비교를 끝냅니다 ─────────
   app.get('/api/studio/dramas/:id/thumbnails', roles('pd', 'admin'), async (req, res) => {
     const d = await owned(req);
-    res.json(await db.all('SELECT id,url,impressions,clicks,active,winner,created_at FROM drama_thumbnails WHERE drama_id=? ORDER BY created_at', [d.id]));
+    res.json(await db.all('SELECT id,url,impressions,clicks,active,winner,reviewed,created_at FROM drama_thumbnails WHERE drama_id=? ORDER BY created_at', [d.id]));
   });
   app.post('/api/studio/dramas/:id/thumbnails', roles('pd', 'admin'), async (req, res) => {
     const b = z.object({ url: z.string().regex(/^\/(images\/[a-z0-9-]+\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/) }).parse(req.body);
     const d = await owned(req);
+    if (!['draft', 'rejected'].includes(d.status) && req.user.role !== 'admin')
+      fail(409, '공개·심사 중인 작품의 표지 후보는 관리자 검토가 필요해요. 관리자에게 요청해 주세요.');
     if (b.url.startsWith('/uploads/')) {
       const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [b.url]);
       if (!f || (f.owner_id !== d.owner_id && req.user.role !== 'admin')) fail(403, '본인이 올리거나 만든 이미지만 쓸 수 있어요.');
     }
+    if (!existsSync(mediaPath(b.url))) fail(400, '이미지 파일을 찾을 수 없어요. 다시 올려 주세요.');
     const active = await db.all('SELECT url FROM drama_thumbnails WHERE drama_id=? AND active=1', [d.id]);
     if (active.length >= 4) fail(400, '썸네일 후보는 4장까지 비교할 수 있어요.');
     if (active.some((r) => r.url === b.url)) fail(409, '이미 비교 중인 이미지예요.');
     // 비교를 처음 시작하면 지금 대표 포스터도 후보로 넣습니다.
     if (!active.length && d.image !== b.url)
-      await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,created_at) VALUES (?,?,?,?)', [randomUUID(), d.id, d.image, now()]);
-    await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,created_at) VALUES (?,?,?,?)', [randomUUID(), d.id, b.url, now()]);
+      await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,reviewed,created_at) VALUES (?,?,?,?,?)', [randomUUID(), d.id, d.image, req.user.role === 'admin' ? 1 : 0, now()]);
+    await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,reviewed,created_at) VALUES (?,?,?,?,?)', [randomUUID(), d.id, b.url, req.user.role === 'admin' ? 1 : 0, now()]);
+    if (d.status === 'published') await audit(req.user.id, 'thumbnail:candidate', d.id);
     res.status(201).json({ ok: true });
   });
   // 비교 끝내기: 고른 이미지를 대표 포스터로(고르지 않으면 지금까지 클릭률이 가장 높은 이미지)
@@ -144,9 +149,12 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
     const rate = (r) => Number(r.clicks) / Math.max(1, Number(r.impressions));
     const winner = b.id ? list.find((r) => r.id === b.id) : [...list].sort((x, y) => rate(y) - rate(x))[0];
     if (!winner) fail(404, '후보를 찾을 수 없어요.');
+    if (!existsSync(mediaPath(winner.url))) fail(400, '선택한 이미지 파일을 찾을 수 없어요. 다른 후보를 골라 주세요.');
+    if (d.status === 'published' && (list.some((item) => !Number(item.reviewed)) || !Number(winner.reviewed))) fail(409, '관리자가 확인하지 않은 표지 후보가 있어 비교를 끝낼 수 없어요.');
     await db.transaction(async () => {
       await db.run('UPDATE drama_thumbnails SET active=0, winner=CASE WHEN id=? THEN 1 ELSE 0 END WHERE drama_id=? AND active=1', [winner.id, d.id]);
       await db.run('UPDATE dramas SET image=? WHERE id=?', [winner.url, d.id]);
+      if (d.status === 'published') await audit(req.user.id, 'thumbnail:published', d.id);
     });
     res.json({ ok: true, url: winner.url });
   });

@@ -45,6 +45,9 @@ export const settingDefaults = {
   studio_upload_video_seconds: 60,
   studio_upload_audio_mb: 25,
   studio_upload_audio_seconds: 120,
+  // 협업(팀 제작): 끄면 초대·공유 프로젝트 접근이 모두 멈춰요. 프로젝트 1개당 최대 참여 인원(소유자 제외)
+  studio_collab_enabled: 1,
+  studio_collab_max_members: 10,
   // 어디에서도 쓰지 않는 업로드 파일을 만든 뒤 며칠 지나면 지울지(일). 0이면 자동 정리를 하지 않습니다.
   media_retention_days: 91,
   payout_notice:

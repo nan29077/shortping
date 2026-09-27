@@ -311,6 +311,8 @@ test('compose v2 through the render queue with cards and music, trailer, metadat
   assert.ok(stats.some((t) => t.clicks === 1));
   ok(await request(`/studio/dramas/${dramaId}/thumbnails/finish`, { method: 'POST', cookie: seller.cookie, body: {} }));
   assert.equal((await request('/dramas', { cookie: viewer })).data.find((d) => d.id === dramaId).thumb_id, undefined);
+  assert.equal((await request(`/studio/dramas/${dramaId}/thumbnails`, { method: 'POST', cookie: seller.cookie, body: { url: '/images/channel-atelier.webp' } })).status, 409, '공개작 새 후보는 관리자 검토 필요');
+  assert.equal((await request(`/studio/dramas/${dramaId}/thumbnails`, { method: 'POST', cookie: admin, body: { url: '/images/nonexistent-audit.webp' } })).status, 400, '없는 파일은 후보 등록 불가');
 
   // 연재: 공개 뒤 3화를 더 만들어 회차 단위 검수로 공개
   ok(await request('/studio/ai/projects/' + pid, { method: 'PATCH', cookie: seller.cookie, body: { episode_count: 3 } }));

@@ -7,8 +7,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import ffmpegStatic from 'ffmpeg-static';
 import { prepareTestDb } from './_db.mjs';
+import ffmpegStatic from 'ffmpeg-static';
 
 const port = 5253,
   base = `http://127.0.0.1:${port}`,
@@ -54,15 +54,17 @@ before(async () => {
   testDb = await prepareTestDb(runId, dataDir);
   mkdirSync(tmp, { recursive: true });
   // 시험용 파일: 사진(PNG) · 4초 영상(MOV 대신 MP4) · 2초 녹음(WEBM/Opus) · 8초 영상(길이 제한 확인용)
+  // Windows처럼 ffmpeg가 PATH에 없어도 서버와 같은 ffmpeg-static을 씁니다.
   const ffmpeg = process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg';
   const ff = (args) => execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', ...args]);
   ff(['-f', 'lavfi', '-i', 'color=c=blue:s=360x640', '-frames:v', '1', path.join(tmp, 'pic.png')]);
   ff(['-f', 'lavfi', '-i', 'testsrc=s=360x640:d=4', '-f', 'lavfi', '-i', 'sine=d=4', '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', path.join(tmp, 'clip.mp4')]);
   ff(['-f', 'lavfi', '-i', 'testsrc=s=320x240:d=8', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(tmp, 'long.mp4')]);
+  ff(['-f', 'lavfi', '-i', 'testsrc=s=320x240:d=12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(tmp, 'twelve.mp4')]);
   ff(['-f', 'lavfi', '-i', 'sine=frequency=440:d=2', '-c:a', 'libopus', path.join(tmp, 'voice.webm')]);
   child = spawn(process.execPath, ['server/index.mjs'], {
     cwd: process.cwd(),
-    env: { ...process.env, NODE_ENV: 'test', DATABASE_URL: testDb.url, PORT: String(port), APP_ORIGIN: base, ENABLE_DEMO: 'true', DATA_DIR: dataDir, UPLOAD_DIR: path.join(dataDir, 'uploads') },
+    env: { ...process.env, AI_MOCK_DELAY_MS: '600', NODE_ENV: 'test', DATABASE_URL: testDb.url, PORT: String(port), APP_ORIGIN: base, ENABLE_DEMO: 'true', DATA_DIR: dataDir, UPLOAD_DIR: path.join(dataDir, 'uploads') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (d) => (output += d));
@@ -144,8 +146,9 @@ test('project budget asks before going over, and retry picks another model', asy
   await testDb.run('UPDATE studio_shots SET visual=?, visual_en=?, visual_en_src=? WHERE id=?', ['비 오는 밤거리', 'rainy street at night', '비 오는 밤거리', shots[1].id]);
   const retry = await request(`/studio/ai/jobs/${failed.id}/retry`, { method: 'POST', cookie: pd, body: { requested: 'auto' } });
   assert.equal(retry.status, 201, JSON.stringify(retry.data));
-  const [row] = await testDb.all('SELECT model_ref FROM ai_jobs WHERE id=?', [retry.data.jobs[0].id]);
+  const [row] = await testDb.all('SELECT model_ref, input FROM ai_jobs WHERE id=?', [retry.data.jobs[0].id]);
   assert.notEqual(row.model_ref, failed.model_ref, 'auto retry skips the failed model');
+  assert.deepEqual(JSON.parse(row.input)._exclude, [failed.model_ref], 'exclusion is kept for the engine fallback too');
   d = await waitIdle();
   assert.ok(d.episodes[0].shots.find((s) => s.id === shots[1].id).image, 'retry produced an image');
   // 다른 사람의 작업은 다시 시도할 수 없다
@@ -166,7 +169,7 @@ test('AI assistant: free plan → approve → run → undo; bad targets are drop
   const bot = d.chat.find((m) => m.id === msg.data.id);
   assert.equal(bot.status, 'ready', JSON.stringify(bot));
   const edit = bot.plan.find((a) => a.type === 'edit_shot');
-  const img = bot.plan.find((a) => a.type === 'shot_image_edit');
+  const img = bot.plan.find((a) => a.type === 'shot_image_edit' || a.type === 'shot_image');
   assert.ok(edit && edit.ok && edit.fields.dialogue === '지금 말해. 다 알고 있어.');
   assert.ok(img && img.ok && img.lama >= 1, JSON.stringify(bot.plan));
   // 대화는 무료
@@ -175,16 +178,37 @@ test('AI assistant: free plan → approve → run → undo; bad targets are drop
   assert.equal(Number(chatJob.billed), 0);
   const oldLine = shots[1].dialogue;
   const oldImage = d.episodes[0].shots[1].image;
-  const applied = await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/apply`, { method: 'POST', cookie: pd, body: {} });
+  // 계획 뒤 모델 가격이 바뀌면 예전 금액으로 바로 실행하지 않고 새 견적을 다시 확인한다.
+  const [pricedModel] = await testDb.all('SELECT id,price_lama FROM ai_models WHERE label=?', [img.model]);
+  assert.ok(pricedModel, img.model);
+  await testDb.run('UPDATE ai_models SET price_lama=price_lama+1 WHERE id=?', [pricedModel.id]);
+  const changedQuote = await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/apply`, { method: 'POST', cookie: pd, body: {} });
+  assert.equal(changedQuote.status, 409, JSON.stringify(changedQuote.data));
+  assert.equal(changedQuote.data.code, 'quote_changed');
+  const applied = await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/apply`, { method: 'POST', cookie: pd, body: { quoteOk: true } });
+  await testDb.run('UPDATE ai_models SET price_lama=? WHERE id=?', [pricedModel.price_lama, pricedModel.id]);
   assert.equal(applied.status, 200, JSON.stringify(applied.data));
   assert.ok(applied.data.results.every((r) => r.ok || r.skipped));
   // 두 번 실행되지 않는다
   assert.equal((await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/apply`, { method: 'POST', cookie: pd, body: {} })).status, 409);
+  // AI가 만드는 중에는 되돌릴 수 없다(끝난 뒤 덮어쓰게 되므로)
+  for (let i = 0; i < 40; i++) {
+    const j = (await detail()).jobs.find((x) => (x.kind === 'shot_image_edit' || x.kind === 'shot_image') && x.status === 'running');
+    if (j) break;
+    await sleep(50);
+  }
+  const early = await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/undo`, { method: 'POST', cookie: pd });
+  assert.equal(early.status, 409, 'undo must wait while a job is still running');
   d = await waitIdle();
   const s1 = d.episodes[0].shots[1];
   assert.equal(s1.dialogue, '지금 말해. 다 알고 있어.');
   assert.notEqual(s1.image, oldImage, 'image edited by AI');
   assert.ok((await request('/lama', { cookie: pd })).data.wallet.total < before, 'AI work inside the plan is billed');
+  // 실행 뒤 다른 사람이 같은 결과를 고친 경우에는 최신 값을 덮어쓰지 않는다.
+  await testDb.run("UPDATE studio_shots SET image='/images/channel-atelier.webp' WHERE id=?", [s1.id]);
+  assert.equal((await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/undo`, { method: 'POST', cookie: pd })).status, 409);
+  assert.equal((await testDb.all('SELECT image FROM studio_shots WHERE id=?', [s1.id]))[0].image, '/images/channel-atelier.webp');
+  await testDb.run('UPDATE studio_shots SET image=? WHERE id=?', [s1.image, s1.id]);
   // 되돌리기: 대사와 이미지가 원래대로(새 이미지는 버전 기록에 남음)
   assert.equal((await request(`/studio/ai/projects/${pid}/assistant/${bot.id}/undo`, { method: 'POST', cookie: pd })).status, 200);
   d = await detail();
@@ -239,6 +263,12 @@ test('my own media: photo, video (converted to MP4), recorded voice; admin limit
   assert.equal(c.audio, rec.data.url);
   assert.ok(Number(c.audio_seconds) >= 1.5);
   assert.ok(d.assets.some((x) => x.url === rec.data.url && x.model_label === '직접 녹음'));
+  // 12초 영상은 앞 10초만 저장(컷 최대 길이)
+  const twelve = await upload(shots[3].id, 'video', path.join(tmp, 'twelve.mp4'), 'video/mp4', 'twelve.mp4');
+  assert.equal(twelve.status, 201, JSON.stringify(twelve.data));
+  assert.equal(twelve.data.trimmed, true);
+  assert.equal(twelve.data.seconds, 10);
+  assert.ok(twelve.data.duration <= 10.2);
   // 가짜 확장자(내용은 PNG가 아님) · 형식 불일치
   assert.equal((await upload(shots[0].id, 'image', path.join(tmp, 'voice.webm'), 'image/png', 'x.png')).status, 400);
   // 관리자 제한: 영상 길이 · 사진 크기 · 끄기
@@ -288,6 +318,18 @@ test('storyboard: reorder, bulk edit, and regenerate only the chosen shots', asy
   const est = await request(`/studio/ai/projects/${pid}/estimate`, { method: 'POST', cookie: pd, body: { action: 'batch_shot_image', targetId: ep1, options: { shotIds: chosen } } });
   assert.equal(est.data.jobs, chosen.length);
   assert.equal((await run({ action: 'batch_shot_image', targetId: ep1, options: { shotIds: chosen } })).status, 201);
+  await waitIdle();
+});
+
+test('estimating an effect-sound job does not overwrite the saved prompt; running does', async () => {
+  const shots = (await detail()).episodes[0].shots;
+  const sid = shots[0].id;
+  await testDb.run('UPDATE studio_shots SET sfx_prompt=? WHERE id=?', ['빗소리', sid]);
+  const est = await request(`/studio/ai/projects/${pid}/estimate`, { method: 'POST', cookie: pd, body: { action: 'shot_sfx', targetId: sid, options: { prompt: '천둥 소리' } } });
+  assert.equal(est.status, 200, JSON.stringify(est.data));
+  assert.equal((await testDb.all('SELECT sfx_prompt FROM studio_shots WHERE id=?', [sid]))[0].sfx_prompt, '빗소리');
+  assert.equal((await run({ action: 'shot_sfx', targetId: sid, options: { prompt: '천둥 소리' } })).status, 201);
+  assert.equal((await testDb.all('SELECT sfx_prompt FROM studio_shots WHERE id=?', [sid]))[0].sfx_prompt, '천둥 소리');
   await waitIdle();
 });
 

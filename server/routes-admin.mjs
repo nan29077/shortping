@@ -239,6 +239,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         studio_upload_video_seconds: z.number().int().min(3).max(300),
         studio_upload_audio_mb: z.number().int().min(1).max(100),
         studio_upload_audio_seconds: z.number().int().min(3).max(600),
+        studio_collab_enabled: z.number().int().min(0).max(1),
+        studio_collab_max_members: z.number().int().min(1).max(50),
         // 0 = 자동 정리 끔. 켤 때는 실수로 너무 짧게 잡지 않도록 최소 7일.
         media_retention_days: z
           .number()

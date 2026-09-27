@@ -1329,6 +1329,8 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
     studio_upload_video_seconds: n(s.studio_upload_video_seconds) || 60,
     studio_upload_audio_mb: n(s.studio_upload_audio_mb) || 25,
     studio_upload_audio_seconds: n(s.studio_upload_audio_seconds) || 120,
+    studio_collab_enabled: s.studio_collab_enabled === undefined ? 1 : n(s.studio_collab_enabled),
+    studio_collab_max_members: n(s.studio_collab_max_members) || 10,
   });
   // 빈 칸은 빈 칸으로 두고(저장 시 막음), 숫자만 숫자로 바꿉니다. 지운 칸이 0(무제한)으로 저장되지 않게 합니다.
   const num = (k: keyof typeof f) => (e: { target: { value: string } }) =>
@@ -1551,6 +1553,24 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
             </label>
           </div>
           <small className="muted">영상은 MP4로, 음성은 MP3로 바꿔 저장해요. 컷 하나에는 영상 앞부분 최대 10초가 쓰여요.</small>
+        </fieldset>
+        <fieldset className="policy-group">
+          <legend>협업 (팀 제작)</legend>
+          <label className="check-row">
+            <input type="checkbox" checked={!!f.studio_collab_enabled} onChange={(e) => setF({ ...f, studio_collab_enabled: e.target.checked ? 1 : 0 })} />
+            <span>PD가 다른 PD를 프로젝트에 초대해 함께 만들 수 있게 하기</span>
+          </label>
+          <label>
+            프로젝트 1개당 최대 팀원 수 (소유자 제외 · 1~50)
+            <input type="number" min={1} max={50} required value={f.studio_collab_max_members} onChange={num('studio_collab_max_members')} />
+          </label>
+          {data.collab && (
+            <small className="muted">
+              팀으로 만드는 프로젝트 {data.collab.projects.toLocaleString('ko-KR')}개 · 참여 PD {data.collab.people.toLocaleString('ko-KR')}명 · 열린 초대 {data.collab.open_invites.toLocaleString('ko-KR')}개 · 이번 달 댓글{' '}
+              {data.collab.comments.toLocaleString('ko-KR')}개 · 이번 달 소유자 지원 {lama(data.collab.sponsored_lama)} · 팀원 자기 부담 {lama(data.collab.member_lama)}
+            </small>
+          )}
+          <small className="muted">끄면 초대·공유 프로젝트 접근이 모두 멈춰요(팀 정보는 남아 있어 다시 켜면 그대로 이어져요). 시청자 계정은 참여할 수 없어요.</small>
         </fieldset>
         <div className="info-box">
           예) Veo 3.1 원가 $0.75/초 × {f.usd_krw_rate}원 × {f.ai_margin_rate}% = 1초당 약{' '}

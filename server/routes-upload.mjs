@@ -210,6 +210,10 @@ export function uploadRoutes({
     // 메인페이지 여백 배경 사진(지금 설정과 되돌리기용 기록)
     "SELECT 1 FROM platform_settings WHERE key='home_style' AND value LIKE '%' || m.url || '%'",
     "SELECT 1 FROM home_history WHERE data LIKE '%' || m.url || '%'",
+    // 드라매직 벤치마킹 고도화(2026-09-25): 소품 이미지 · 스타일 잠금 참고 이미지 · 내 자산 라이브러리
+    'SELECT 1 FROM studio_props WHERE image=m.url',
+    "SELECT 1 FROM studio_projects WHERE style_refs LIKE '%' || m.url || '%'",
+    "SELECT 1 FROM studio_library WHERE image=m.url OR data LIKE '%' || m.url || '%'",
   ];
   const orphanWhere = `m.created_at<? AND ${referenced.map((q) => `NOT EXISTS (${q})`).join(' AND ')}`;
   const cutoffFor = (days) => new Date(Date.now() - days * 86400000).toISOString();

@@ -169,6 +169,18 @@ export async function migrate(db) {
     // AI 조수(작업 공간 채팅, 2026-09-24): PD 말 → 실행 계획(승인 후 실행) → 결과·되돌리기 기록
     `CREATE TABLE IF NOT EXISTS studio_chat (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', job_id TEXT, episode_id TEXT, result TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS studio_chat_project ON studio_chat(project_id, created_at)`,
+    // 드라매직 벤치마킹 고도화(2026-09-25): 소품 · 내 자산 라이브러리 · 협업(팀·초대·의견·활동)
+    `CREATE TABLE IF NOT EXISTS studio_props (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, name TEXT NOT NULL, look TEXT NOT NULL DEFAULT '', look_en TEXT NOT NULL DEFAULT '', look_en_src TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS studio_library (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, name TEXT NOT NULL, image TEXT NOT NULL DEFAULT '', data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_library_owner ON studio_library(owner_id, kind)`,
+    `CREATE TABLE IF NOT EXISTS studio_members (project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL, pay_mode TEXT NOT NULL DEFAULT 'self', sponsor_limit INTEGER NOT NULL DEFAULT 0, invited_by TEXT, created_at TEXT NOT NULL, PRIMARY KEY(project_id, user_id))`,
+    `CREATE INDEX IF NOT EXISTS studio_members_user ON studio_members(user_id)`,
+    `CREATE TABLE IF NOT EXISTS studio_invites (id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, email TEXT, role TEXT NOT NULL, pay_mode TEXT NOT NULL DEFAULT 'self', sponsor_limit INTEGER NOT NULL DEFAULT 0, max_uses INTEGER NOT NULL DEFAULT 1, uses INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, expires_at TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_invites_project ON studio_invites(project_id)`,
+    `CREATE TABLE IF NOT EXISTS studio_comments (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_comments_project ON studio_comments(project_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS studio_activity (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS studio_activity_project ON studio_activity(project_id, created_at)`,
     `CREATE TABLE IF NOT EXISTS ai_safety_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, term TEXT NOT NULL, excerpt TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
   ];
   for (const sql of statements) await db.run(sql);
@@ -210,6 +222,11 @@ export async function migrate(db) {
   await ensureColumn(db, 'episodes', 'subtitles', "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'episodes', 'studio_episode_id', 'TEXT');
   await ensureColumn(db, 'media_metadata', 'has_audio', 'INTEGER NOT NULL DEFAULT 1');
+  // 스튜디오 결과 파일은 소유자만이 아니라 어느 프로젝트의 결과인지도 기록합니다.
+  // 협업자는 같은 PD의 다른 비공개 프로젝트 파일까지 볼 수 없고, 참여한 프로젝트 파일만 볼 수 있어야 합니다.
+  await ensureColumn(db, 'media_files', 'project_id', 'TEXT');
+  // 공개 작품의 A/B 후보는 관리자가 확인한 이미지에만 노출 허용 표시를 남깁니다.
+  await ensureColumn(db, 'drama_thumbnails', 'reviewed', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'user_profiles', 'studio_terms_at', 'TEXT');
   // 정산 수익을 라마로 전환한 지급은 method='lama'
   await ensureColumn(db, 'payouts', 'method', "TEXT NOT NULL DEFAULT 'bank'");
@@ -241,6 +258,20 @@ export async function migrate(db) {
     ['studio_projects', 'resolution', "TEXT NOT NULL DEFAULT '720p'"],
     // 프로젝트 예산(라마, 0 = 제한 없음): 넘는 작업은 확인을 받고, 자동 선택은 예산 안에서 고릅니다.
     ['studio_projects', 'budget_lama', 'INTEGER NOT NULL DEFAULT 0'],
+    // 드라매직 벤치마킹 고도화(2026-09-25)
+    ['studio_projects', 'script_text', "TEXT NOT NULL DEFAULT ''"], // 붙여 넣은 완성 대본(컷으로 나누기용)
+    ['studio_projects', 'style_refs', "TEXT NOT NULL DEFAULT ''"], // 스타일 잠금 참고 이미지(JSON 배열)
+    ['studio_projects', 'relations', "TEXT NOT NULL DEFAULT ''"], // 인물 관계(JSON 배열)
+    ['studio_projects', 'approval_mode', "TEXT NOT NULL DEFAULT 'auto'"], // 협업 승인: auto(팀이 있으면 켜짐)·on·off
+    ['studio_shots', 'prop_ids', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'states', "TEXT NOT NULL DEFAULT ''"], // 인물 상태(JSON {인물ID: '젖은 머리'})
+    ['studio_shots', 'verify', "TEXT NOT NULL DEFAULT ''"], // AI 결과 검수(JSON)
+    ['studio_shots', 'updated_at', 'TEXT'],
+    ['studio_shots', 'updated_by', 'TEXT'],
+    ['studio_episodes', 'script_review', "TEXT NOT NULL DEFAULT ''"], // 승인: ''·requested·approved·changes
+    ['studio_episodes', 'final_review', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_episodes', 'review_note', "TEXT NOT NULL DEFAULT ''"],
+    ['ai_jobs', 'actor_id', 'TEXT'], // 작업을 누른 사람(협업: 라마를 낸 사람은 user_id)
     ['studio_episodes', 'hook', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'cliffhanger', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'bgm', "TEXT NOT NULL DEFAULT ''"],

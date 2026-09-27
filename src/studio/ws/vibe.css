@@ -1189,3 +1189,18 @@ button.upgrade {
   align-self: flex-start;
   justify-content: flex-start;
 }
+/* AI 조수가 열려 있을 때: PC는 액션바가 조수 뒤로 가지 않게 오른쪽을 비우고, 휴대폰은 액션바를 숨겨요 */
+@media (min-width: 761px) {
+  .ws.with-asst .ws-actionbar {
+    padding-right: calc(min(400px, calc(100vw - 32px)) + 24px);
+  }
+}
+@media (max-width: 760px) {
+  .ws.with-asst .ws-actionbar {
+    display: none;
+  }
+}
+/* 썸네일·카드 만들기 전체 화면은 조수 패널보다 위에 */
+.ws-overlay {
+  z-index: 75;
+}

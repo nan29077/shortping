@@ -30,6 +30,8 @@ export type ManagedDrama = Drama & {
     submitted_at?: string | null;
   })[];
   issues: string[];
+  // 구버전 로컬 서버가 아직 떠 있는 상태에서도 심사 모달이 깨지지 않도록 선택값으로 받습니다.
+  thumbnails?: { id: string; url: string; active: number; reviewed: number }[];
   reviews: { id: string; name: string; status: string; note: string; created_at: string }[];
 };
 type Provenance = {
@@ -68,6 +70,7 @@ export default function ContentReview({
   const [loaded, setLoaded] = useState<number[]>([]);
   const [checked, setChecked] = useState(false);
   const [posterReady, setPosterReady] = useState(false);
+  const [thumbnailReady, setThumbnailReady] = useState<string[]>([]);
   const [provenance, setProvenance] = useState<Provenance | null>(null);
   // PD: 공개 중인 작품의 회차 관리(연재) 창과 안내 문구
   const [manage, setManage] = useState(false);
@@ -76,7 +79,8 @@ export default function ContentReview({
   async function load() {
     try {
       const d = await api<ManagedDrama>('/studio/dramas/' + drama.id);
-      setDetail(d);
+      const normalized = { ...d, thumbnails: Array.isArray(d.thumbnails) ? d.thumbnails : [] };
+      setDetail(normalized);
       setError('');
       if (d.episodes.some((e) => e.source === 'studio'))
         setProvenance(
@@ -175,6 +179,23 @@ export default function ContentReview({
               </dl>
             </div>
           </div>
+          {(detail.thumbnails?.length || 0) > 1 && (
+            <div className="review-thumbnails">
+              <strong>공개 후 비교할 썸네일 후보</strong>
+              <p className="muted">작품 승인 시 아래 후보도 함께 승인되어 시청자 반응 비교에 사용됩니다.</p>
+              <div className="poster-row">
+                {detail.thumbnails?.map((thumb) => (
+                  <img
+                    key={thumb.id}
+                    src={asset(thumb.url)}
+                    alt="썸네일 비교 후보"
+                    onLoad={() => setThumbnailReady((prev) => (prev.includes(thumb.id) ? prev : [...prev, thumb.id]))}
+                    onError={() => setThumbnailReady((prev) => prev.filter((id) => id !== thumb.id))}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           <p className="review-synopsis">{detail.synopsis}</p>
           {serial && !admin && (
             <div className="info-box serial-info">
@@ -393,6 +414,7 @@ export default function ContentReview({
                     busy ||
                     !checked ||
                     !posterReady ||
+                    (detail.thumbnails || []).some((thumb) => !thumbnailReady.includes(thumb.id)) ||
                     !!detail.issues.length ||
                     !detail.episodes.length ||
                     detail.episodes.some((e) => !loaded.includes(e.number))

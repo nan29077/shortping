@@ -653,6 +653,7 @@ test('shot rewrite and voice sample; admin routing rules, China policy, breaker,
   await run({ action: 'script', targetId: p.episodes[0].id, requested: 'mock-writer' });
   p = await waitJobs(seller.cookie, pid);
   const shot = p.episodes[0].shots.find((x) => x.dialogue);
+  await testDb.run("UPDATE studio_shots SET audio='/uploads/old-audio.mp3',audio_seconds=3,lipsync='/uploads/old-lipsync.mp4' WHERE id=?", [shot.id]);
   assert.equal((await run({ action: 'rewrite_shot', targetId: shot.id, requested: 'mock-writer' })).status, 400);
   assert.equal((await run({ action: 'rewrite_shot', targetId: shot.id, requested: 'mock-writer', instruction: '더 긴장감 있게' })).status, 201);
   const c = p.characters[0];
@@ -661,6 +662,8 @@ test('shot rewrite and voice sample; admin routing rules, China policy, breaker,
   const rewritten = p.episodes[0].shots.find((x) => x.id === shot.id);
   assert.match(rewritten.scene, /수정/, JSON.stringify(p.jobs.filter((j) => j.kind === 'rewrite_shot')));
   assert.notEqual(rewritten.dialogue, shot.dialogue);
+  assert.equal(rewritten.audio, '');
+  assert.equal(rewritten.lipsync, '', '대사가 바뀌면 예전 립싱크도 함께 무효화');
   assert.ok(p.characters.find((x) => x.id === c.id).voice_sample.startsWith('/uploads/'));
 
   // 라우팅 규칙: 표준 등급 이미지는 HQ 대신 저가 가짜 이미지 모델을 먼저 쓴다.
@@ -711,11 +714,16 @@ test('shot rewrite and voice sample; admin routing rules, China policy, breaker,
   }
   // 공급사 동시 작업·월 예산 설정 저장
   const chat = list.providers.find((x) => x.name.startsWith('에뮬 채팅'));
-  await request(`/admin/ai/providers/${chat.id}`, { method: 'PATCH', cookie: admin, body: { name: chat.name, kind: 'openai_compatible', base_url: chat.base_url, country: 'CN', max_concurrency: 2, monthly_budget_won: 1 } });
+  const providerSpent = Number((await testDb.all("SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_jobs WHERE provider_id=? AND status IN ('succeeded','queued','running')", [chat.id]))[0].n);
+  const providerBudget = Math.ceil(providerSpent) + 1;
+  await request(`/admin/ai/providers/${chat.id}`, { method: 'PATCH', cookie: admin, body: { name: chat.name, kind: 'openai_compatible', base_url: chat.base_url, country: 'CN', max_concurrency: 2, monthly_budget_won: providerBudget } });
   let v = (await request('/admin/ai', { cookie: admin })).data.providers.find((x) => x.id === chat.id);
   assert.equal(v.max_concurrency, 2);
-  assert.equal(v.monthly_budget_won, 1);
-  // 월 예산을 다 쓴 공급사는 자동 선택에서 빠진다(이미 원가가 쌓여 있음).
+  assert.equal(v.monthly_budget_won, providerBudget);
+  // 아직 한도에는 닿지 않았어도 새 작업 예상 원가까지 더해 넘으면 직접 선택을 막고 자동 후보에서도 뺀다.
+  e = await request(`/studio/ai/projects/${pid}/estimate`, { method: 'POST', cookie: seller.cookie, body: { action: 'plan', requested: cnModel.id } });
+  assert.equal(e.status, 400);
+  assert.match(e.data.error, /예산/);
   e = await request(`/studio/ai/projects/${pid}/estimate`, { method: 'POST', cookie: seller.cookie, body: { action: 'plan' } });
   assert.doesNotMatch(e.data.model, /에뮬 작가/);
   await request(`/admin/ai/providers/${chat.id}`, { method: 'PATCH', cookie: admin, body: { name: chat.name, kind: 'openai_compatible', base_url: chat.base_url, country: 'CN', max_concurrency: 0, monthly_budget_won: 0 } });
@@ -832,7 +840,7 @@ test('storage cleanup: default 91 days, admin-set period, only unreferenced old 
   assert.equal(s.status, 200);
   assert.equal(s.data.retention_days, 91);
   assert.equal(s.data.default_days, 91);
-  assert.equal(s.data.checked_places, 22);
+  assert.equal(s.data.checked_places, 25);
   assert.equal((await request('/admin/storage', { cookie: pd })).status, 403);
   // 잘못된 기간은 거절(0=끔, 7~3650)
   assert.equal((await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 5 } })).status, 400);

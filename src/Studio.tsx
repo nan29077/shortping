@@ -361,6 +361,8 @@ export default function Studio({
       </div>
     );
   const pending = data.dramas.filter((d) => d.status === 'pending'),
+    pendingEpisodes = data.dramas.reduce((sum, d) => sum + Number(d.pending_episodes || 0), 0),
+    pendingCount = pending.length + pendingEpisodes,
     revenue = data.orders.reduce((sum, o) => sum + orderRevenue(o, admin), 0);
   return (
     <>
@@ -369,7 +371,7 @@ export default function Studio({
           type="button"
           className="menu-toggle"
           aria-label={menuOpen ? '메뉴 닫기' : '메뉴 열기'}
-          aria-expanded={menuOpen || !collapsed}
+          aria-expanded={narrow() ? menuOpen : !collapsed}
           aria-controls="studio-menu"
           onClick={toggleMenu}
         >
@@ -409,7 +411,7 @@ export default function Studio({
                 >
                   <Icon size={18} />
                   <span>{name}</span>
-                  {id === 'contents' && pending.length > 0 && <i>{pending.length}</i>}
+                  {id === 'contents' && pendingCount > 0 && <i>{pendingCount}</i>}
                 </button>
               ))}
             </div>
@@ -498,8 +500,8 @@ export default function Studio({
               <Stat
                 icon={<Clock3 size={18} />}
                 label="심사 대기"
-                value={pending.length + '편'}
-                detail="새로운 이야기를 기다려요"
+                value={pendingCount + '건'}
+                detail={`작품 ${pending.length}편 · 추가 회차 ${pendingEpisodes}편`}
               />
             </div>
             <StudioInsights data={data} admin={admin} />

@@ -7,6 +7,7 @@ type CapacitorGlobal = { isNativePlatform?: () => boolean };
 const cap = typeof window !== 'undefined' ? (window as unknown as { Capacitor?: CapacitorGlobal }).Capacitor : undefined;
 export const isNativeApp = !!cap?.isNativePlatform?.();
 export const API_ORIGIN = isNativeApp ? String(import.meta.env.VITE_API_ORIGIN || '').replace(/\/+$/, '') : '';
+const PUBLIC_ORIGIN = String(import.meta.env.VITE_PUBLIC_ORIGIN || API_ORIGIN || (typeof location !== 'undefined' ? location.origin : '')).replace(/\/+$/, '');
 
 const TOKEN_KEY = 'shortping.auth';
 let memoryToken = '';
@@ -39,6 +40,9 @@ export const authToken = {
 };
 
 export const apiUrl = (path: string) => API_ORIGIN + '/api' + path;
+// 카카오톡·문자 등 앱 밖으로 공유할 주소입니다. 네이티브 앱의 내부 origin(https://localhost)이
+// 섞이지 않도록 공개 웹 주소를 별도로 사용하고, 웹 개발 중에는 현재 origin을 씁니다.
+export const publicUrl = (path: string) => PUBLIC_ORIGIN + (path.startsWith('/') ? path : '/' + path);
 // 앱에서 보내는 요청 머리글(웹에서는 빈 값: 쿠키로 로그인)
 export function authHeaders(): Record<string, string> {
   if (!isNativeApp) return {};

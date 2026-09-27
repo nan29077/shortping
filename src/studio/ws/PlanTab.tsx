@@ -7,6 +7,7 @@ import { JobBadge, Versions, isBusy } from '../parts';
 import { STYLES } from '../presets';
 import { ModelSettings, NotReady, SaveBadge, Section, hasModel, runningCount, type WS } from './shared';
 import VoicePicker from './VoicePicker';
+import { LibraryButton, PropSection, RelationsSection, SaveToLibrary, ScriptImportSection, StyleLockSection } from './DramaParts';
 import { asset } from '../../platform';
 
 type Bible = {
@@ -33,8 +34,9 @@ export default function PlanTab({ ws, genres }: { ws: WS; genres: string[] }) {
   const { data } = ws;
   return (
     <>
-      <AutopilotPanel data={data} models={ws.models} notify={ws.notify} reload={ws.load} goLama={ws.goLama} compact />
+      {ws.can("manage") && <AutopilotPanel data={data} models={ws.models} notify={ws.notify} reload={ws.load} goLama={ws.goLama} compact />}
       <StoryForm ws={ws} genres={genres} />
+      <ScriptImportSection ws={ws} />
       <AdaptSection ws={ws} />
       <BibleSection ws={ws} />
       <SeasonSection ws={ws} />
@@ -43,13 +45,16 @@ export default function PlanTab({ ws, genres }: { ws: WS; genres: string[] }) {
         desc="기준 이미지를 만들면 모든 장면에서 같은 얼굴 · 의상을 유지하는 데 참고해요. 외모는 한국어로 써도 자동으로 영어로 바꿔 전달해요."
         badge={<em className="ws-count">{data.characters.length}/8</em>}
         actions={
-          <button
-            className="secondary compact"
-            disabled={ws.busy || data.characters.length >= 8}
-            onClick={() => void ws.act(() => api(`/studio/ai/projects/${data.project.id}/characters`, 'POST', { name: '새 인물', role: '조연' }), '인물을 추가했어요.')}
-          >
-            <Plus size={14} /> 인물 추가
-          </button>
+          <>
+            <LibraryButton ws={ws} kind="character" />
+            <button
+              className="secondary compact"
+              disabled={ws.busy || data.characters.length >= 8}
+              onClick={() => void ws.act(() => api(`/studio/ai/projects/${data.project.id}/characters`, 'POST', { name: '새 인물', role: '조연' }), '인물을 추가했어요.')}
+            >
+              <Plus size={14} /> 인물 추가
+            </button>
+          </>
         }
       >
         <ModelSettings ws={ws} caps={['image', 'tts']} />
@@ -60,7 +65,10 @@ export default function PlanTab({ ws, genres }: { ws: WS; genres: string[] }) {
           ))}
         </div>
       </Section>
+      <RelationsSection ws={ws} />
       <LocationSection ws={ws} />
+      <PropSection ws={ws} />
+      <StyleLockSection ws={ws} />
       <NarratorSection ws={ws} />
     </>
   );
@@ -441,6 +449,7 @@ function CharacterCard({ ws, c }: { ws: WS; c: StudioCharacter }) {
       <div className="ws-cast-fields">
         <div className="ws-row">
           <SaveBadge state={save.state} error={save.error} />
+          <SaveToLibrary ws={ws} kind="character" sourceId={c.id} />
           <button className="icon-button" aria-label={c.name + ' 지우기'} disabled={ws.busy} onClick={() => void remove()}>
             <Trash2 size={14} />
           </button>
@@ -514,9 +523,12 @@ function LocationSection({ ws }: { ws: WS }) {
       defaultOpen={list.length > 0}
       badge={<em className="ws-count">{list.length}/12</em>}
       actions={
-        <button className="secondary compact" disabled={ws.busy || list.length >= 12} onClick={() => void ws.act(() => api(`/studio/ai/projects/${pid}/locations`, 'POST', { name: '새 장소', look: '' }), '장소를 추가했어요.')}>
-          <Plus size={14} /> 장소 추가
-        </button>
+        <>
+          <LibraryButton ws={ws} kind="location" />
+          <button className="secondary compact" disabled={ws.busy || list.length >= 12} onClick={() => void ws.act(() => api(`/studio/ai/projects/${pid}/locations`, 'POST', { name: '새 장소', look: '' }), '장소를 추가했어요.')}>
+            <Plus size={14} /> 장소 추가
+          </button>
+        </>
       }
     >
       {!list.length && <p className="muted">예: 여주인공의 원룸, 회사 로비, 비 오는 골목</p>}
@@ -556,6 +568,7 @@ function LocationCard({ ws, l }: { ws: WS; l: StudioLocation }) {
           </button>
           <JobBadge jobs={ws.data.jobs} targetId={l.id} kind="location_image" />
           <small className="muted">컷 {used}개에서 사용</small>
+          <SaveToLibrary ws={ws} kind="location" sourceId={l.id} />
           <button
             className="icon-button"
             aria-label={`${l.name} 지우기`}

@@ -989,6 +989,7 @@ const mediaPath = (url) =>
     : path.resolve('public', url.slice(1));
 async function contentIssues(d) {
   const episodes = await db.all('SELECT * FROM episodes WHERE drama_id=? ORDER BY number', [d.id]);
+  const thumbnails = await db.all('SELECT id,url,active,reviewed FROM drama_thumbnails WHERE drama_id=? AND active=1 ORDER BY created_at', [d.id]);
   const issues = [];
   if (!existsSync(mediaPath(d.image))) issues.push('포스터 파일을 찾을 수 없습니다.');
   if (!episodes.length) issues.push('영상이 포함된 회차를 먼저 등록해 주세요.');
@@ -1000,7 +1001,8 @@ async function contentIssues(d) {
     if (!demo && e.video.startsWith('/demo/'))
       issues.push(`${e.number}화 샘플 영상을 실제 영상으로 교체해 주세요.`);
   }
-  return { episodes, issues };
+  for (const t of thumbnails) if (!existsSync(mediaPath(t.url))) issues.push('썸네일 후보 파일을 찾을 수 없습니다.');
+  return { episodes, thumbnails, issues };
 }
 async function contentEvent(req, id, status, note = '') {
   const timestamp = now();
@@ -1050,7 +1052,7 @@ async function owned(req, lock = false) {
 }
 app.get('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
   const d = await owned(req);
-  const { episodes, issues } = await contentIssues(d);
+  const { episodes, thumbnails, issues } = await contentIssues(d);
   const owner = await db.get('SELECT name FROM users WHERE id=?', [d.owner_id]);
   const reviews = await db.all(
     'SELECT r.*,u.name FROM content_reviews r JOIN users u ON u.id=r.actor_id WHERE drama_id=? ORDER BY r.created_at DESC',
@@ -1074,6 +1076,7 @@ app.get('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
         warnings: meta ? precheck(meta) : [],
       };
     }),
+    thumbnails,
     issues,
     reviews,
     owner_name: owner.name,
@@ -1281,6 +1284,8 @@ app.post('/api/admin/dramas/:id/review', roles('admin'), async (req, res) => {
         "UPDATE episodes SET review_status=CASE WHEN publish_at IS NOT NULL AND publish_at>? THEN 'scheduled' ELSE 'approved' END WHERE drama_id=? AND review_status IN ('draft','pending','rejected')",
         [now(), d.id],
       );
+    // 관리자 검토 화면에 함께 표시된 썸네일 후보도 작품 승인 시에만 공개 실험 대상으로 허용합니다.
+    if (b.status === 'published') await db.run('UPDATE drama_thumbnails SET reviewed=1 WHERE drama_id=? AND active=1', [d.id]);
     await contentEvent(req, d.id, b.status, b.note.trim());
     return d;
   });

@@ -145,6 +145,8 @@ type Estimate = {
   capability?: string;
   why?: ModelWhy[];
   budget?: { limit: number; spent: number; left: number | null; over: boolean };
+  // 협업: self = 내 라마, sponsor = 소유자 지원(한도 limit, 0이면 제한 없음)
+  payer?: { mode: 'self' | 'sponsor'; limit: number; used: number; over: boolean };
 };
 const tierShort: Record<string, string> = { draft: '초안', standard: '표준', premium: '고급' };
 // 실행 전 예상 라마를 보여 주고 확인을 받습니다. 자동 선택이면 '왜 이 모델?'과 다른 후보, 품질 바꾸기, 예산 확인까지.
@@ -163,22 +165,30 @@ export function useRunner({
   const [busy, setBusy] = useState(false);
   const [budgetOk, setBudgetOk] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
+  const [estimating, setEstimating] = useState(false);
+  // 품질·모델을 바꾸면 예상을 다시 받는 동안 버튼을 잠가, 옛 예상값으로 실행되지 않게 합니다.
   const ask = async (label: string, body: Record<string, unknown>) => {
+    setEstimating(true);
     try {
       const estimate = await api<Estimate>(`/studio/ai/projects/${projectId}/estimate`, 'POST', body);
       setPending({ label, body, estimate, idempotencyKey: uuid() });
       setBudgetOk(false);
+      setShowWhy(false);
     } catch (e) {
       notify((e as Error).message);
+    } finally {
+      setEstimating(false);
     }
   };
+  const locked = busy || estimating;
   const est = pending?.estimate;
   const auto = pending?.body.requested === 'auto';
-  const lacking = !!est && est.wallet.total < est.lama;
+  const sponsored = est?.payer?.mode === 'sponsor' && !est.payer.over;
+  const lacking = !!est && !sponsored && est.wallet.total < est.lama;
   const overBudget = !!est?.budget?.over;
   const top = est?.why?.[0];
   const confirm = pending && est && (
-    <Modal title={pending.label} close={() => !busy && setPending(null)}>
+    <Modal title={pending.label} close={() => !locked && setPending(null)}>
       <div className="run-confirm">
         <div>
           <span>AI 모델</span>
@@ -195,10 +205,17 @@ export function useRunner({
           </strong>
         </div>
         <div>
-          <span>사용 가능 라마</span>
-          <strong className={lacking ? 'danger' : ''}>{lama(est.wallet.total)}</strong>
+          <span>{sponsored ? '결제' : '사용 가능 라마'}</span>
+          <strong className={lacking ? 'danger' : ''}>{sponsored ? '소유자 지원' : lama(est.wallet.total)}</strong>
         </div>
       </div>
+      {est.payer?.mode === 'sponsor' && (
+        <p className={'muted settings-note' + (est.payer.over ? ' warn' : '')}>
+          {est.payer.over
+            ? `소유자가 지원하는 한도(${lama(est.payer.limit)})를 넘어요. 지금까지 ${lama(est.payer.used)}를 썼어요. 이번 작업은 내 라마로 진행해요.`
+            : `이 프로젝트 소유자의 라마로 실행해요${est.payer.limit ? ` · 지원 한도 ${lama(est.payer.limit)} 중 ${lama(est.payer.used)} 사용` : ''}.`}
+        </p>
+      )}
       <div className="run-tier" role="radiogroup" aria-label="품질">
         {(['draft', 'standard', 'premium'] as const).map((t) => (
           <button
@@ -207,7 +224,7 @@ export function useRunner({
             role="radio"
             aria-checked={pending.body.tier === t}
             className={pending.body.tier === t ? 'active' : ''}
-            disabled={busy}
+            disabled={locked}
             onClick={() => pending.body.tier !== t && void ask(pending.label, { ...pending.body, tier: t })}
           >
             {tierShort[t]}
@@ -232,7 +249,7 @@ export function useRunner({
                 <div className="run-alts">
                   <span>다른 후보로 실행</span>
                   {est.why!.slice(1).map((m) => (
-                    <button key={m.id} type="button" className="chip" disabled={busy} onClick={() => void ask(pending.label, { ...pending.body, requested: m.id })}>
+                    <button key={m.id} type="button" className="chip" disabled={locked} onClick={() => void ask(pending.label, { ...pending.body, requested: m.id })}>
                       {m.label} · {lama(m.lama)}
                     </button>
                   ))}
@@ -245,7 +262,7 @@ export function useRunner({
       {!auto && (
         <p className="muted settings-note">
           직접 고른 모델로 실행해요.{' '}
-          <button type="button" className="text-link" onClick={() => void ask(pending.label, { ...pending.body, requested: 'auto' })}>
+          <button type="button" className="text-link" disabled={locked} onClick={() => void ask(pending.label, { ...pending.body, requested: 'auto' })}>
             자동 추천으로 바꾸기
           </button>
         </p>
@@ -275,11 +292,11 @@ export function useRunner({
       ) : (
         <button
           className="primary full"
-          disabled={busy || (overBudget && !budgetOk)}
+          disabled={locked || (overBudget && !budgetOk)}
           onClick={async () => {
             setBusy(true);
             try {
-              await api(`/studio/ai/projects/${projectId}/run`, 'POST', { ...pending.body, idempotencyKey: pending.idempotencyKey, ...(overBudget ? { budgetOk: true } : {}) });
+              await api(`/studio/ai/projects/${projectId}/run`, 'POST', { ...pending.body, idempotencyKey: pending.idempotencyKey, ...(overBudget ? { budgetOk: true } : {}), ...(est.payer?.over ? { payOwn: true } : {}) });
               setPending(null);
               notify('AI가 작업을 시작했어요. 끝나면 화면에 바로 반영돼요.');
               onRan();
@@ -291,7 +308,7 @@ export function useRunner({
             }
           }}
         >
-          <Sparkles size={16} /> {busy ? '시작하는 중…' : `${lama(est.lama)}로 실행`}
+          <Sparkles size={16} /> {busy ? '시작하는 중…' : estimating ? '예상 라마 계산 중…' : `${lama(est.lama)}로 실행`}
         </button>
       )}
     </Modal>

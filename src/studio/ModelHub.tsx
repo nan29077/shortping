@@ -64,6 +64,7 @@ export default function ModelHub({
   const [family, setFamily] = useState('');
   const [open, setOpen] = useState<ChoiceKey | ''>('');
   const tiers = HUB_CAPS.map((c) => choices[c].tier).join(',');
+  const modelKey = models.map((m) => m.id).join(',');
   // 자동이면 지금 어떤 모델을 고를지 미리 봅니다(라마 들지 않음).
   useEffect(() => {
     let alive = true;
@@ -77,7 +78,7 @@ export default function ModelHub({
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tiers, projectId, models]);
+  }, [tiers, projectId, modelKey]);
   // 연결된 모델이 있는 계열만(개발용 가짜 AI는 가짜만 있을 때만) 보여 줍니다.
   const connected = useMemo(() => {
     const ids = new Set(models.map((m) => m.family || 'other'));

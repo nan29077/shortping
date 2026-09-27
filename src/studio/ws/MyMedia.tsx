@@ -32,11 +32,11 @@ export default function MyMedia({ ws, s, index }: { ws: WS; s: StudioShot; index
     try {
       const form = new FormData();
       form.append('file', file);
-      const r = await api<{ seconds: number | null; duration: number }>(`/studio/ai/shots/${s.id}/media?kind=${k}&source=${source}`, 'POST', form);
+      const r = await api<{ seconds: number | null; duration: number; trimmed?: boolean }>(`/studio/ai/shots/${s.id}/media?kind=${k}&source=${source}`, 'POST', form);
       await ws.load();
       ws.notify(
         k === 'video'
-          ? `${index + 1}번 컷에 내 영상을 넣었어요.${r.duration > 10 ? ' 컷에는 앞부분 최대 10초가 쓰여요.' : ''}`
+          ? `${index + 1}번 컷에 내 영상을 넣었어요.${r.trimmed ? ' 컷은 최대 10초라서 앞부분 10초만 저장했어요.' : ''}`
           : k === 'audio'
             ? `${index + 1}번 컷 대사에 ${source === 'record' ? '녹음한 목소리' : '내 음성'}를 넣었어요.`
             : `${index + 1}번 컷에 내 사진을 넣었어요.`,
@@ -106,6 +106,8 @@ function Recorder({ line, maxSeconds, close, use }: { line: string; maxSeconds: 
   const [error, setError] = useState('');
   const [secs, setSecs] = useState(0);
   const [url, setUrl] = useState('');
+  const urlRef = useRef('');
+  const alive = useRef(true);
   const rec = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const blob = useRef<Blob | null>(null);
@@ -116,14 +118,20 @@ function Recorder({ line, maxSeconds, close, use }: { line: string; maxSeconds: 
     stream.current?.getTracks().forEach((t) => t.stop());
     stream.current = null;
   };
-  useEffect(
-    () => () => {
+  const setBlobUrl = (next: string) => {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = next;
+    setUrl(next);
+  };
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
       stopAll();
-      if (url) URL.revokeObjectURL(url);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = '';
+    };
+  }, []);
   const start = async () => {
     setError('');
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -142,10 +150,10 @@ function Recorder({ line, maxSeconds, close, use }: { line: string; maxSeconds: 
     r.ondataavailable = (e) => e.data.size && chunks.current.push(e.data);
     r.onstop = () => {
       stopAll();
+      if (!alive.current) return; // 창을 닫은 뒤에 끝난 녹음은 버립니다.
       const b = new Blob(chunks.current, { type: (r.mimeType || type || 'audio/webm').split(';')[0] });
       blob.current = b;
-      if (url) URL.revokeObjectURL(url);
-      setUrl(URL.createObjectURL(b));
+      setBlobUrl(URL.createObjectURL(b));
       setState('done');
     };
     rec.current = r;

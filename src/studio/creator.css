@@ -85,6 +85,11 @@
   margin: 22px 0;
 }
 .creator-start-grid > button {
+  /* 전역 button(inline-flex 가로 배치) 대신 세로로 쌓기(PC). 모바일은 아래에서 grid로 바꿉니다. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
   text-align: left;
   padding: 23px;
   border: 1px solid #344039;

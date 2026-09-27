@@ -62,7 +62,7 @@ export function createRenderWorker({ db, uploadDir }) {
       const done = await db.transaction(async () => {
         const fresh = await db.get('SELECT status FROM studio_episodes WHERE id=?', [e.id]);
         if (!fresh || fresh.status !== 'composing') return false; // 그사이 프로젝트가 지워지는 등
-        await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso()]);
+        await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso(), p.id]);
         await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [out.url, out.duration, out.width, out.height, out.hasAudio ? 1 : 0]);
         await db.run("UPDATE studio_episodes SET status='composed',video=?,duration=?,subtitles=?,compose_progress=1,compose_error='' WHERE id=?", [out.url, out.duration, sub, e.id]);
         await db.run(
@@ -73,6 +73,10 @@ export function createRenderWorker({ db, uploadDir }) {
       });
       if (!done) throw new Error('합성하는 동안 회차가 바뀌었어요.');
       await notify(db, p.owner_id, { kind: 'compose', title: `${p.title} ${e.number}화 합성이 끝났어요`, body: `${out.duration}초 영상이 준비됐어요. 미리 보고 공개해 보세요.`, link: `studio/ai/${p.id}/finish` });
+      // 협업: 승인할 수 있는 팀원(공동 제작·검수자)에게 합성본 승인 차례를 알려요.
+      if (p.approval_mode !== 'off')
+        for (const m of await db.all("SELECT user_id FROM studio_members WHERE project_id=? AND role IN ('producer','reviewer')", [p.id]).catch(() => []))
+          await notify(db, m.user_id, { kind: 'studio_review', title: `「${p.title}」 ${e.number}화 합성본이 나왔어요`, body: '보고 승인하거나 수정을 요청해 주세요.', link: `studio/ai/${p.id}/finish` });
     } catch (err) {
       if (out?.url) {
         await db.run('DELETE FROM media_files WHERE url=?', [out.url]).catch(() => {});
@@ -103,7 +107,7 @@ export function createRenderWorker({ db, uploadDir }) {
       resolution: p.resolution,
       onProgress: progress,
     });
-    await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso()]);
+    await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso(), p.id]);
     await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [out.url, out.duration, out.width, out.height, out.hasAudio ? 1 : 0]);
     await db.run("UPDATE studio_projects SET trailer=?,trailer_status='done',updated_at=? WHERE id=?", [out.url, iso(), p.id]);
     await db.run(
@@ -155,7 +159,7 @@ export function createRenderWorker({ db, uploadDir }) {
     async queueEpisode(p, e) {
       return db.transaction(async () => {
         const r = await db.run(
-          "UPDATE studio_episodes SET status='composing',compose_progress=0,compose_error='',compose_queued_at=? WHERE id=? AND status<>'composing'",
+          "UPDATE studio_episodes SET status='composing',compose_progress=0,compose_error='',final_review=CASE WHEN final_review='changes' THEN final_review ELSE '' END,compose_queued_at=? WHERE id=? AND status<>'composing'",
           [iso(), e.id],
         );
         if (Number(r?.rowCount ?? r?.changes ?? 0) === 0) throw Object.assign(new Error('이미 합성 중이에요.'), { status: 409 });

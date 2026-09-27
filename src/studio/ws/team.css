@@ -1,0 +1,629 @@
+/* 협업(팀 제작, 2026-09-25): 공유 · 팀 · 승인 · 의견 · 지금 편집 중 */
+
+.team-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  padding: 0 10px 0 4px;
+  border-radius: 999px;
+  border: 1px solid #2f3c34;
+  background: #151b18;
+}
+.team-live i {
+  width: 26px;
+  height: 26px;
+  margin-left: -6px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  color: #111;
+  background: #c4f562;
+  border: 2px solid #151b18;
+}
+.team-live i:first-child {
+  margin-left: 0;
+}
+.team-live i:nth-child(2) {
+  background: #8fd3ff;
+}
+.team-live i:nth-child(3) {
+  background: #ffc98f;
+}
+.team-live small {
+  font-size: 11px;
+  color: #8a9a90;
+  white-space: nowrap;
+}
+
+.team-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #8fd3ff44;
+  background: #8fd3ff12;
+  color: #cfeaff;
+}
+.team-banner span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.team-banner b {
+  font-size: 13px;
+}
+.team-banner small {
+  font-size: 12px;
+  color: #9fb8c8;
+  line-height: 1.5;
+}
+
+/* 공유 · 팀 창 */
+.team-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.team-list ul,
+.team-links,
+.team-results,
+.team-pending ul,
+.team-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #151b18;
+  border: 1px solid #25302a;
+}
+.team-avatar {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: #253029;
+  color: #c4f562;
+}
+.team-who {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.team-who b {
+  font-size: 14px;
+}
+.team-who small {
+  font-size: 11px;
+  color: #8a9a90;
+  overflow-wrap: anywhere;
+}
+.team-ctl {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.team-ctl select,
+.team-ctl input {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 120px;
+  min-height: 36px;
+  margin: 0;
+  font-size: 12px;
+}
+.team-ctl .icon-button {
+  flex: none;
+}
+.team-role {
+  font-style: normal;
+  font-size: 12px;
+  color: #c4f562;
+}
+.team-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #25302a;
+  border-radius: 12px;
+}
+.team-approval legend {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 4px;
+}
+.danger-text {
+  color: #ff9d9d;
+}
+
+.team-invite {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.team-roles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.team-role-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #2f3c34;
+  background: #151b18;
+  cursor: pointer;
+}
+.team-role-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.team-role-card b {
+  font-size: 13px;
+}
+.team-role-card small {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #8a9a90;
+}
+.team-role-card.active {
+  border-color: #c4f562;
+  background: #c4f56212;
+}
+.team-role-card:focus-within {
+  outline: 2px solid #c4f56288;
+  outline-offset: 2px;
+}
+.team-pay {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.team-pay label,
+.team-link-new label,
+.team-emails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  flex: 1 1 180px;
+}
+.team-emails span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.team-emails textarea {
+  width: 100%;
+  resize: vertical;
+}
+.team-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.team-results li.ok {
+  color: #c4f562;
+}
+.team-results li.bad {
+  color: #ff9d9d;
+}
+.team-results small {
+  color: #8a9a90;
+  flex-basis: 100%;
+}
+.team-link-new {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #25302a;
+}
+.team-link-new label {
+  flex: 0 0 90px;
+}
+.team-links li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #151b18;
+}
+.team-links li.off {
+  opacity: 0.55;
+}
+.team-links li > span {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.team-links b {
+  font-size: 13px;
+}
+.team-links small {
+  font-size: 11px;
+  color: #8a9a90;
+}
+.team-pending li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.team-activity li {
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 0;
+  border-bottom: 1px solid #25302a;
+  overflow-wrap: anywhere;
+}
+.team-activity em {
+  font-style: normal;
+  color: #b8c4bc;
+}
+.team-activity small {
+  display: block;
+  font-size: 11px;
+  color: #8a9a90;
+}
+
+/* 승인 */
+.team-review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px dashed #2f3c34;
+  font-size: 12px;
+}
+.team-review.approved {
+  border-style: solid;
+  border-color: #c4f56266;
+  background: #c4f5620d;
+}
+.team-review.requested {
+  border-style: solid;
+  border-color: #8fd3ff66;
+}
+.team-review.changes {
+  border-style: solid;
+  border-color: #ffc98f88;
+  background: #ffc98f0f;
+}
+.team-review-state {
+  flex: 1 1 200px;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.team-review-state em {
+  font-style: normal;
+  color: #ffc98f;
+}
+.team-review-tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.team-review-note {
+  flex-basis: 100%;
+  display: flex;
+  gap: 6px;
+}
+.team-review-note input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 의견 */
+.team-comments {
+  position: fixed;
+  z-index: 60;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+  background: #0f1412;
+  border-left: 1px solid #25302a;
+  box-shadow: -12px 0 40px #0008;
+}
+.team-comments header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.team-comments header b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.team-comment-list {
+  flex: 1;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-comment-list > li {
+  padding: 10px;
+  border-radius: 10px;
+  background: #151b18;
+  font-size: 13px;
+}
+.team-comment-list > li.done {
+  opacity: 0.6;
+}
+.team-comment-list small {
+  font-size: 11px;
+  color: #8a9a90;
+}
+.team-comment-list p {
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.team-comment-tools {
+  display: flex;
+  gap: 10px;
+}
+.team-comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.team-comment-form textarea {
+  width: 100%;
+  resize: vertical;
+}
+.team-mention {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: #8a9a90;
+}
+.check-row.small {
+  font-size: 12px;
+}
+
+/* 초대 수락 · 스튜디오 첫 화면 */
+.team-join {
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.team-join-card,
+.team-shared-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.team-join-card img,
+.team-shared-card img,
+.team-join-poster {
+  flex: none;
+  width: 64px;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  border-radius: 8px;
+  background: linear-gradient(160deg, #253029, #151b18);
+}
+.team-join-card h3 {
+  margin: 0 0 4px;
+}
+.team-join-card p {
+  margin: 0 0 4px;
+  color: #b8c4bc;
+}
+.team-join-facts {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.team-inbox,
+.team-shared {
+  margin: 18px 0 6px;
+}
+.team-inbox h3,
+.team-shared h3 {
+  font-size: 16px;
+  margin: 0 0 10px;
+}
+.team-inbox h3 small,
+.team-shared h3 small {
+  color: #8a9a90;
+  font-size: 13px;
+}
+.team-inbox ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-inbox li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #c4f56244;
+  background: #c4f5620a;
+}
+.team-inbox li > span,
+.team-shared-card > span:not(.team-join-poster) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.team-inbox small,
+.team-shared-card small {
+  font-size: 12px;
+  color: #8a9a90;
+}
+.team-shared-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+.team-shared-card {
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid #25302a;
+  background: #151b18;
+  color: inherit;
+  text-align: left;
+}
+.team-shared-card img,
+.team-shared-card .team-join-poster {
+  flex: none;
+  width: 44px;
+}
+
+@media (max-width: 640px) {
+  .team-roles {
+    grid-template-columns: 1fr;
+  }
+  .team-live small {
+    display: none;
+  }
+}
+
+/* 영상 → 대본 */
+.studio-hero-side {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.reverse-start {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.reverse-start label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.reverse-eps {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.reverse-eps img {
+  flex: none;
+  width: 56px;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.reverse-eps > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.reverse-eps .chip {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.reverse-eps .chip input {
+  margin: 0;
+}
+.reverse-eps .chip.active {
+  border-color: #c4f562;
+  color: #c4f562;
+}
+.reverse-eps .chip.off {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.reverse-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.reverse-box span {
+  font-size: 12px;
+  color: #b8c4bc;
+}
+
+/* 대량 제작 회차 범위 */
+.ap-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ap-range input {
+  width: 72px;
+}
+.ws-head-chip.note {
+  border-color: #8fd3ff66;
+  color: #cfeaff;
+}

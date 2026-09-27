@@ -16,6 +16,9 @@ import SceneTab from './ws/SceneTab';
 import FinishTab from './ws/FinishTab';
 import './ws/workspace.css';
 import './ws/vibe.css';
+import './ws/drama.css';
+import './ws/team.css';
+import { actionNeed, CommentsPanel, needMessage, RoleBanner, ShareModal, TeamChips, teamCan, type CommentTarget } from './ws/TeamParts';
 
 const icons = { plan: Wand2, script: Clapperboard, scene: Film, finish: Send } as const;
 
@@ -52,6 +55,7 @@ function nextStep(
   run: (label: string, action: string, cap: 'text' | 'image' | 'tts' | 'video', targetId?: string) => void,
   goTab: (t: TabId) => void,
   compose: (e: StudioEpisode) => void,
+  pickEpisode: (id: string) => void,
 ): Step | null {
   const busy = (kind: string) => d.jobs.some((j) => j.kind === kind && (j.status === 'queued' || j.status === 'running'));
   if (tab === 'plan') {
@@ -72,7 +76,7 @@ function nextStep(
     const noVoice = e.shots.filter((s) => s.dialogue.trim() && !s.audio && !s.lipsync).length;
     if (noVoice) return busy('shot_tts') ? null : { title: `${e.number}화 대사 음성 ${noVoice}개 만들기`, hint: '직접 녹음하려면 컷에서 ‘목소리 녹음’', button: '한 번에 만들기', go: () => run(`${e.number}화 대사 음성 모두`, 'batch_shot_tts', 'tts', e.id) };
     const nextEp = d.episodes.find((x) => x.shots.some((s) => !s.image && !s.video) && x.id !== e.id);
-    if (nextEp) return { title: `${e.number}화 장면 준비 완료`, hint: `${nextEp.number}화도 채워 볼까요?`, button: '완성으로', go: () => goTab('finish') };
+    if (nextEp) return { title: `${e.number}화 장면 준비 완료`, hint: `${nextEp.number}화도 채워 볼까요?`, button: `${nextEp.number}화로`, go: () => pickEpisode(nextEp.id) };
     return { title: '장면이 모두 준비됐어요', hint: '영상은 선택이에요. 없으면 이미지에 카메라 움직임으로 합성해요', button: '완성 · 공개로', go: () => goTab('finish') };
   }
   if (tab === 'finish') {
@@ -112,7 +116,8 @@ export default function Workspace({
     [busy, setBusy] = useState(false),
     [preview, setPreview] = useState<StudioEpisode | null>(null),
     [mode, setModeState] = useState<ModelMode>(loadMode),
-    [panel, setPanel] = useState<'' | 'models' | 'jobs'>(''),
+    [panel, setPanel] = useState<'' | 'models' | 'jobs' | 'share'>(''),
+    [comments, setComments] = useState<CommentTarget | null | false>(false),
     [assistant, setAssistant] = useState(false),
     [focus, setFocus] = useState('');
   const setMode = useCallback((m: ModelMode) => {
@@ -183,7 +188,8 @@ export default function Workspace({
     },
     [load, notify],
   );
-  const availableModels = useMemo(() => models.filter((m) => !(data && Number(data.project.exclude_cn) && m.country === 'CN')), [models, data]);
+  const excludeCn = !!data && Number(data.project.exclude_cn) === 1;
+  const availableModels = useMemo(() => models.filter((m) => !(excludeCn && m.country === 'CN')), [models, excludeCn]);
   const progress = useMemo(() => (data ? progressOf(data) : null), [data]);
   if (error && !data) return <Empty title="프로젝트를 불러오지 못했어요" text={error} action={() => void load()} label="다시 시도" />;
   if (!data || !progress)
@@ -213,8 +219,11 @@ export default function Workspace({
         return next;
       }),
     // 자동 모드면 늘 '자동 선택', 직접 모드면 고른 모델. 버튼에서 품질·모델을 바로 지정할 수도 있어요(예: 고급으로 다시).
-    run: (label, action, cap, { tier, requested, ...opts } = {}) =>
-      void runner.ask(label, { action, ...opts, requested: requested ?? (mode === 'auto' ? 'auto' : choices[cap].requested), tier: tier ?? choices[cap].tier }),
+    run: (label, action, cap, { tier, requested, ...opts } = {}) => {
+      // 협업자는 역할에 맞는 AI 작업만(서버도 한 번 더 확인해요)
+      if (!teamCan(data.team, actionNeed(action))) return notify(needMessage(data.team, actionNeed(action)));
+      void runner.ask(label, { action, ...opts, requested: requested ?? (mode === 'auto' ? 'auto' : choices[cap].requested), tier: tier ?? choices[cap].tier });
+    },
     act,
     busy,
     useAsset: (id) => void act(() => api(`/studio/ai/assets/${id}/use`, 'POST'), '선택한 버전으로 바꿨어요.'),
@@ -224,6 +233,8 @@ export default function Workspace({
     goTab: setTab,
     goLama,
     preview: (e) => setPreview(e),
+    can: (need) => teamCan(data.team, need),
+    comment: (t) => setComments(t),
   };
   const runningJobs = data.jobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
   const failedCount = data.jobs.filter((j) => j.status === 'failed' && j.kind !== 'translate').length;
@@ -231,6 +242,7 @@ export default function Workspace({
   // 하단 액션바: 지금 화면에서 바로 할 수 있는 다음 일 하나(누르면 라마 확인 후 실행)
   const bar = nextStep(data, episode, tab, (n, action, cap, targetId) => ws.run(n, action, cap, { targetId }), setTab, (e) =>
     void act(() => api(`/studio/ai/projects/${projectId}/episodes/${e.id}/compose`, 'POST'), `${e.number}화 합성을 시작했어요. 끝나면 알려 드려요.`),
+    setEpisodeId,
   );
   const done = TABS.filter((t) => progress[t.id].ok).length;
   return (
@@ -247,6 +259,7 @@ export default function Workspace({
           </p>
         </div>
         <div className="ws-head-tools">
+          <TeamChips ws={ws} tab={tab} openShare={() => setPanel('share')} openComments={() => setComments(null)} />
           <button className={'ws-head-chip mode-' + mode} onClick={() => setPanel('models')} title="AI 모델 센터">
             <Cpu size={14} /> {mode === 'auto' ? '모델 자동' : '모델 직접'}
           </button>
@@ -260,6 +273,7 @@ export default function Workspace({
           </button>
         </div>
       </div>
+      <RoleBanner ws={ws} />
       <nav className="ws-tabs" aria-label="작업 단계">
         {TABS.map((t, i) => {
           const Icon = icons[t.id];
@@ -317,8 +331,8 @@ export default function Workspace({
         </div>
       )}
       {runner.confirm}
-      <Suspense fallback={null}>
       {panel === 'models' && (
+        <Suspense fallback={null}>
         <ModelHub
           models={availableModels}
           families={families}
@@ -329,18 +343,26 @@ export default function Workspace({
           projectId={projectId}
           close={() => setPanel('')}
         />
+        </Suspense>
       )}
       {features?.assistant !== false &&
         (assistant ? (
-          <Assistant ws={ws} focus={focus} close={() => setAssistant(false)} />
+          <Suspense fallback={null}>
+            <Assistant ws={ws} focus={focus} close={() => setAssistant(false)} />
+          </Suspense>
         ) : (
           <button type="button" className="asst-fab" onClick={() => setAssistant(true)} aria-label="AI 조수 열기">
             <Bot size={18} /> AI 조수
             {(data.chat || []).some((m) => m.status === 'ready') && <i className="asst-dot" aria-hidden="true" />}
           </button>
         ))}
-      {panel === 'jobs' && <JobCenter data={data} models={availableModels} close={() => setPanel('')} reload={load} notify={notify} ask={ask} goLama={goLama} />}
-      </Suspense>
+      {panel === 'jobs' && (
+        <Suspense fallback={null}>
+          <JobCenter data={data} models={availableModels} close={() => setPanel('')} reload={load} notify={notify} ask={ask} goLama={goLama} />
+        </Suspense>
+      )}
+      {panel === 'share' && <ShareModal ws={ws} close={() => setPanel('')} />}
+      {comments !== false && <CommentsPanel ws={ws} target={comments} close={() => setComments(false)} />}
       {confirmUi}
       {preview && (
         <PreviewPlayer

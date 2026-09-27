@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { CheckSquare, ChevronLeft, ChevronRight, Film, ImageIcon, Lock, Mic, Music, PlayCircle, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react';
-import { api, parseJson, studioMedia, type StudioEpisode, type StudioShot } from '../../api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { CheckSquare, MessageSquare, ChevronLeft, ChevronRight, Film, Plus, ShieldCheck, ImageIcon, Lock, Mic, Music, PlayCircle, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react';
+import { api, ApiError, parseJson, studioMedia, type StudioEpisode, type StudioShot } from '../../api';
 import { Empty } from '../../App';
 import { useAutosave, useSyncedForm } from '../hooks';
 import { JobBadge, Versions, isBusy } from '../parts';
@@ -8,6 +8,7 @@ import { CAMERAS, CAMERA_MOVES, EMOTIONS, shotBase } from './ScriptTab';
 import { EpisodeSwitcher, ModelSettings, NotReady, SaveBadge, Section, hasModel, runningCount, type WS } from './shared';
 import { asset } from '../../platform';
 import MyMedia from './MyMedia';
+import { VerifyBadge, verifyOf } from './DramaParts';
 
 const TRANSITIONS = [
   { id: 'cut', name: '바로 전환' },
@@ -45,6 +46,7 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
   const setFocus = ws.setFocus;
   useEffect(() => {
     setFocus(shot?.id || '');
+    return () => setFocus('');
   }, [shot?.id, setFocus]);
   const lines = e.shots.filter((s) => s.dialogue.trim());
   const counts = {
@@ -56,6 +58,7 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
   };
   const syncable = e.shots.filter((s) => s.video && s.audio && !s.lipsync).length;
   const sfxable = e.shots.filter((s) => s.sfx_prompt?.trim() && !s.sfx).length;
+  const unverified = e.shots.filter((s) => s.image && !verifyOf(s)).length;
   const running = (kind: string) => runningCount(jobs, (j) => j.kind === kind && e.shots.some((s) => s.id === j.target_id));
   const batch = (label: string, action: string, cap: 'image' | 'tts' | 'video' | 'lipsync' | 'sfx') => ws.run(`${e.number}화 ${label}`, action, cap, { targetId: e.id });
   if (!e.shots.length)
@@ -93,6 +96,15 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
         <button className="secondary compact" disabled={counts.video === e.shots.length || running('shot_video') > 0} onClick={() => batch('빈 컷 영상 모두', 'batch_shot_video', 'video')}>
           <Film size={13} /> 빈 영상 {e.shots.length - counts.video}
           {running('shot_video') ? ` · 진행 ${running('shot_video')}` : ''}
+        </button>
+        <button
+          className="secondary compact"
+          title="이미지가 있는 컷을 AI가 한 번에 검수해요(라마 소액)"
+          disabled={!unverified || running('verify_shot') > 0}
+          onClick={() => ws.run(`${e.number}화 AI 검수 ${unverified}컷`, 'batch_verify_shot', 'text', { targetId: e.id })}
+        >
+          <ShieldCheck size={13} /> AI 검수 {unverified}
+          {running('verify_shot') ? ` · 진행 ${running('verify_shot')}` : ''}
         </button>
         {hasModel(ws.models, 'lipsync') && (
           <button className="secondary compact" disabled={!syncable || running('shot_lipsync') > 0} onClick={() => batch('입 모양 모두 맞추기', 'batch_shot_lipsync', 'lipsync')}>
@@ -217,6 +229,7 @@ function Timeline({
               {s.audio && <Mic size={10} aria-label="음성" />}
               {s.lipsync && <Sparkles size={10} aria-label="입 모양" />}
               {s.sfx && <Volume2 size={10} aria-label="효과음" />}
+              {verifyOf(s) && (verifyOf(s)!.ok ? <ShieldCheck size={10} aria-label="검수 통과" /> : <i className="clip-bad" aria-label="검수 문제" />)}
             </span>
             {i > 0 && s.transition && s.transition !== 'cut' && <i className="ws-clip-transition" title={TRANSITIONS.find((t) => t.id === s.transition)?.name} />}
           </button>
@@ -241,21 +254,37 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
     sfx_prompt: s.sfx_prompt || '',
     sfx_volume: s.sfx_volume === undefined || s.sfx_volume === null ? 0.6 : Number(s.sfx_volume),
     caption: s.caption ?? null,
+    prop_ids: String(s.prop_ids || '').split(',').filter(Boolean),
+    states: parseJson<Record<string, string>>(s.states, {}),
   };
   const [f, setF] = useSyncedForm(server);
   const save = useAutosave(
     f,
     server,
     async (v) => {
-      const r = await api<{ audioReset: boolean }>(`/studio/ai/shots/${s.id}`, 'PATCH', v);
+      const r = await api<{ audioReset: boolean }>(`/studio/ai/shots/${s.id}`, 'PATCH', { ...v, base_updated_at: s.updated_at ?? null }).catch((e) => {
+        // 협업 중 다른 사람이 먼저 고쳤으면 최신 내용을 다시 불러와요.
+        if (e instanceof ApiError && e.code === 'edit_conflict') void ws.load();
+        throw e;
+      });
       if (r.audioReset && (s.audio || s.lipsync)) ws.notify(`${index + 1}번 컷 대사 · 목소리 설정이 바뀌어 음성을 다시 만들어야 해요.`);
       void ws.load();
     },
     { delay: 1200 },
   );
   const [editText, setEditText] = useState('');
+  // 앞 컷들에서 이어지는 인물 상태(이 컷에 적지 않으면 이 모습으로 그려요)
+  const inherited = useMemo(() => {
+    const ep = data.episodes.find((e) => e.id === s.episode_id);
+    const out: Record<string, string> = {};
+    for (const x of ep?.shots || []) {
+      if (x.id === s.id) break;
+      for (const [cid, v] of Object.entries(parseJson<Record<string, string>>(x.states, {}))) out[cid] = /^(기본|원래대로)$/.test(String(v).trim()) ? '' : String(v).trim();
+    }
+    return out;
+  }, [data.episodes, s.episode_id, s.id]);
   // AI 작업 전에는 입력 중인 변경을 먼저 저장합니다(최신 내용으로 만들도록).
-  const run = async (label: string, action: string, cap: 'image' | 'tts' | 'video' | 'lipsync' | 'sfx', opts: { instruction?: string; options?: Record<string, unknown>; tier?: 'premium' } = {}) => {
+  const run = async (label: string, action: string, cap: 'text' | 'image' | 'tts' | 'video' | 'lipsync' | 'sfx', opts: { instruction?: string; options?: Record<string, unknown>; tier?: 'premium' } = {}) => {
     if (!(await save.flush()) && save.dirty) return;
     ws.run(`${index + 1}번 컷 ${label}`, action, cap, { targetId: s.id, ...opts });
   };
@@ -273,6 +302,21 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
         <button className="icon-button" aria-label="다음 컷" disabled={index === total - 1} onClick={() => go(1)}>
           <ChevronRight size={16} />
         </button>
+        <button
+          type="button"
+          className="secondary compact"
+          title="이 컷 뒤에 2~3초짜리 연결 컷(소품 클로즈업 · 장소 전경 · 표정)을 AI가 넣어요"
+          disabled={isBusy(jobs, s.id, 'bridge_shot') || total >= 40}
+          onClick={() => void run('뒤에 사이 컷 넣기', 'bridge_shot', 'text')}
+        >
+          <Plus size={13} /> 사이 컷
+        </button>
+        <JobBadge jobs={jobs} targetId={s.id} kind="bridge_shot" />
+        {!!data.team?.members.length && (
+          <button type="button" className="secondary compact" onClick={() => ws.comment({ type: 'shot', id: s.id, label: `${data.episodes.find((e) => e.id === s.episode_id)?.number ?? ''}화 ${index + 1}번 컷` })}>
+            <MessageSquare size={13} /> 의견
+          </button>
+        )}
         <SaveBadge state={save.state} error={save.error} />
       </div>
       <div className="ws-detail-grid">
@@ -300,6 +344,20 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
             <JobBadge jobs={jobs} targetId={s.id} kind="shot_image" onRetry={() => void run('이미지', 'shot_image', 'image')} />
             <Versions assets={data.assets} targetId={s.id} kind="image" current={s.image} onUse={ws.useAsset} />
           </div>
+          {s.image && (
+            <div className="ws-tools">
+              <button
+                className="secondary compact"
+                title="얼굴 · 인물 수 · 글자 · 손 모양 · 구도를 AI가 확인해요(라마 소액)"
+                disabled={isBusy(jobs, s.id, 'verify_shot') || !!verifyOf(s)}
+                onClick={() => void run('AI 검수', 'verify_shot', 'text')}
+              >
+                <ShieldCheck size={13} /> AI 검수
+              </button>
+              <JobBadge jobs={jobs} targetId={s.id} kind="verify_shot" />
+              <VerifyBadge s={s} onRedo={() => void run('이미지 다시', 'shot_image', 'image')} />
+            </div>
+          )}
           {s.image && (
             <form
               className="ws-edit-image"
@@ -393,6 +451,52 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
               })}
             </div>
           </div>
+          {f.cast_ids.length > 0 && (
+            <div className="ws-field">
+              <span>
+                인물 상태 <small className="muted">이 컷부터 달라지는 모습(비워 두면 앞 컷 모습을 이어 가요 · ‘기본’은 원래 모습)</small>
+              </span>
+              <div className="state-list">
+                {f.cast_ids.map((cid) => {
+                  const c = data.characters.find((x) => x.id === cid);
+                  if (!c) return null;
+                  return (
+                    <label key={cid} className="state-row">
+                      <b>{c.name}</b>
+                      <input
+                        value={f.states[cid] || ''}
+                        maxLength={120}
+                        placeholder={inherited[cid] ? `앞 컷에서 이어짐: ${inherited[cid]}` : '평소 모습'}
+                        onChange={(ev) => setF({ ...f, states: { ...f.states, [cid]: ev.target.value } })}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {(data.props || []).length > 0 && (
+            <div className="ws-field">
+              <span>소품</span>
+              <div className="chip-row">
+                {(data.props || []).map((x) => {
+                  const on = f.prop_ids.includes(x.id);
+                  return (
+                    <button
+                      type="button"
+                      key={x.id}
+                      className={'chip' + (on ? ' active' : '')}
+                      aria-pressed={on}
+                      onClick={() => (on ? setF({ ...f, prop_ids: f.prop_ids.filter((y) => y !== x.id) }) : f.prop_ids.length >= 6 ? ws.notify('소품은 컷마다 6개까지 고를 수 있어요.') : setF({ ...f, prop_ids: [...f.prop_ids, x.id] }))}
+                    >
+                      {x.image && <img src={asset(x.image)} alt="" />}
+                      {x.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <label>
             장소
             <select value={f.location_id || ''} onChange={(ev) => setF({ ...f, location_id: ev.target.value || null })}>
@@ -510,7 +614,11 @@ function ShotDetail({ ws, s, index, total, next, go }: { ws: WS; s: StudioShot; 
 function BulkBar({ ws, e, picked, clear }: { ws: WS; e: StudioEpisode; picked: string[]; clear: () => void }) {
   const shots = e.shots.filter((s) => picked.includes(s.id));
   const withLines = shots.filter((s) => s.dialogue.trim()).length;
-  const regen = (label: string, action: string, cap: 'image' | 'tts' | 'video') => ws.run(`${e.number}화 고른 ${shots.length}컷 ${label}`, action, cap, { targetId: e.id, options: { shotIds: picked.slice(0, 20) } });
+  const tooMany = picked.length > 20;
+  const regen = (label: string, action: string, cap: 'image' | 'tts' | 'video') => {
+    if (tooMany) return ws.notify('한 번에 20컷까지 다시 만들 수 있어요. 컷을 조금 줄여 주세요.');
+    ws.run(`${e.number}화 고른 ${shots.length}컷 ${label}`, action, cap, { targetId: e.id, options: { shotIds: picked } });
+  };
   const patch = (body: Record<string, unknown>, what: string) =>
     void ws.act(async () => {
       const r = await api<{ changed: number; audioReset: number }>(`/studio/ai/projects/${ws.data.project.id}/episodes/${e.id}/shots/bulk`, 'PATCH', { ids: picked, ...body });
@@ -524,7 +632,9 @@ function BulkBar({ ws, e, picked, clear }: { ws: WS; e: StudioEpisode; picked: s
   };
   return (
     <div className="bulk-bar" role="toolbar" aria-label="고른 컷 한 번에">
-      <b>{shots.length}컷 골랐어요</b>
+      <b>
+        {shots.length}컷 골랐어요{tooMany ? ' · 다시 만들기는 20컷까지' : ''}
+      </b>
       <div className="bulk-row">
         <button type="button" className="secondary compact" onClick={() => regen('이미지 다시', 'batch_shot_image', 'image')}>
           <ImageIcon size={13} /> 이미지 다시

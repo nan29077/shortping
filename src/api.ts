@@ -701,6 +701,7 @@ export const tagLabel: Record<string, string> = {
   fast: '빠름',
   cheap: '저렴',
   scene: '장면',
+  vision: '이미지 읽기',
 };
 export type StudioProject = {
   id: string;
@@ -731,6 +732,10 @@ export type StudioProject = {
   meta?: string;
   resolution?: string;
   budget_lama?: number;
+  script_text?: string;
+  style_refs?: string;
+  relations?: string;
+  approval_mode?: string;
   created_at: string;
   updated_at: string;
   episode_total?: number;
@@ -747,6 +752,9 @@ export type AiOverview = {
   features?: StudioFeatures;
   genres: string[];
   projects: StudioProject[];
+  shared?: SharedProject[];
+  collab?: { enabled: boolean; max_members: number };
+  invites?: MyInvite[];
 };
 export type StudioCharacter = {
   id: string;
@@ -765,6 +773,12 @@ export type StudioCharacter = {
   voice_style?: string;
 };
 export type StudioLocation = { id: string; name: string; look: string; look_en: string; look_en_src: string; image: string; sort_order: number };
+export type StudioProp = StudioLocation;
+// 인물 관계(JSON) · AI 결과 검수
+export type StudioRelation = { a: string; b: string; kind: string; note: string };
+export type LibraryKind = 'character' | 'location' | 'prop' | 'style';
+export type LibraryItem = { id: string; kind: LibraryKind; name: string; image: string; data: Record<string, unknown>; created_at: string; updated_at: string };
+export type ShotVerify = { ok: boolean; score: number; issues: { code: string; text: string }[]; at: string; image?: string };
 export type StudioRender = { id: string; kind: 'episode' | 'trailer'; target_id: string; status: string; progress: number; error: string; created_at: string };
 export type StudioShot = {
   id: string;
@@ -797,6 +811,11 @@ export type StudioShot = {
   sfx_volume?: number;
   transition?: string;
   caption?: string | null;
+  prop_ids?: string;
+  states?: string;
+  verify?: string;
+  updated_at?: string | null;
+  updated_by?: string | null;
 };
 export type StudioEpisode = {
   id: string;
@@ -819,6 +838,10 @@ export type StudioEpisode = {
   compose_error?: string;
   script_version?: number;
   diagnosis?: string;
+  // 협업 승인: ''·requested·approved·changes
+  script_review?: string;
+  final_review?: string;
+  review_note?: string;
   shots: StudioShot[];
 };
 export type StudioJob = {
@@ -837,6 +860,9 @@ export type StudioJob = {
   attempts?: number;
   model_ref?: string | null;
   tier?: string;
+  user_id?: string;
+  actor_id?: string | null;
+  actor_name?: string | null;
 };
 export type StudioAsset = {
   id: string;
@@ -859,9 +885,54 @@ export type StudioProjectDetail = {
   costs: { kind: string; jobs: number; lama: number; failed: number }[];
   autopilot: Autopilot | null;
   locations?: StudioLocation[];
+  props?: StudioProp[];
   renders?: StudioRender[];
   chat?: StudioChat[];
+  team?: StudioTeam;
 };
+// 협업(팀 제작)
+export type TeamRole = 'owner' | 'producer' | 'writer' | 'editor' | 'reviewer';
+export type TeamPerm = 'view' | 'script' | 'scene' | 'approve' | 'manage';
+export const teamRoleName: Record<TeamRole, string> = { owner: '소유자', producer: '공동 제작', writer: '작가', editor: '편집·연출', reviewer: '검수자' };
+export const teamRoleHint: Record<Exclude<TeamRole, 'owner'>, string> = {
+  producer: '기획·대본·장면·합성과 승인까지(공유·예산·공개·삭제는 소유자만)',
+  writer: '기획·인물·대본 쓰기와 대본 AI 작업',
+  editor: '컷 이미지·영상·음성·효과음·합성 같은 장면 작업',
+  reviewer: '보기와 댓글, 대본·합성본 승인',
+};
+export type TeamMember = { user_id: string; name: string; email?: string; role: Exclude<TeamRole, 'owner'>; pay_mode: 'self' | 'sponsor'; sponsor_limit: number; created_at: string };
+export type StudioTeam = {
+  enabled: boolean;
+  user_id: string;
+  role: TeamRole;
+  role_name: string;
+  perms: TeamPerm[];
+  owner: { id: string; name: string; email?: string } | null;
+  members: TeamMember[];
+  me: { pay_mode: 'self' | 'sponsor'; sponsor_limit: number } | null;
+  approval: { mode: 'auto' | 'on' | 'off'; active: boolean };
+  presence: { user_id: string; name: string; target: string }[];
+  comments_open: number;
+  max_members: number;
+};
+export type TeamInvite = {
+  id: string;
+  email: string;
+  role: Exclude<TeamRole, 'owner'>;
+  pay_mode: 'self' | 'sponsor';
+  sponsor_limit: number;
+  max_uses: number;
+  uses: number;
+  active: boolean;
+  expires_at: string;
+  created_at: string;
+  token?: string;
+  expired: boolean;
+};
+export type StudioComment = { id: string; target_type: 'project' | 'episode' | 'shot'; target_id: string; user_id: string; user_name: string; body: string; resolved: boolean; mine: boolean; created_at: string };
+export type TeamActivity = { id: string; user_id: string | null; user_name: string | null; action: string; text: string; detail: string; created_at: string };
+export type SharedProject = { id: string; title: string; genre: string; status: string; poster: string; updated_at: string; role: Exclude<TeamRole, 'owner'>; owner_name: string; episode_total: number; composed: number };
+export type MyInvite = { id: string; token: string; role: Exclude<TeamRole, 'owner'>; role_name: string; expires_at: string; project_id: string; title: string; owner_name: string };
 // AI 조수 대화·실행 계획
 export type AssistantAction = {
   type: string;
@@ -903,6 +974,9 @@ export type Autopilot = {
   includeSfx?: boolean;
   includeMusic?: boolean;
   musicMood?: string;
+  from?: number;
+  to?: number;
+  retries?: number;
   choices: Record<'text' | 'image' | 'tts' | 'video', AutopilotChoice> & Partial<Record<'music' | 'sfx' | 'lipsync', AutopilotChoice>>;
 };
 export type AutopilotEstimate = {
@@ -1021,6 +1095,7 @@ export type AiModelRow = {
 export type AdminAi = {
   families?: AiFamily[];
   assistant?: { today: number; applied: number; cost_won: number };
+  collab?: { projects: number; members: number; people: number; open_invites: number; comments: number; sponsored_lama: number; member_lama: number };
   settings: PlatformSettings & Record<string, number | string>;
   catalog: Record<string, { label: string; capabilities: Capability[]; base: string; secretLabel: string }>;
   presets: { kind: string; name: string; country: string; base_url: string; models: number; capabilities: Capability[] }[];
@@ -1106,6 +1181,13 @@ export const jobKindLabel: Record<string, string> = {
   music: '배경음악',
   thumb_bg: '썸네일 배경',
   voice_preview: '목소리 샘플(무료)',
+  assistant: 'AI 조수(무료)',
+  parse_script: '대본 컷 나누기',
+  prop_image: '소품 이미지',
+  verify_shot: 'AI 검수',
+  bridge_shot: '사이 컷',
+  variants: '대본 변형',
+  reverse_script: '영상에서 대본 뽑기',
 };
 export const jobStatusLabel: Record<string, string> = {
   queued: '대기 중',

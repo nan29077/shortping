@@ -1,3 +1,4 @@
+import { ReviewBar } from './TeamParts';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, History, ListChecks, Plus, RotateCcw, Sparkles, Stethoscope, Trash2, Wand2, X } from 'lucide-react';
 import { api, parseJson, type StudioEpisode, type StudioShot, type StudioVersion } from '../../api';
@@ -7,6 +8,7 @@ import { JobBadge, isBusy } from '../parts';
 import { REWRITE_CHIPS } from '../presets';
 import { EpisodeOutline } from './PlanTab';
 import { EpisodeSwitcher, ModelSettings, SaveBadge, Section, type WS } from './shared';
+import { RhythmPanel, VariantsButton } from './DramaParts';
 
 export const EMOTIONS = ['', '담담', '기쁨', '설렘', '슬픔', '분노', '두려움', '놀람', '속삭임', '비꼼'];
 export const CAMERA_MOVES = ['', '고정', '천천히 다가가기', '천천히 멀어지기', '왼쪽으로 패닝', '오른쪽으로 패닝', '위로 틸트', '핸드헬드', '따라가기'];
@@ -27,6 +29,7 @@ export default function ScriptTab({ ws }: { ws: WS }) {
   return (
     <>
       <EpisodeSwitcher ws={ws} />
+      <ReviewBar ws={ws} episode={e} stage="script" />
       <EpisodeScript key={e.id} ws={ws} e={e} />
     </>
   );
@@ -80,6 +83,7 @@ function EpisodeScript({ ws, e }: { ws: WS; e: StudioEpisode }) {
               <Stethoscope size={14} /> 대본 진단
             </button>
             <JobBadge jobs={data.jobs} targetId={e.id} kind="diagnose" />
+            <VariantsButton ws={ws} e={e} />
             <button className={'secondary compact' + (selecting ? ' active' : '')} disabled={!e.shots.length} onClick={() => setSelecting(!selecting)}>
               <ListChecks size={14} /> {selecting ? '구간 선택 끝내기' : '구간 골라 고치기'}
             </button>
@@ -101,6 +105,7 @@ function EpisodeScript({ ws, e }: { ws: WS; e: StudioEpisode }) {
           ))}
         </div>
         {!data.characters.length && <p className="muted">대본을 쓰려면 기획 · 설정 탭에서 인물을 먼저 만들어 주세요.</p>}
+        <RhythmPanel ws={ws} e={e} />
         {diagnosis && <DiagnosisView d={diagnosis} shots={e.shots} onFix={(id, text) => setRewriteFor({ id, text })} />}
         {selecting && (
           <div className="ws-range-bar" role="region" aria-label="구간 다시 쓰기">
@@ -403,7 +408,7 @@ function VersionsModal({ ws, e, close }: { ws: WS; e: StudioEpisode; close: () =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, e.id]);
   const name = (id?: string | null) => ws.data.characters.find((c) => c.id === id)?.name || '';
-  const sourceName: Record<string, string> = { before_ai: 'AI 수정 전', before_restore: '되돌리기 전', manual: '직접 저장' };
+  const sourceName: Record<string, string> = { before_ai: 'AI 수정 전', before_restore: '되돌리기 전', manual: '직접 저장', variant: 'AI 변형', before_import: '대본 붙여 넣기 전', before_bridge: '사이 컷 넣기 전' };
   return (
     <Modal title={`${e.number}화 대본 버전 기록`} close={close} className="wide">
       {!list ? (

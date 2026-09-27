@@ -48,9 +48,17 @@ export default function AutopilotPanel({
     includeMusic: !!ap?.includeMusic,
     musicMood: ap?.musicMood || data.project.tone || '',
   });
+  // 대량 제작: 회차 범위 · 실패 시 다른 모델로 자동 재시도 횟수
+  const epCount = data.episodes.length;
+  const [range, setRange] = useState({ from: String(ap?.from || ''), to: String(ap?.to || ''), retries: ap?.retries ?? 1 });
+  const from = Math.max(1, Math.min(epCount || 1, Number(range.from) || 1));
+  const to = Math.max(from, Math.min(epCount || 1, Number(range.to) || epCount || 1));
+  const ranged = epCount > 1 && (from > 1 || to < epCount);
   // 모델이 준비되지 않은 기능은 끄고 보냅니다.
   const opts = {
     ...extra,
+    ...(ranged ? { from, to } : {}),
+    retries: range.retries,
     includeLipsync: extra.includeLipsync && includeVideo && has('lipsync'),
     includeSfx: extra.includeSfx && has('sfx'),
     includeMusic: extra.includeMusic && has('music'),
@@ -144,6 +152,7 @@ export default function AutopilotPanel({
               <small>
                 {' '}
                 · 사용 {lama(ap.spent)} / 최대 {lama(ap.cap)}
+                {ap.from ? ` · ${ap.from}~${ap.to}화` : ''}
               </small>
             )}
           </p>
@@ -199,6 +208,26 @@ export default function AutopilotPanel({
                   <input value={extra.musicMood} maxLength={200} placeholder="예: 설레는 피아노" onChange={(e) => setExtra({ ...extra, musicMood: e.target.value })} />
                 </label>
               )}
+              {epCount > 1 && (
+                <label>
+                  만들 회차
+                  <span className="ap-range">
+                    <input type="number" min={1} max={epCount} inputMode="numeric" aria-label="시작 회차" value={range.from} placeholder="1" onChange={(e) => setRange({ ...range, from: e.target.value.replace(/\D/g, '') })} />
+                    ~
+                    <input type="number" min={1} max={epCount} inputMode="numeric" aria-label="끝 회차" value={range.to} placeholder={String(epCount)} onChange={(e) => setRange({ ...range, to: e.target.value.replace(/\D/g, '') })} />
+                    화
+                  </span>
+                </label>
+              )}
+              <label>
+                실패하면 다시 시도
+                <select value={range.retries} onChange={(e) => setRange({ ...range, retries: Number(e.target.value) })}>
+                  <option value={0}>다시 시도 안 함(바로 멈춤)</option>
+                  <option value={1}>1번(다른 모델로)</option>
+                  <option value={2}>2번(다른 모델로)</option>
+                  <option value={3}>3번(다른 모델로)</option>
+                </select>
+              </label>
               <label>
                 최대 사용 라마
                 <input type="number" min={1} value={cap} placeholder={suggested ? `추천 ${suggested.toLocaleString('ko-KR')}` : '자동'} onChange={(e) => setCap(e.target.value.replace(/\D/g, ''))} />

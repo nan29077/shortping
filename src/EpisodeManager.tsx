@@ -899,7 +899,7 @@ export default function EpisodeManager({
                         max={500}
                         value={q.number}
                         aria-invalid={duplicates.has(q.number) || blocked(q.number) || undefined}
-                        disabled={q.status !== 'ready' && q.status !== 'error'}
+                        disabled={running || (q.status !== 'ready' && q.status !== 'error')}
                         onChange={(ev) => edit(q, { number: Number(ev.target.value) || 1 })}
                       />
                     </label>
@@ -908,7 +908,7 @@ export default function EpisodeManager({
                       <input
                         value={q.title}
                         maxLength={100}
-                        disabled={q.status !== 'ready' && q.status !== 'error'}
+                        disabled={running || (q.status !== 'ready' && q.status !== 'error')}
                         onChange={(ev) => edit(q, { title: ev.target.value })}
                       />
                     </label>

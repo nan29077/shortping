@@ -1332,6 +1332,22 @@ footer > small {
 .review-summary dd {
   margin: 3px 0 0;
 }
+.review-thumbnails {
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+.review-thumbnails > p { margin: 5px 0 12px; }
+.review-thumbnails .poster-row { gap: 10px; }
+.review-thumbnails img {
+  width: 92px;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
 .review-synopsis {
   margin: 20px 0;
   font-size: 13px;
