@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sealAccount } from './bank-secret.mjs';
 
 // Settlement ledger. One entry per confirmed sale, plus one monthly entry per PD for
 // the shared subscription pool. Money is stored as whole KRW integers only.
@@ -140,13 +141,10 @@ export async function balanceOf(db, pdId) {
     ),
   };
 }
-// Subscription revenue is shared monthly in proportion to episodes watched, the same
-// pooled model streaming services use. Closing a period twice changes nothing.
-export async function closeSubscriptionPeriod(db, period, settings, actorId) {
+// 구독 풀(그 달 숏핑 패스 결제액 - 결제 채널 수수료)
+export async function subscriptionPool(db, period) {
   const [start, end] = periodRange(period);
-  if (new Date(end).getTime() > Date.now())
-    throw error(400, '아직 종료되지 않은 월은 마감할 수 없습니다.');
-  const pool = Number(
+  return Number(
     (
       await db.get(
         "SELECT SUM(amount - channel_fee) AS total FROM orders WHERE kind='subscription' AND created_at>=? AND created_at<?",
@@ -154,23 +152,116 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
       )
     )?.total || 0,
   );
-  // 구독 풀은 그 달에 구독 덕분에 실제로 재생된 회차 수(회원·작품·회차별 1회)로 나눕니다.
-  // 기록은 재생 서버가 남기며(무료 회차·구매 회차·작품 소유자·관리자 제외) 화면이 보낸 값은 쓰지 않습니다.
-  const counted = (
-    await db.all(
-      `SELECT v.drama_id, d.owner_id AS pd_id, COUNT(*) AS weight
-       FROM subscription_views v JOIN dramas d ON d.id=v.drama_id
-       WHERE v.period=? AND v.user_id<>d.owner_id
-       GROUP BY v.drama_id, d.owner_id`,
-      [period],
-    )
-  ).map((r) => ({ ...r, weight: Number(r.weight) }));
-  const weights = new Map();
-  for (const row of counted)
-    weights.set(row.pd_id, (weights.get(row.pd_id) || 0) + row.weight);
-  const total = [...weights.values()].reduce((n, w) => n + w, 0);
+}
+// 구독 배분 계산(저장하지 않음 — 마감과 관리자 미리보기가 함께 씁니다).
+//  1) 인정 재생: 구독자가 유료 회차를 회차 길이의 기준 %(sub_min_progress_pct) 이상 본 기록만(작품 주인·관리자·구매 회차 제외는 기록 단계에서 처리)
+//  2) 구독자별 상한: 한 구독자가 한 달에 한 작품에서 최대 N회, 전체 최대 M회까지(먼저 본 순서대로 인정)
+//  3) PD 가중치: 인정 재생 수 × PD별 배수(기본 1). '배분 제외'인 PD는 0
+//  4) 풀 × (내 가중 재생 / 전체 가중 재생). PD별 상한(cap_pct, 풀의 %)을 넘는 몫은 상한까지만 주고,
+//     넘친 금액은 상한에 걸리지 않은 PD들에게 가중 재생 비율대로 다시 나눕니다(모두 상한이면 플랫폼에 남음).
+//  5) 원 단위 절사, 절사로 남은 몇 원은 가중 재생이 가장 많은(상한에 걸리지 않은) PD에게 더합니다.
+// 규칙을 끄면(sub_view_rules_enabled=0) 1)·2)를 적용하지 않아 예전처럼 모든 재생 기록을 셉니다. 3)~5)는 늘 적용됩니다.
+export async function subscriptionPlan(db, period, pool, settings) {
+  const rulesOn = Number(settings.sub_view_rules_enabled ?? 1) === 1;
+  const capDrama = rulesOn ? Math.max(0, Number(settings.sub_cap_per_drama || 0)) : 0;
+  const capUser = rulesOn ? Math.max(0, Number(settings.sub_cap_per_user || 0)) : 0;
+  const views = await db.all(
+    `SELECT v.user_id, v.drama_id, d.owner_id AS pd_id
+     FROM subscription_views v JOIN dramas d ON d.id=v.drama_id
+     WHERE v.period=? AND v.user_id<>d.owner_id${rulesOn ? ' AND v.qualified=1' : ''}
+     ORDER BY v.user_id, v.created_at, v.drama_id, v.episode`,
+    [period],
+  );
+  const perUser = new Map(),
+    perUserDrama = new Map(),
+    counted = new Map(),
+    raw = new Map();
+  let cappedViews = 0;
+  for (const v of views) {
+    raw.set(v.pd_id, (raw.get(v.pd_id) || 0) + 1);
+    const key = `${v.user_id}\u0000${v.drama_id}`;
+    const u = perUser.get(v.user_id) || 0,
+      d = perUserDrama.get(key) || 0;
+    if ((capDrama && d >= capDrama) || (capUser && u >= capUser)) {
+      cappedViews++;
+      continue;
+    }
+    perUser.set(v.user_id, u + 1);
+    perUserDrama.set(key, d + 1);
+    counted.set(v.pd_id, (counted.get(v.pd_id) || 0) + 1);
+  }
+  const overrides = new Map((await db.all('SELECT * FROM subscription_overrides')).map((o) => [o.user_id, o]));
+  const rows = [...counted.entries()].map(([pdId, weight]) => {
+    const o = overrides.get(pdId);
+    const multiplier = o ? Number(o.weight) : 1;
+    const excluded = !!o && Number(o.excluded) === 1;
+    const capPct = o ? Number(o.cap_pct) || 0 : 0;
+    return {
+      pd_id: pdId,
+      views: raw.get(pdId) || 0,
+      weight,
+      multiplier,
+      excluded,
+      cap_pct: capPct,
+      effective: excluded ? 0 : weight * multiplier,
+      capped: false,
+      exact: 0,
+      gross: 0,
+    };
+  });
+  rows.sort((a, b) => b.effective - a.effective || b.weight - a.weight || String(a.pd_id).localeCompare(String(b.pd_id)));
+  const total = rows.reduce((n, r) => n + r.effective, 0);
+  const capOf = (r) => (r.cap_pct > 0 ? Math.floor((pool * r.cap_pct) / 100) : Infinity);
+  let pending = rows.filter((r) => r.effective > 0);
+  let remaining = pool;
+  while (pool > 0 && pending.length) {
+    const sum = pending.reduce((n, r) => n + r.effective, 0);
+    const over = pending.filter((r) => (remaining * r.effective) / sum > capOf(r));
+    if (!over.length) {
+      for (const r of pending) r.exact = (remaining * r.effective) / sum;
+      remaining = 0;
+      break;
+    }
+    // 상한을 넘는 PD는 상한까지만 확정하고, 남은 금액을 나머지 PD에게 다시 나눕니다.
+    for (const r of over) {
+      r.capped = true;
+      r.gross = capOf(r);
+      remaining -= r.gross;
+    }
+    pending = pending.filter((r) => !r.capped);
+  }
+  for (const r of rows) if (!r.capped) r.gross = Math.floor(r.exact);
+  // 절사로 남은 금액: 상한에 걸리지 않은 PD 중 가중 재생이 가장 많은 PD에게(상한을 넘지 않는 만큼)
+  const assigned = () => rows.reduce((n, r) => n + r.gross, 0);
+  const top = rows.find((r) => r.effective > 0 && !r.capped);
+  if (top && remaining === 0) top.gross += Math.max(0, Math.min(pool - assigned(), capOf(top) - top.gross));
+  const undistributed = pool - assigned();
+  return {
+    total,
+    rows: rows.map(({ exact, ...r }) => r),
+    summary: {
+      rules: {
+        enabled: rulesOn,
+        min_progress_pct: Number(settings.sub_min_progress_pct ?? 30),
+        cap_per_drama: capDrama,
+        cap_per_user: capUser,
+      },
+      counted_views: rows.reduce((n, r) => n + r.weight, 0),
+      capped_views: cappedViews,
+      undistributed,
+    },
+  };
+}
+// Subscription revenue is shared monthly in proportion to episodes watched, the same
+// pooled model streaming services use. Closing a period twice changes nothing.
+export async function closeSubscriptionPeriod(db, period, settings, actorId) {
+  const [, end] = periodRange(period);
+  if (new Date(end).getTime() > Date.now())
+    throw error(400, '아직 종료되지 않은 월은 마감할 수 없습니다.');
+  const pool = await subscriptionPool(db, period);
+  const plan = await subscriptionPlan(db, period, pool, settings);
   const stamp = iso();
-  if (!pool || !total) {
+  if (!pool || !plan.total) {
     // 배분할 것이 없어도 마감 기록은 남겨, 다음 달 마감 순서 검사가 막히지 않게 합니다.
     await db.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [
       randomUUID(),
@@ -179,16 +270,11 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
       period,
       stamp,
     ]);
-    return { period, pool, shares: [], reason: pool ? '시청 기록 없음' : '구독 매출 없음' };
+    return { period, pool, shares: [], reason: !pool ? '구독 매출 없음' : plan.rows.length ? '배분 대상 PD 없음(모두 제외)' : '시청 기록 없음', ...plan.summary };
   }
-  const ordered = [...weights.entries()].sort((a, b) => b[1] - a[1]);
-  const amounts = ordered.map(([, weight]) => Math.floor((pool * weight) / total));
-  // 절사로 남은 금액은 가장 많이 시청된 방송국에 더해 풀 전액이 빠짐없이 배분되게 합니다.
-  amounts[0] += pool - amounts.reduce((n, a) => n + a, 0);
   const shares = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const [pdId, weight] = ordered[i];
-    const gross = amounts[i];
+  for (const row of plan.rows) {
+    const { pd_id: pdId, weight, gross } = row;
     if (gross <= 0) continue;
     const rate = await platformRateFor(db, pdId, settings);
     const { platformFee, pgFee, net } = splitByRate(gross, rate);
@@ -211,7 +297,7 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
         stamp,
       ],
     );
-    shares.push({ pd_id: pdId, weight, gross, net });
+    shares.push({ ...row, pd_id: pdId, weight, gross, net });
   }
   await db.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [
     randomUUID(),
@@ -220,7 +306,7 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId) {
     period,
     stamp,
   ]);
-  return { period, pool, shares };
+  return { period, pool, shares, ...plan.summary };
 }
 export async function requestPayout(db, { pdId, profile, settings }) {
   if (!profile?.account_number || !profile?.bank_name || !profile?.account_holder)
@@ -256,7 +342,8 @@ export async function requestPayout(db, { pdId, profile, settings }) {
         tax.payable,
         tax.businessType,
         profile.bank_name,
-        profile.account_number,
+        // 출금 신청 시점의 계좌를 암호화된 채로 복사합니다(평문이 남아 있던 프로필도 여기서 암호화).
+        sealAccount(profile.account_number),
         profile.account_holder,
         'requested',
         iso(),

@@ -1204,3 +1204,18 @@ button.upgrade {
 .ws-overlay {
   z-index: 75;
 }
+/* 넓은 PC: AI 조수를 오른쪽에 붙이고 작업 화면을 그만큼 비켜서, 헤더 버튼(공유·모델·작업·지갑)을 가리지 않아요 */
+@media (min-width: 1200px) {
+  .ws.with-asst {
+    padding-right: 416px;
+  }
+  .ws.with-asst .asst {
+    top: 86px;
+    bottom: 16px;
+    height: auto;
+    width: 400px;
+  }
+  .ws.with-asst .ws-actionbar {
+    padding-right: 12px;
+  }
+}

@@ -4,6 +4,8 @@ import App from './App';
 import '@fontsource-variable/noto-sans-kr';
 import '@fontsource-variable/noto-serif-kr';
 import './style.css';
+import './admin-mobile.css';
+import { installTableLabels } from './tableLabels';
 import { isNativeApp, refreshMediaToken } from './platform';
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: boolean }> {
@@ -23,6 +25,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
     );
   }
 }
+installTableLabels();
 const root: Root = import.meta.hot?.data.root ?? createRoot(document.getElementById('root')!);
 if (import.meta.hot)
   import.meta.hot.dispose((data) => {

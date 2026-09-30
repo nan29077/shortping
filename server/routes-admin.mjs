@@ -12,6 +12,7 @@ import { channelSelect } from './routes-studio.mjs';
 import { channels as pingChannels, channelFeeRate, creditPings, debitPings, walletOf } from './pings.mjs';
 import { appearanceFromSettings, homeThemes } from './home-appearance.mjs';
 import { HOME_SECTIONS, layoutOf, layoutSchema, normalizeLayout, styleSchema } from './home-layout.mjs';
+import { maskRow, maskRows } from './bank-secret.mjs';
 
 const memberSql = `SELECT u.id,u.email,u.name,u.role,u.status,u.created_at,u.last_login_at,u.phone,
   p.avatar,p.bio,
@@ -96,9 +97,12 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
          COALESCE(SUM(CASE WHEN status IN ('requested','approved') THEN payable ELSE 0 END),0) AS waiting,
          COUNT(*) AS count FROM payouts`,
       ),
-      payouts: await db.all(
-        `SELECT p.*, u.name AS pd_name, u.email AS pd_email FROM payouts p JOIN users u ON u.id=p.pd_id ORDER BY
-         CASE p.status WHEN 'requested' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, p.requested_at DESC LIMIT 200`,
+      // 계좌번호는 가린 값만 보냅니다. 전체 번호는 '계좌 전체 보기'(운영 기록 남김)로 확인합니다.
+      payouts: maskRows(
+        await db.all(
+          `SELECT p.*, u.name AS pd_name, u.email AS pd_email FROM payouts p JOIN users u ON u.id=p.pd_id ORDER BY
+           CASE p.status WHEN 'requested' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, p.requested_at DESC LIMIT 200`,
+        ),
       ),
       closed: await db.all(
         "SELECT period, COUNT(*) AS creators, SUM(gross) AS gross FROM settlement_entries WHERE kind='subscription' GROUP BY period ORDER BY period DESC LIMIT 12",
@@ -146,7 +150,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     const yEnd = new Date(Date.UTC(Number(year) + 1, 0, 1) - 9 * 3600000).toISOString();
     res.json({
       year,
-      creators: await db.all(
+      creators: maskRows(await db.all(
         `SELECT u.id,u.name,u.email,
          COALESCE(t.business_type,'individual') AS business_type, COALESCE(t.verified,0) AS verified,
          COALESCE(t.business_no,'') AS business_no, COALESCE(t.business_name,'') AS business_name,
@@ -157,7 +161,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
          t.updated_at
          FROM users u LEFT JOIN pd_tax_profiles t ON t.user_id=u.id
          WHERE u.role IN ('pd','admin') ORDER BY u.created_at DESC`,
-      ),
+      )),
       paid: await db.all(
         `SELECT pd_id, COUNT(*) AS count, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(vat),0) AS vat,
          COALESCE(SUM(income_tax),0) AS income_tax, COALESCE(SUM(local_tax),0) AS local_tax,
@@ -231,6 +235,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         ai_weight_cost: z.number().int().min(0).max(100),
         ai_weight_speed: z.number().int().min(0).max(100),
         ai_weight_reliability: z.number().int().min(0).max(100),
+        ai_weight_quality: z.number().int().min(0).max(100),
         ai_assistant_enabled: z.number().int().min(0).max(1),
         ai_assistant_daily_limit: z.number().int().min(0).max(10000),
         studio_upload_enabled: z.number().int().min(0).max(1),
@@ -241,6 +246,10 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         studio_upload_audio_seconds: z.number().int().min(3).max(600),
         studio_collab_enabled: z.number().int().min(0).max(1),
         studio_collab_max_members: z.number().int().min(1).max(50),
+        sub_view_rules_enabled: z.number().int().min(0).max(1),
+        sub_min_progress_pct: z.number().int().min(0).max(100),
+        sub_cap_per_drama: z.number().int().min(0).max(10000),
+        sub_cap_per_user: z.number().int().min(0).max(100000),
         // 0 = 자동 정리 끔. 켤 때는 실수로 너무 짧게 잡지 않도록 최소 7일.
         media_retention_days: z
           .number()
@@ -557,11 +566,13 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         )?.count || 0,
       ),
       settlement: member.role === 'viewer' ? null : await balanceOf(db, id),
-      payouts: await db.all(
-        'SELECT * FROM payouts WHERE pd_id=? ORDER BY requested_at DESC LIMIT 20',
-        [id],
+      payouts: maskRows(
+        await db.all('SELECT * FROM payouts WHERE pd_id=? ORDER BY requested_at DESC LIMIT 20', [id]),
       ),
-      tax: await db.get('SELECT * FROM pd_tax_profiles WHERE user_id=?', [id]),
+      tax: maskRow(await db.get('SELECT * FROM pd_tax_profiles WHERE user_id=?', [id])),
+      // 구독 배분 개별 설정(가중치·제외·상한). 없으면 기본값(가중치 1, 포함, 상한 없음)
+      subscriptionOverride:
+        (await db.get('SELECT weight,excluded,cap_pct,memo,updated_at FROM subscription_overrides WHERE user_id=?', [id])) || null,
       wallet: await walletOf(db, id),
       pingLedger: await db.all(
         'SELECT l.*, d.title FROM ping_ledger l LEFT JOIN dramas d ON d.id=l.drama_id WHERE l.user_id=? ORDER BY l.created_at DESC LIMIT 50',
@@ -588,13 +599,11 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     if (!(await db.get('SELECT id FROM users WHERE id=?', [req.params.id])))
       fail(404, '회원을 찾을 수 없습니다.');
     await db.transaction(async () => {
-      await db.run('UPDATE users SET role=?,status=?,name=?,phone=? WHERE id=?', [
-        b.role,
-        b.status,
-        b.name,
-        b.phone,
-        req.params.id,
-      ]);
+      // 관리자가 번호를 바꾸면 휴대폰 인증 표시는 지웁니다(같은 번호면 유지).
+      await db.run(
+        'UPDATE users SET role=?,status=?,name=?,phone_verified_at=CASE WHEN phone=? THEN phone_verified_at ELSE NULL END,phone=? WHERE id=?',
+        [b.role, b.status, b.name, b.phone, b.phone, req.params.id],
+      );
       if (b.status !== 'active')
         await db.run('DELETE FROM sessions WHERE user_id=?', [req.params.id]);
       await audit(req.user.id, `user:${b.role}:${b.status}`, req.params.id);

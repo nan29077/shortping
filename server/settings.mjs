@@ -35,6 +35,8 @@ export const settingDefaults = {
   ai_weight_cost: 50,
   ai_weight_speed: 0,
   ai_weight_reliability: 0,
+  // 6단계(2026-09-30): 품질(품질 시험 · 실제 AI 검수 점수 평균이 높을수록 우선), 0이면 쓰지 않음
+  ai_weight_quality: 0,
   // AI 조수(작업 공간 채팅): 대화는 무료(플랫폼 부담). PD 1명의 하루 대화 수 한도, 0이면 무제한
   ai_assistant_enabled: 1,
   ai_assistant_daily_limit: 100,
@@ -48,6 +50,11 @@ export const settingDefaults = {
   // 협업(팀 제작): 끄면 초대·공유 프로젝트 접근이 모두 멈춰요. 프로젝트 1개당 최대 참여 인원(소유자 제외)
   studio_collab_enabled: 1,
   studio_collab_max_members: 10,
+  // 구독 배분(숏핑 패스 매출을 PD에게 나누는 규칙). 끄면(0) 예전처럼 구독자가 재생한 유료 회차를 모두 셉니다.
+  sub_view_rules_enabled: 1,
+  sub_min_progress_pct: 30, // 회차 길이의 몇 % 이상 봐야 재생 1회로 인정할지(조회수에도 같은 기준)
+  sub_cap_per_drama: 20, // 한 구독자가 한 달에 한 작품에서 인정받는 최대 재생 수(0 = 제한 없음)
+  sub_cap_per_user: 200, // 한 구독자가 한 달에 인정받는 최대 재생 수(0 = 제한 없음)
   // 어디에서도 쓰지 않는 업로드 파일을 만든 뒤 며칠 지나면 지울지(일). 0이면 자동 정리를 하지 않습니다.
   media_retention_days: 91,
   payout_notice:

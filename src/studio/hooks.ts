@@ -6,7 +6,9 @@ export type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 // - value: 지금 폼 값, saved: 서버에 저장된 값(같으면 저장하지 않음)
 // - save: 실제 저장 함수(실패하면 throw)
 // - enabled: false면(값이 아직 올바르지 않을 때 등) 저장하지 않고 기다립니다.
-export function useAutosave<T>(value: T, saved: T, save: (v: T) => Promise<unknown>, { delay = 900, enabled = true } = {}) {
+// 비교용 키: 앞뒤 공백은 서버가 잘라 저장하므로 비교할 때도 무시해요(끝 공백 하나로 '저장 안 됨'이 계속되지 않도록).
+export const formKey = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'string' ? x.trim() : x));
+export function useAutosave<T>(value: T, saved: T, save: (v: T, base: T) => Promise<unknown>, { delay = 900, enabled = true } = {}) {
   const [state, setState] = useState<SaveState>('idle');
   const [error, setError] = useState('');
   const latest = useRef(value);
@@ -16,12 +18,14 @@ export function useAutosave<T>(value: T, saved: T, save: (v: T) => Promise<unkno
   const inflight = useRef<Promise<void> | null>(null);
   // 기준값: 서버 값이 바뀌면 서버 값으로, 저장에 성공하면 보낸 값으로 맞춥니다.
   // (서버 값을 다시 불러오기 전에 원래 값으로 되돌려 써도 저장되게 합니다.)
-  const savedKey = JSON.stringify(saved);
+  const savedKey = formKey(saved);
   const serverKey = useRef(savedKey);
   const baseline = useRef(savedKey);
+  const baseObj = useRef<T>(saved);
   if (serverKey.current !== savedKey) {
     serverKey.current = savedKey;
     baseline.current = savedKey;
+    baseObj.current = saved;
   }
   latest.current = value;
   saveRef.current = save;
@@ -33,14 +37,15 @@ export function useAutosave<T>(value: T, saved: T, save: (v: T) => Promise<unkno
     }
     if (inflight.current) await inflight.current;
     const snapshot = latest.current;
-    const key = JSON.stringify(snapshot);
+    const key = formKey(snapshot);
     if (key === baseline.current) return true;
     if (!enabledRef.current) return false;
     setState('saving');
     let ok = false;
     const job = (async () => {
       try {
-        await saveRef.current(snapshot);
+        await saveRef.current(snapshot, baseObj.current as T);
+        baseObj.current = snapshot;
         baseline.current = key;
         setState('saved');
         setError('');
@@ -55,7 +60,7 @@ export function useAutosave<T>(value: T, saved: T, save: (v: T) => Promise<unkno
     inflight.current = null;
     return ok;
   }, []);
-  const valueKey = JSON.stringify(value);
+  const valueKey = formKey(value);
   const dirty = valueKey !== baseline.current;
   useEffect(() => {
     if (!enabled || !dirty) return;
@@ -74,7 +79,15 @@ export function useAutosave<T>(value: T, saved: T, save: (v: T) => Promise<unkno
       void flush();
     };
   }, [flush]);
-  return { state: dirty && state === 'saved' ? ('idle' as SaveState) : state, dirty, error, flush };
+  // blocked: 고친 내용이 있는데 값이 올바르지 않아 저장을 기다리는 중(예: 길이 칸이 비었을 때)
+  return { state: dirty && state === 'saved' ? ('idle' as SaveState) : state, dirty, error, flush, blocked: dirty && !enabled };
+}
+
+// 바뀐 칸만 골라 보냅니다(다른 탭·팀원이 고친 칸을 옛 값으로 덮어쓰지 않도록).
+export function changedFields<T extends object>(v: T, base: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const k of Object.keys(v) as (keyof T)[]) if (JSON.stringify(v[k]) !== JSON.stringify(base?.[k])) out[k] = v[k];
+  return out;
 }
 
 // 서버 값이 바뀌면(AI 결과 등) 사용자가 손대지 않은 폼만 새 값으로 맞춥니다.
@@ -85,7 +98,15 @@ export function useSyncedForm<T>(server: T): [T, (v: T | ((p: T) => T)) => void]
   useEffect(() => {
     if (snap === last.current) return;
     const prev = last.current;
-    setForm((cur) => (JSON.stringify(cur) === prev ? (JSON.parse(snap) as T) : cur));
+    // 손대지 않은 칸(앞뒤 공백 차이만 있는 경우 포함)만 새 서버 값으로 맞춰요. 고친 칸은 그대로 둬요.
+    setForm((cur) => {
+      const before = JSON.parse(prev);
+      const next = JSON.parse(snap);
+      if (!cur || typeof cur !== 'object' || Array.isArray(cur) || !next || typeof next !== 'object') return formKey(cur) === formKey(before) ? (next as T) : cur;
+      const out: Record<string, unknown> = { ...(cur as Record<string, unknown>) };
+      for (const k of Object.keys(next)) if (formKey((cur as Record<string, unknown>)[k]) === formKey(before?.[k])) out[k] = next[k];
+      return out as T;
+    });
     last.current = snap;
   }, [snap]);
   return [form, setForm];

@@ -33,6 +33,7 @@ import {
   type HomeStyle,
   type HomeTheme,
 } from './api';
+import { setLeaveGuard } from './App';
 import { useConfirm } from './confirm';
 import { asset } from './platform';
 import './home-admin.css';
@@ -163,7 +164,12 @@ export default function HomeAppearance({
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
+    // 앱 안에서 다른 메뉴로 옮길 때(주소의 # 뒤가 바뀔 때)도 한 번 묻습니다.
+    setLeaveGuard(() => '메인페이지 관리에 저장하지 않은 변경이 있어요. 저장하지 않고 이 화면을 떠날까요?');
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+      setLeaveGuard(null);
+    };
   }, [appearanceDirty, layoutDirty, noticeDirty]);
 
   async function saveAppearance() {
@@ -903,7 +909,7 @@ function PhonePreview({ layout, sections, dramas }: { layout: AdminLayout; secti
             );
           })}
       </div>
-      <p className="settings-note">숨긴 섹션은 빠지고, 이어보기 · 구독 방송국 소식은 해당하는 회원에게만 보여요.</p>
+      <p className="settings-note">숨긴 섹션은 빠지고, 이어보기 · 팔로우 방송국 소식은 해당하는 회원에게만 보여요.</p>
     </div>
   );
 }

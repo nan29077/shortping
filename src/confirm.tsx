@@ -28,7 +28,13 @@ export function useConfirm(): [(a: Ask) => Promise<boolean>, React.ReactNode] {
         <button type="button" className="secondary" onClick={() => done(false)}>
           취소
         </button>
-        <button type="button" className={pending.danger ? 'danger' : 'primary'} onClick={() => done(true)}>
+        {/* 처음 초점: 위험한 작업은 '취소'(Modal 기본값), 일반 확인은 확인 버튼 */}
+        <button
+          type="button"
+          className={pending.danger ? 'danger' : 'primary'}
+          data-autofocus={pending.danger ? undefined : ''}
+          onClick={() => done(true)}
+        >
           {pending.ok || '확인'}
         </button>
       </div>

@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { composeEpisode, composeTrailer } from './compose.mjs';
 import { notify } from '../notify.mjs';
+import { publicError } from './engine.mjs';
 
 // 합성 대기열 처리기. 합성은 ffmpeg(별도 프로세스)가 무거운 일을 하지만, 여러 회차가 한꺼번에 몰려도
 // 서버가 느려지지 않도록 대기열(studio_renders)에 넣고 정해진 개수만 동시에 처리합니다.
@@ -36,12 +37,15 @@ export function createRenderWorker({ db, uploadDir }) {
     const p = await db.get('SELECT * FROM studio_projects WHERE id=?', [job.project_id]);
     const e = await db.get('SELECT * FROM studio_episodes WHERE id=? AND project_id=?', [job.target_id, job.project_id]);
     if (!p || !e) throw new Error('프로젝트나 회차가 지워졌어요.');
+    // 컷을 읽기 직전에 '바뀜' 표시를 지웁니다. 이후 컷이 바뀌면 다시 1이 되어 완료로 확정하지 않아요.
+    await db.run('UPDATE studio_episodes SET compose_dirty=0 WHERE id=?', [e.id]);
     const shots = await db.all('SELECT * FROM studio_shots WHERE episode_id=? ORDER BY sort_order', [e.id]);
     const cast = await db.all('SELECT id,name FROM studio_characters WHERE project_id=?', [p.id]);
     const style = subtitleStyleOf(p.subtitle_style);
     const volume = Number(e.bgm_volume) >= 0 ? Number(e.bgm_volume) : Number(p.bgm_volume);
     let out = null;
     let sub = '';
+    let stale = false;
     try {
       out = await composeEpisode({
         shots,
@@ -60,11 +64,17 @@ export function createRenderWorker({ db, uploadDir }) {
       await mkdir(subsDir, { recursive: true });
       await writeFile(path.join(subsDir, sub), out.vtt, 'utf8');
       const done = await db.transaction(async () => {
-        const fresh = await db.get('SELECT status FROM studio_episodes WHERE id=?', [e.id]);
+        const fresh = await db.get('SELECT status,compose_dirty FROM studio_episodes WHERE id=?' + (db.engine === 'postgresql' ? ' FOR UPDATE' : ''), [e.id]);
         if (!fresh || fresh.status !== 'composing') return false; // 그사이 프로젝트가 지워지는 등
         await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso(), p.id]);
         await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [out.url, out.duration, out.width, out.height, out.hasAudio ? 1 : 0]);
-        await db.run("UPDATE studio_episodes SET status='composed',video=?,duration=?,subtitles=?,compose_progress=1,compose_error='' WHERE id=?", [out.url, out.duration, sub, e.id]);
+        // 합성하는 동안 컷이 바뀌었으면 결과는 남기되 '완료'로 확정하지 않아요(내보내기 전에 다시 합성해야 함).
+        const dirty = Number(fresh.compose_dirty) === 1;
+        await db.run(
+          `UPDATE studio_episodes SET status=?,video=?,duration=?,subtitles=?,compose_progress=1,compose_error=?,compose_dirty=0 WHERE id=?`,
+          [dirty ? 'scripted' : 'composed', out.url, out.duration, sub, dirty ? '합성하는 동안 컷이 바뀌었어요. 최신 내용으로 다시 합성해 주세요.' : '', e.id],
+        );
+        stale = dirty;
         await db.run(
           'INSERT INTO studio_assets (id,owner_id,project_id,target_type,target_id,kind,url,job_id,model_label,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
           [randomUUID(), p.owner_id, p.id, 'episode', e.id, 'video', out.url, null, '합성', iso()],
@@ -72,6 +82,10 @@ export function createRenderWorker({ db, uploadDir }) {
         return true;
       });
       if (!done) throw new Error('합성하는 동안 회차가 바뀌었어요.');
+      if (stale) {
+        await notify(db, p.owner_id, { kind: 'compose', title: `${p.title} ${e.number}화를 다시 합성해 주세요`, body: '합성하는 동안 컷이 바뀌어 방금 만든 영상은 최신 내용이 아니에요.', link: `studio/ai/${p.id}/finish` });
+        return;
+      }
       await notify(db, p.owner_id, { kind: 'compose', title: `${p.title} ${e.number}화 합성이 끝났어요`, body: `${out.duration}초 영상이 준비됐어요. 미리 보고 공개해 보세요.`, link: `studio/ai/${p.id}/finish` });
       // 협업: 승인할 수 있는 팀원(공동 제작·검수자)에게 합성본 승인 차례를 알려요.
       if (p.approval_mode !== 'off')
@@ -130,8 +144,10 @@ export function createRenderWorker({ db, uploadDir }) {
       else await renderTrailer(job, progress);
       await db.run("UPDATE studio_renders SET status='done',progress=1,finished_at=? WHERE id=?", [iso(), job.id]);
     } catch (err) {
-      const message = String(err?.message || err).slice(0, 300);
-      console.error('render', job.kind, message, err?.detail || '');
+      const raw = String(err?.message || err);
+      console.error('render', job.kind, raw.slice(0, 500), err?.detail || '');
+      // PD에게는 알아볼 수 있는 문구만 보여 줘요(ffmpeg 원문 · 서버 경로는 서버 기록에만 남김).
+      const message = (/[가-힣]/.test(raw) ? publicError(err) : '영상을 합치는 중 문제가 생겼어요. 컷 영상 · 음성 파일을 확인하고 다시 합성해 주세요.').slice(0, 300);
       await db.run("UPDATE studio_renders SET status='failed',error=?,finished_at=? WHERE id=?", [message, iso(), job.id]).catch(() => {});
       const p = await db.get('SELECT id,title,owner_id FROM studio_projects WHERE id=?', [job.project_id]).catch(() => null);
       if (job.kind === 'episode') {

@@ -20,7 +20,7 @@ import {
 import { Modal } from '../App';
 
 export type Choice = { requested: string; tier: 'draft' | 'standard' | 'premium' };
-export type ChoiceKey = 'text' | 'image' | 'tts' | 'video' | 'music' | 'sfx' | 'lipsync';
+export type ChoiceKey = 'text' | 'image' | 'tts' | 'video' | 'music' | 'sfx' | 'lipsync' | 'upscale' | 'upscale_video';
 export type Choices = Record<ChoiceKey, Choice>;
 export const defaultChoices: Choices = {
   text: { requested: 'auto', tier: 'standard' },
@@ -30,6 +30,8 @@ export const defaultChoices: Choices = {
   music: { requested: 'auto', tier: 'standard' },
   sfx: { requested: 'auto', tier: 'standard' },
   lipsync: { requested: 'auto', tier: 'standard' },
+  upscale: { requested: 'auto', tier: 'standard' },
+  upscale_video: { requested: 'auto', tier: 'standard' },
 };
 // 모델 선택을 기기에 기억합니다(작업 공간을 다시 열어도 유지).
 const CHOICE_KEY = 'shortping.studio.choices';
@@ -93,7 +95,7 @@ export function ModelPicker({
       ) : (
         <small>{chosen ? `${tierLabel[chosen.tier]} · 최대 ${chosen.max_seconds}초` : ''}</small>
       )}
-      {!list.length && <small className="danger">{['music', 'sfx', 'lipsync'].includes(capability) ? '준비 중이에요' : '연결된 모델이 없어요'}</small>}
+      {!list.length && <small className="danger">{['music', 'sfx', 'lipsync', 'upscale', 'upscale_video'].includes(capability) ? '준비 중이에요' : '연결된 모델이 없어요'}</small>}
     </div>
   );
 }

@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleAlert,
   CirclePlay,
   Clapperboard,
   Coins,
@@ -61,6 +62,7 @@ import {
   type Role,
   type User,
 } from './api';
+import { genresIn } from './genres';
 import { asset } from './platform';
 // 관리 화면(스튜디오·관리자·AI 제작)은 시청자에게 필요 없으므로 필요할 때만 불러옵니다.
 const Studio = lazy(() => import('./Studio'));
@@ -85,7 +87,8 @@ const isEpisodeBuy = (p: Purchase): p is { drama: Detail; episode: number } =>
 const unlockPings = (p: Exclude<Purchase, 'subscription'>) =>
   p.episode ? p.drama.episode_pings : p.drama.title_pings;
 const readRoute = (): Route => {
-  const p = location.hash.replace('#', '').split('/').filter(Boolean);
+  // 주소 뒤의 ?이하(예: #/reset?token=…)는 화면 이름이 아니라 값이므로 떼어 냅니다.
+  const p = location.hash.replace('#', '').split('?')[0].split('/').filter(Boolean);
   return { page: p[0] || 'home', id: p[1], episode: Number(p[2]) || 1 };
 };
 // ── 앱 안 이동 기록 ─────────────────────────────────────────────
@@ -100,7 +103,26 @@ const readNavState = (): NavState | null => {
 let navIdx = readNavState()?.spIdx ?? 0;
 let lastHash = currentHash();
 if (!readNavState()) history.replaceState({ ...(history.state || {}), spIdx: navIdx }, '');
+// ── 떠나기 전 확인(저장하지 않은 변경) ─────────────────────────────
+// 편집 화면이 setLeaveGuard로 안내 문구를 돌려주는 함수를 걸어 두면, 앱 안 이동(navigate·링크·뒤로 가기) 전에 묻습니다.
+let leaveGuard: (() => string | null) | null = null;
+export const setLeaveGuard = (fn: (() => string | null) | null) => {
+  leaveGuard = fn;
+};
+const leaveBlocked = () => {
+  const message = leaveGuard?.();
+  if (!message) return false;
+  if (!window.confirm(message)) return true;
+  leaveGuard = null; // 한 번 떠나기로 했으면 이어지는 이동에서 다시 묻지 않습니다.
+  return false;
+};
 window.addEventListener('hashchange', () => {
+  // 링크·뒤로 가기로 주소가 바뀌었는데 떠나지 않기로 했다면, 주소를 원래 화면으로 되돌립니다
+  // (다른 hashchange 처리기는 되돌린 주소를 읽으므로 화면이 바뀌지 않아요).
+  if (leaveGuard && currentHash() !== lastHash && leaveBlocked()) {
+    history.replaceState(history.state, '', '#/' + lastHash);
+    return;
+  }
   const s = readNavState();
   if (s) navIdx = s.spIdx; // 뒤로·앞으로 이동이거나 replace로 바꾼 항목
   else {
@@ -111,6 +133,7 @@ window.addEventListener('hashchange', () => {
   lastHash = currentHash();
 });
 export const navigate = (page: string, opts: { replace?: boolean } = {}) => {
+  if (page.replace(/^#?\/?/, '') !== currentHash() && leaveBlocked()) return;
   if (opts.replace) {
     // 현재 기록 항목을 바꿉니다(회차 이동 등). 뒤로 가기가 회차마다 쌓이지 않습니다.
     const prev = readNavState();
@@ -205,7 +228,7 @@ const tagsOf = (d: { hashtags?: string }) =>
     .filter(Boolean);
 const reviewLabel: Record<string, string> = {
   draft: '작성 중',
-  pending: '검수 대기',
+  pending: '심사 대기',
   rejected: '반려',
   scheduled: '예약 공개',
 };
@@ -220,7 +243,16 @@ const subtitleClass = (raw?: string) => {
     return '';
   }
 };
-const genres = ['전체', '로맨스', '스릴러', '판타지', '코미디', '청춘'];
+// 알림 띠(토스트): 성공·안내는 체크, 오류는 느낌표와 붉은 테두리
+type ToastTone = 'ok' | 'error';
+type Toast = { text: string; tone: ToastTone };
+// 호출하는 곳에서 tone을 주지 않은 경우(대부분 catch 블록의 서버 오류 문구) 문구로 오류인지 짐작합니다.
+// 1) 분명한 실패 표현 → 오류, 2) 완료 표현(…했어요·보냈어요) → 성공, 3) 안내성 표현(확인해 주세요 등) → 오류
+const toneOf = (text: string): ToastTone => {
+  if (/(못했|실패|오류|할 수 없|권한이|만료|부족|일치하지|맞지 않|올바르지|초과|막혀|거절)/.test(text)) return 'error';
+  if (/(했어요|했습니다|보냈어요|됐어요|마쳤어요|열었어요|왔어요|적용됩니다)/.test(text)) return 'ok';
+  return /(없습니다|없어요|확인해 주세요|입력해 주세요|선택해 주세요|잠시 후 다시|제한)/.test(text) ? 'error' : 'ok';
+};
 const roleLabel = { admin: '슈퍼관리자', pd: '업로더 · PD', viewer: '시청자' };
 export function Brand({ small = false }: { small?: boolean }) {
   return (
@@ -283,7 +315,7 @@ export default function App() {
     [channels, setChannels] = useState<Channel[]>([]),
     [ready, setReady] = useState(false),
     [loadError, setLoadError] = useState(''),
-    [toast, setToast] = useState(''),
+    [toast, setToast] = useState<Toast | null>(null),
     [modal, setModal] = useState<{ title: string; text: string } | null>(null),
     [genre, setGenre] = useState('전체'),
     [feed, setFeed] = useState('추천'),
@@ -293,7 +325,8 @@ export default function App() {
     [checkout, setCheckout] = useState<Purchase | null>(null),
     [busy, setBusy] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
-  const notify = useCallback((s: string) => setToast(s), []);
+  // 알림 띠: 오류 문구는 빨간 느낌표로 보여 줍니다. tone을 주지 않으면 문구로 짐작합니다.
+  const notify = useCallback((s: string, tone?: ToastTone) => setToast({ text: s, tone: tone || toneOf(s) }), []);
   const reloadLibrary = useCallback(async () => {
     try {
       setLib(await api<Library>('/library'));
@@ -328,17 +361,19 @@ export default function App() {
       .catch((e) => setLoadError(e.message))
       .finally(() => setReady(true));
   }, [reloadLibrary]);
+  // 지금 로그인한 사용자(이벤트 처리기에서 최신 값을 읽기 위한 참조)
+  const userRef = useRef<User | null>(null);
+  userRef.current = user;
   useEffect(() => {
     // 다른 기기에서 로그아웃하거나 비밀번호를 바꿔 세션이 끝나면 로그인 화면으로 보냅니다.
+    // 상태 갱신 함수(setUser 안) 대신 여기서 한 번만 부수 효과를 실행합니다(StrictMode에서 두 번 실행되지 않게).
     const fn = () => {
-      setUser((current) => {
-        if (current) {
-          setLib(emptyLibrary);
-          setToast('로그인이 만료되었어요. 다시 로그인해 주세요.');
-          loginWithReturn();
-        }
-        return null;
-      });
+      if (!userRef.current) return;
+      userRef.current = null;
+      setUser(null);
+      setLib(emptyLibrary);
+      setToast({ text: '로그인이 만료되었어요. 다시 로그인해 주세요.', tone: 'error' });
+      loginWithReturn();
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, fn);
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, fn);
@@ -356,7 +391,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(''), 3500);
+    const t = setTimeout(() => setToast(null), toast.tone === 'error' ? 5000 : 3500);
     return () => clearTimeout(t);
   }, [toast]);
   // 여백 로테이션: 다음 교체 시각에 맞춰 화면을 다시 그립니다.
@@ -401,7 +436,7 @@ export default function App() {
       else navigate(role === 'viewer' ? 'home' : 'studio');
       notify(roleLabel[role] + '로 로그인했어요.');
     } catch (e) {
-      notify((e as Error).message);
+      notify((e as Error).message, 'error');
     } finally {
       setBusy(false);
     }
@@ -414,7 +449,7 @@ export default function App() {
       navigate('home');
       notify('로그아웃했어요.');
     } catch (e) {
-      notify((e as Error).message);
+      notify((e as Error).message, 'error');
     }
   };
   const favorite = async (d: Drama) => {
@@ -428,7 +463,7 @@ export default function App() {
       await reloadLibrary();
       notify(active ? '내 찜 목록에 담았어요.' : '찜 목록에서 삭제했어요.');
     } catch (e) {
-      notify((e as Error).message);
+      notify((e as Error).message, 'error');
     }
   };
   const buy = (d: Purchase) => {
@@ -486,7 +521,7 @@ export default function App() {
       if (e instanceof ApiError && e.code === 'insufficient_pings') {
         await reloadLibrary();
         notify(e.message);
-      } else notify((e as Error).message);
+      } else notify((e as Error).message, 'error');
     } finally {
       setBusy(false);
     }
@@ -518,6 +553,8 @@ export default function App() {
   const hero = heroes[heroPos] || dramas[0];
   // 해시태그로도 찾을 수 있게 합니다. ‘#로맨스’처럼 #을 붙여 입력해도 됩니다.
   const needle = query.trim().toLowerCase().replace(/^#+/, '');
+  // 장르 칩: 기준표(server/genres.json) 순서로, 공개 작품이 있는 장르만 보여요.
+  const genres = ['전체', ...genresIn(dramas)];
   const filtered = dramas.filter(
     (d) =>
       (genre === '전체' || d.genre === genre) &&
@@ -529,12 +566,31 @@ export default function App() {
   const newestFiltered = [...filtered].sort(
     (a, b) => new Date(b.published_at || b.created_at).getTime() - new Date(a.published_at || a.created_at).getTime(),
   );
+  // 인기: 조회수 순. 추천: 조회수에 최근 공개 작품 가산점과 내가 보거나 찜한 장르 가산점을 더한 순서
+  const popularFiltered = [...filtered].sort((a, b) => Number(b.views) - Number(a.views));
+  const likedGenres = new Set(
+    [...lib.history.map((h) => h.drama_id), ...lib.favorites]
+      .map((id) => dramas.find((x) => x.id === id)?.genre)
+      .filter(Boolean) as string[],
+  );
+  const recommendScore = (d: Drama) => {
+    const days = (Date.now() - new Date(d.published_at || d.created_at).getTime()) / 86400000;
+    return (
+      Math.log10(Number(d.views || 0) + 10) +
+      (days < 14 ? 1.2 : days < 45 ? 0.5 : 0) +
+      (likedGenres.has(d.genre) ? 0.8 : 0) +
+      (lib.history.some((h) => h.drama_id === d.id) ? -1.5 : 0)
+    );
+  };
+  const recommendedFiltered = [...filtered].sort((a, b) => recommendScore(b) - recommendScore(a));
   const feedItems =
     feed === '신작'
       ? newestFiltered
       : feed === '완결'
         ? filtered.filter((d) => d.badge === '완결')
-        : filtered;
+        : feed === '인기'
+          ? popularFiltered
+          : recommendedFiltered;
   const newest = [...dramas].sort(
     (a, b) =>
       new Date(b.published_at || b.created_at).getTime() -
@@ -891,18 +947,22 @@ export default function App() {
                               ? '새로운 이야기, 새로운 설렘'
                               : feed === '완결'
                                 ? '기다림 없이, 정주행'
-                                : genre !== '전체'
+                                : feed === '인기'
+                                  ? genre !== '전체'
+                                    ? genre + ' 인기 순위'
+                                    : '많이 본 순서, 지금 인기작'
+                                  : genre !== '전체'
                                   ? genre + '에 빠져볼 시간'
-                                  : title('지금 가장 핫한 숏핑')
+                                  : title('나를 위한 추천 숏핑')
                           }
                           subtitle={subtitle()}
-                          eyebrow={feed === '추천' ? 'TRENDING NOW' : undefined}
+                          eyebrow={feed === '추천' ? 'PICKED FOR YOU' : feed === '인기' ? 'MOST WATCHED' : undefined}
                           icon={<Flame size={21} className="lime" />}
                           onMore={() => navigate(feed === '신작' ? 'explore/new' : feed === '완결' ? 'explore/complete' : 'explore')}
                         />
                         <div className="poster-grid">
                           {feedItems.slice(0, 4).map((d, i) => (
-                            <Poster key={d.id} d={d} rank={feed === '추천' || feed === '인기' ? i + 1 : undefined} />
+                            <Poster key={d.id} d={d} rank={feed === '인기' ? i + 1 : undefined} />
                           ))}
                         </div>
                         {feedItems.length === 0 && (
@@ -977,8 +1037,8 @@ export default function App() {
                     node = (
                       <section className="content-section">
                         <SectionTitle
-                          title={title('구독 중인 방송국의 새 소식')}
-                          subtitle={subtitle('내가 구독한 방송국의 작품')}
+                          title={title('팔로우한 방송국의 새 소식')}
+                          subtitle={subtitle('내가 팔로우한 방송국의 작품')}
                           onMore={() => navigate('channels')}
                         />
                         <div className="poster-row">
@@ -1209,6 +1269,7 @@ export default function App() {
                 </div>
               </div>
             )}
+            {route.page === 'reset' && <ResetPasswordPage notify={notify} />}
             {route.page === 'login' && (
               <LoginPage
                 demo={config.demo}
@@ -1378,7 +1439,7 @@ export default function App() {
                     <LibraryView lib={lib} dramas={dramas} />
                     <div className="section-heading">
                       <h3>
-                        구독 중인 방송국 <span className="lime">{followedChannels.length}</span>
+                        팔로우한 방송국 <span className="lime">{followedChannels.length}</span>
                       </h3>
                       <button onClick={() => navigate('channels')}>
                         방송국 더 보기 <ChevronRight size={14} />
@@ -1396,7 +1457,7 @@ export default function App() {
                             <div>
                               <strong>{c.name}</strong>
                               <span>
-                                작품 {c.drama_count}편 · 구독자 {count(c.followers)}
+                                작품 {c.drama_count}편 · 팔로워 {count(c.followers)}
                               </span>
                             </div>
                             <ChevronRight size={17} />
@@ -1405,7 +1466,7 @@ export default function App() {
                       </div>
                     ) : (
                       <p className="muted">
-                        마음에 드는 방송국을 구독하면 새 작품 소식을 여기에서 볼 수 있어요.
+                        마음에 드는 방송국을 팔로우하면 새 작품 소식을 여기에서 볼 수 있어요.
                       </p>
                     )}
                     <button className="studio-entry" onClick={() => navigate('settings')}>
@@ -1513,6 +1574,12 @@ export default function App() {
                     onUser={setUser}
                     notify={notify}
                     onHistoryCleared={reloadLibrary}
+                    onWithdrawn={() => {
+                      // 탈퇴 완료: 로그인 정보를 비우고 홈으로 보냅니다.
+                      setUser(null);
+                      setLib(emptyLibrary);
+                      navigate('home', { replace: true });
+                    }}
                   />
                 ) : (
                   <Empty
@@ -1572,6 +1639,7 @@ export default function App() {
               'channel',
               'membership',
               'login',
+              'reset',
               'my',
               'studio',
               'support',
@@ -1739,9 +1807,12 @@ export default function App() {
         </button>
       </aside>
       {toast && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {toast}
+        <div
+          className={'toast' + (toast.tone === 'error' ? ' toast-error' : '')}
+          role={toast.tone === 'error' ? 'alert' : 'status'}
+        >
+          {toast.tone === 'error' ? <CircleAlert size={17} /> : <Check size={17} />}
+          {toast.text}
         </div>
       )}
       {modal && (
@@ -1760,7 +1831,7 @@ export default function App() {
                   setModal(null);
                   notify('테스트 구독을 종료했어요.');
                 } catch (e) {
-                  notify((e as Error).message);
+                  notify((e as Error).message, 'error');
                 } finally {
                   setBusy(false);
                 }
@@ -1977,7 +2048,15 @@ export function Modal({
       [...(ref.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])].filter(
         (el) => !el.hidden && el.getAttribute('aria-hidden') !== 'true' && el.getClientRects().length > 0,
       );
-    focusables()?.[0]?.focus();
+    // 처음 초점은 닫기 버튼이 아니라 내용 안의 첫 조작 요소(지정한 요소 → 입력칸 → 버튼)로 보냅니다. 없으면 닫기 버튼.
+    const all = focusables();
+    const inBody = all.filter((el) => !el.closest('.modal-heading'));
+    const first =
+      inBody.find((el) => el.hasAttribute('autofocus') || el.dataset.autofocus !== undefined) ||
+      inBody.find((el) => /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) ||
+      inBody[0] ||
+      all[0];
+    first?.focus();
     const trap = (e: KeyboardEvent) => {
       if (modalStack.at(-1) !== token.current) return;
       if (e.key === 'Escape') {
@@ -2044,7 +2123,9 @@ function Footer({ info }: { info: (a: string, b: string) => void }) {
                 ? navigate('support')
                 : info(
                     t,
-                    '현재 로컬 개발 버전입니다. 정식 운영 전 사업자 정보와 서비스 정책을 확정하여 공개할 예정입니다. 이 화면의 작품과 결제는 기능 확인을 위한 데모입니다.',
+                    t === '이용약관'
+                      ? '숏핑 이용약관은 정식 서비스 시작과 함께 이곳에 공개돼요. 이용 중 궁금한 점은 고객센터로 문의해 주세요.'
+                      : '숏핑 개인정보 처리방침은 정식 서비스 시작과 함께 이곳에 공개돼요. 개인정보 관련 문의는 고객센터로 남겨 주세요.',
                   )
             }
           >
@@ -2054,6 +2135,88 @@ function Footer({ info }: { info: (a: string, b: string) => void }) {
       </div>
       <small>© 2026 Shortping. All rights reserved.</small>
     </footer>
+  );
+}
+// 비밀번호 재설정(메일의 링크 #/reset?token=… 로 들어옵니다)
+function ResetPasswordPage({ notify }: { notify: (s: string, tone?: ToastTone) => void }) {
+  const token = new URLSearchParams(location.hash.split('?')[1] || '').get('token') || '';
+  const [form, setForm] = useState({ password: '', confirm: '' }),
+    [busy, setBusy] = useState(false),
+    [done, setDone] = useState(false);
+  const valid = /^[a-f0-9]{64}$/.test(token);
+  return (
+    <div className="login-page">
+      <div className="login-emblem">
+        <img src="/icon.svg" alt="" />
+      </div>
+      <span className="eyebrow lime">RESET PASSWORD</span>
+      <h1>새 비밀번호 정하기</h1>
+      {!valid ? (
+        <>
+          <p>재설정 링크가 올바르지 않아요. 메일의 링크를 다시 눌러 주시거나 비밀번호 찾기를 다시 요청해 주세요.</p>
+          <button className="primary full" onClick={() => navigate('login', { replace: true })}>
+            로그인 화면으로
+          </button>
+        </>
+      ) : done ? (
+        <>
+          <p>비밀번호를 바꿨어요. 보안을 위해 모든 기기에서 로그아웃했으니 새 비밀번호로 로그인해 주세요.</p>
+          <button className="primary full" onClick={() => navigate('login', { replace: true })}>
+            로그인하기
+          </button>
+        </>
+      ) : (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (form.password !== form.confirm) {
+              notify('새 비밀번호 확인이 일치하지 않아요.', 'error');
+              return;
+            }
+            setBusy(true);
+            try {
+              await api('/auth/password-reset/confirm', 'POST', { token, password: form.password });
+              setDone(true);
+              notify('새 비밀번호로 바꿨어요.');
+            } catch (err) {
+              notify((err as Error).message, 'error');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <label>
+            새 비밀번호
+            <input
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              maxLength={128}
+              required
+              autoFocus
+              placeholder="8자 이상 입력해 주세요"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+            />
+          </label>
+          <label>
+            새 비밀번호 확인
+            <input
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              maxLength={128}
+              required
+              value={form.confirm}
+              onChange={(e) => setForm({ ...form, confirm: e.target.value })}
+            />
+          </label>
+          <button className="primary full" disabled={busy}>
+            {busy ? '바꾸는 중…' : '비밀번호 바꾸기'}
+          </button>
+        </form>
+      )}
+    </div>
   );
 }
 function LoginPage({
@@ -2069,10 +2232,64 @@ function LoginPage({
   busy: boolean;
   onLogin: (u: User) => void;
   info: (a: string, b: string) => void;
-  notify: (s: string) => void;
+  notify: (s: string, tone?: ToastTone) => void;
 }) {
   const [register, setRegister] = useState(false),
+    [forgot, setForgot] = useState(false),
+    [resetSent, setResetSent] = useState(''),
     [submitting, setSubmitting] = useState(false);
+  if (forgot)
+    return (
+      <div className="login-page">
+        <div className="login-emblem">
+          <img src="/icon.svg" alt="" />
+        </div>
+        <span className="eyebrow lime">FORGOT PASSWORD</span>
+        <h1>비밀번호를 잊으셨나요?</h1>
+        <p>가입한 이메일을 입력하면 새 비밀번호를 정할 수 있는 링크를 보내 드려요. 링크는 30분 동안 쓸 수 있어요.</p>
+        {resetSent ? (
+          <div className="info-box" role="status">
+            <ShieldCheck size={18} />
+            {resetSent}
+          </div>
+        ) : (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setSubmitting(true);
+              const f = new FormData(e.currentTarget);
+              try {
+                const r = await api<{ message: string }>('/auth/password-reset/request', 'POST', {
+                  email: String(f.get('email') || ''),
+                });
+                setResetSent(r.message);
+              } catch (err) {
+                notify((err as Error).message, 'error');
+              } finally {
+                setSubmitting(false);
+              }
+            }}
+          >
+            <label>
+              가입한 이메일
+              <input name="email" type="email" placeholder="hello@shortping.com" autoComplete="email" required autoFocus />
+            </label>
+            <button className="primary full" disabled={submitting}>
+              {submitting ? '보내는 중…' : '재설정 링크 받기'}
+            </button>
+          </form>
+        )}
+        <button
+          className="switch-auth"
+          onClick={() => {
+            setForgot(false);
+            setResetSent('');
+          }}
+        >
+          비밀번호가 생각났나요? <b>로그인</b>
+        </button>
+      </div>
+    );
   return (
     <div className="login-page">
       <div className="login-emblem">
@@ -2121,7 +2338,7 @@ function LoginPage({
             );
             onLogin(r.user);
           } catch (err) {
-            notify((err as Error).message);
+            notify((err as Error).message, 'error');
           } finally {
             setSubmitting(false);
           }
@@ -2170,6 +2387,11 @@ function LoginPage({
               : '이메일로 로그인'}
         </button>
       </form>
+      {!register && (
+        <button type="button" className="forgot-link" onClick={() => setForgot(true)}>
+          비밀번호를 잊으셨나요?
+        </button>
+      )}
       <button className="switch-auth" onClick={() => setRegister(!register)}>
         {register ? '이미 계정이 있나요?' : '아직 숏핑 계정이 없나요?'}{' '}
         <b>{register ? '로그인' : '회원가입'}</b>
@@ -2213,7 +2435,7 @@ function DramaPage({
   lib: Library;
   favorite: (d: Drama) => void;
   buy: (d: Purchase) => void;
-  notify: (s: string) => void;
+  notify: (s: string, tone?: ToastTone) => void;
   pass: number;
   onTag: (tag: string) => void;
 }) {
@@ -2443,7 +2665,7 @@ function WatchPage({
   lib: Library;
   buy: (d: Purchase) => void;
   favorite: (d: Drama) => void;
-  notify: (s: string) => void;
+  notify: (s: string, tone?: ToastTone) => void;
   reloadLibrary: () => Promise<void>;
   pass: number;
   setUser: (u: User) => void;
@@ -2487,7 +2709,7 @@ function WatchPage({
         notify(`자동 열기로 ${number}화에 ${pings(r.pings)}을 썼어요. 남은 핑 ${pings(r.wallet.total)}`);
         await reloadLibrary();
       })
-      .catch((e) => notify((e as Error).message))
+      .catch((e) => notify((e as Error).message, 'error'))
       .finally(() => setAutoBusy(false));
   }, [d, current, user, lib.wallet.total, number, notify, reloadLibrary]);
   const toggleAutoUnlock = async (enabled: boolean) => {
@@ -2499,7 +2721,7 @@ function WatchPage({
       setUser({ ...user, auto_unlock: enabled });
       notify(enabled ? '다음부터 잠긴 회차를 보유 핑으로 자동으로 열어요.' : '자동 열기를 껐어요.');
     } catch (e) {
-      notify((e as Error).message);
+      notify((e as Error).message, 'error');
     }
   };
   // 시청 위치 저장. keepalive 요청이라 화면을 떠나거나 탭을 닫는 중에도 전송됩니다.

@@ -139,7 +139,7 @@ svg {
   border-radius: 7px;
 }
 .eyebrow {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 1.7px;
   font-weight: 700;
   display: flex;
@@ -348,7 +348,7 @@ svg {
   margin: 20px 27px;
 }
 .hero-top > span:first-child {
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.6px;
   font-weight: 800;
   display: flex;
@@ -373,7 +373,7 @@ svg {
 }
 .hero-kicker {
   color: var(--lime);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.3px;
   font-weight: 600;
 }
@@ -449,7 +449,7 @@ svg {
   background: var(--lime);
 }
 .hero-pagination > span {
-  font-size: 9px;
+  font-size: 10px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -520,7 +520,7 @@ svg {
 }
 .section-eyebrow {
   display: block;
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.7px;
   color: #939a90;
   margin: 0 0 7px;
@@ -578,7 +578,7 @@ svg {
   margin-top: 9px;
 }
 .card-meta {
-  font-size: 9px;
+  font-size: 10px;
   color: #818b92;
   display: flex;
   align-items: center;
@@ -596,7 +596,7 @@ svg {
   position: absolute;
   top: 8px;
   left: 8px;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   background: #c4f562;
   color: #192312;
@@ -713,7 +713,7 @@ svg {
   flex: 1;
 }
 .membership-banner span {
-  font-size: 9px;
+  font-size: 10px;
   color: #bccbb0;
 }
 .membership-banner strong {
@@ -744,7 +744,7 @@ svg {
   padding: 23px 24px;
 }
 .editorial-banner > span {
-  font-size: 7px;
+  font-size: 10px;
   letter-spacing: 1.6px;
   color: #a5b5ac;
 }
@@ -780,17 +780,17 @@ footer .brand.small b {
   color: #99a0a3;
 }
 footer > p {
-  font-size: 9px;
+  font-size: 10px;
   margin: 10px 0 20px;
 }
 footer > div {
   display: flex;
   gap: 19px;
-  font-size: 9px;
+  font-size: 10px;
   margin-bottom: 12px;
 }
 footer > small {
-  font-size: 8px;
+  font-size: 10px;
   color: #535f66;
 }
 .bottom-nav {
@@ -816,7 +816,7 @@ footer > small {
   width: 90px;
 }
 .bottom-nav button span {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
 }
 .bottom-nav button.active {
@@ -845,7 +845,7 @@ footer > small {
   margin-top: 75px;
 }
 .rail-copy .eyebrow {
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.5px;
   color: #a3acac;
 }
@@ -946,7 +946,7 @@ footer > small {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.2px;
   background: #273333e6;
   border: 1px solid #71978052;
@@ -972,7 +972,7 @@ footer > small {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 9px;
+  font-size: 10px;
   color: #81918e;
   justify-content: center;
   margin-top: 20px;
@@ -985,7 +985,7 @@ footer > small {
 }
 .rail-copyright {
   display: block;
-  font-size: 7px;
+  font-size: 10px;
   letter-spacing: 0.7px;
   color: #455657;
   margin-top: 50px;
@@ -1000,7 +1000,7 @@ footer > small {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 6px;
+  font-size: 10px;
   letter-spacing: 1.15px;
   color: #809189;
 }
@@ -1062,7 +1062,7 @@ footer > small {
 }
 .store-button small {
   font-family: Arial, sans-serif;
-  font-size: 7px;
+  font-size: 10px;
   letter-spacing: 0.4px;
   color: #9baba8;
 }
@@ -1078,7 +1078,7 @@ footer > small {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 8px;
+  font-size: 10px;
   color: #6f8076;
   margin: 14px 0 0 8px;
 }
@@ -1120,11 +1120,11 @@ footer > small {
   color: #b2beb6;
 }
 .mini-benefit span {
-  font-size: 8px;
+  font-size: 10px;
   color: #697d74;
 }
 .pd-rail {
-  font-size: 9px;
+  font-size: 10px;
   gap: 33px;
   margin-top: 30px;
   color: #80958d;
@@ -1140,7 +1140,7 @@ footer > small {
   margin: 14px 0 28px;
 }
 .page-content > .eyebrow {
-  font-size: 8px;
+  font-size: 10px;
 }
 .search-field {
   height: 49px;
@@ -1733,7 +1733,7 @@ input[type='file'] {
   flex: 1;
 }
 .tag-outline {
-  font-size: 9px;
+  font-size: 10px;
   padding: 5px 8px;
   border: 1px solid #65784f;
   color: #c4f562;
@@ -1790,7 +1790,7 @@ input[type='file'] {
   color: #263914;
   padding: 6px 12px;
   border-radius: 6px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 .plan-card h2 {
@@ -1830,7 +1830,7 @@ input[type='file'] {
 .plan-card > small {
   display: block;
   text-align: center;
-  font-size: 9px;
+  font-size: 10px;
   color: #8e9e87;
   margin-top: 13px;
 }
@@ -1874,7 +1874,7 @@ details > p {
 }
 .login-page > .eyebrow {
   justify-content: center;
-  font-size: 8px;
+  font-size: 10px;
 }
 .login-page > h1 {
   font-size: 28px;
@@ -1911,7 +1911,7 @@ details > p {
 .social-logins span {
   position: absolute;
   right: 13px;
-  font-size: 8px;
+  font-size: 10px;
   opacity: 0.6;
   font-weight: 500;
 }
@@ -1935,7 +1935,7 @@ details > p {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 9px;
+  font-size: 10px;
   color: #7b8f82;
   margin: 29px 0;
 }
@@ -1973,7 +1973,7 @@ details > p {
   background: #c4f56204;
 }
 .test-login > span {
-  font-size: 7px;
+  font-size: 10px;
   letter-spacing: 1.6px;
   color: #879c76;
 }
@@ -1982,7 +1982,7 @@ details > p {
   margin-top: 9px;
 }
 .test-login > p {
-  font-size: 9px;
+  font-size: 10px;
   color: #82967f;
   margin-top: 9px;
 }
@@ -2000,7 +2000,7 @@ details > p {
   padding: 15px 4px;
   color: #bdcbb0;
   gap: 9px;
-  font-size: 9px;
+  font-size: 10px;
 }
 .test-login button:hover {
   background: #354a2d;
@@ -2039,7 +2039,7 @@ details > p {
   position: absolute;
   bottom: 88px;
   left: 30px;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 2px;
   color: #d7ddca;
 }
@@ -2056,7 +2056,7 @@ details > p {
   padding-top: 7px;
 }
 .detail-tag {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--lime);
 }
 .detail-body > h2 {
@@ -2176,7 +2176,7 @@ details > p {
   color: #839281;
 }
 .demo-footnote {
-  font-size: 9px;
+  font-size: 10px;
   color: #68776c;
   line-height: 1.8;
   margin: 23px 0 10px;
@@ -2225,7 +2225,7 @@ details > p {
   position: absolute;
   left: 20px;
   top: 18px;
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.7px;
   pointer-events: none;
   color: #fff9;
@@ -2349,7 +2349,7 @@ details > p {
   gap: 9px;
 }
 .role-badge {
-  font-size: 8px;
+  font-size: 10px;
   border-radius: 5px;
   background: #293623;
   padding: 5px 7px;
@@ -2451,7 +2451,7 @@ details > p {
   font-weight: 500;
 }
 .order-row span {
-  font-size: 9px;
+  font-size: 10px;
   color: #82947f;
 }
 .order-row > b {
@@ -2500,7 +2500,7 @@ details > p {
   font-size: 11px;
 }
 .continue-card span {
-  font-size: 9px;
+  font-size: 10px;
   color: #a6bc92;
 }
 .continue-card > svg {
@@ -2517,7 +2517,7 @@ details > p {
   margin-bottom: 24px;
 }
 .studio-header .eyebrow {
-  font-size: 8px;
+  font-size: 10px;
 }
 .studio-header h1 {
   font-size: 25px;
@@ -2568,7 +2568,7 @@ details > p {
   background: var(--lime);
 }
 .studio-tabs i {
-  font-size: 8px;
+  font-size: 10px;
   font-style: normal;
   background: var(--lime);
   color: #192613;
@@ -2605,7 +2605,7 @@ details > p {
   letter-spacing: -0.7px;
 }
 .stat-card > small {
-  font-size: 8px;
+  font-size: 10px;
   color: #788e78;
 }
 .studio-callout {
@@ -2629,7 +2629,7 @@ details > p {
   letter-spacing: -0.2px;
 }
 .studio-callout p {
-  font-size: 9px;
+  font-size: 10px;
   color: #9aaa8e;
   margin-top: 8px;
 }
@@ -2665,14 +2665,14 @@ details > p {
   letter-spacing: -0.4px;
 }
 .content-row p {
-  font-size: 9px;
+  font-size: 10px;
   color: #8b9c8e;
 }
 .content-row > svg {
   color: #728773;
 }
 .status {
-  font-size: 8px;
+  font-size: 10px;
   padding: 4px 6px;
   border-radius: 4px;
   background: #35402e;
@@ -2701,7 +2701,7 @@ details > p {
   margin: 17px 0;
 }
 .studio-filters button {
-  font-size: 9px;
+  font-size: 10px;
   padding: 7px 10px;
   border-radius: 6px;
   background: #202c25;
@@ -2732,7 +2732,7 @@ details > p {
 }
 .content-tools > button,
 .content-tools > span {
-  font-size: 9px;
+  font-size: 10px;
 }
 .review-note {
   font-size: 10px;
@@ -2763,7 +2763,7 @@ details > p {
   flex: 1;
 }
 .audit-row > small {
-  font-size: 8px;
+  font-size: 10px;
   color: #708572;
 }
 .user-row {
@@ -2799,7 +2799,7 @@ details > p {
   color: #849986;
 }
 .user-row small {
-  font-size: 8px;
+  font-size: 10px;
   color: #a6bfa0;
 }
 .poster-picker {
@@ -2858,7 +2858,7 @@ details > p {
   font-size: 13px;
 }
 .video-drop small {
-  font-size: 9px;
+  font-size: 10px;
   color: #869c7a;
 }
 .registered-episodes {
@@ -2881,7 +2881,7 @@ details > p {
   flex: 1;
 }
 .registered-episodes small {
-  font-size: 9px;
+  font-size: 10px;
   color: #8da181;
 }
 .fatal {
@@ -2964,7 +2964,7 @@ details > p {
     font-size: 10px;
   }
   .rail-copy .eyebrow {
-    font-size: 6px;
+    font-size: 10px;
     letter-spacing: 1px;
   }
   .rail-art {
@@ -2975,12 +2975,12 @@ details > p {
     height: 276px;
   }
   .rail-caption {
-    font-size: 8px;
+    font-size: 10px;
     justify-content: flex-start;
     margin-top: 3px;
   }
   .rail-copyright {
-    font-size: 6px;
+    font-size: 10px;
     margin-top: 35px;
   }
   .right-rail {
@@ -2995,7 +2995,7 @@ details > p {
     width: 203px;
   }
   .mini-label {
-    font-size: 5px;
+    font-size: 10px;
   }
 }
 @media (max-width: 1190px) {
@@ -3089,7 +3089,7 @@ details > p {
     right: 23px;
   }
   .hero-kicker {
-    font-size: 8px;
+    font-size: 10px;
   }
   .hero-shade {
     background:
@@ -3116,10 +3116,10 @@ details > p {
     letter-spacing: -0.6px;
   }
   .section-heading > button {
-    font-size: 9px;
+    font-size: 10px;
   }
   .section-eyebrow {
-    font-size: 7px;
+    font-size: 10px;
     margin-bottom: 7px;
   }
   .poster-grid {
@@ -3142,7 +3142,7 @@ details > p {
     font-size: 10px;
   }
   .card-meta {
-    font-size: 8px;
+    font-size: 10px;
     gap: 4px;
   }
   .poster-title {
@@ -3160,7 +3160,7 @@ details > p {
     font-size: 21px;
   }
   .badge {
-    font-size: 7px;
+    font-size: 10px;
     padding: 3px 5px;
     top: 7px;
     left: 6px;
@@ -3185,7 +3185,7 @@ details > p {
     letter-spacing: -0.3px;
   }
   .membership-banner span {
-    font-size: 8px;
+    font-size: 10px;
   }
   .banner-icon {
     height: 33px;
@@ -3228,7 +3228,7 @@ details > p {
     font-size: 4px;
   }
   .explore-grid .card-meta {
-    font-size: 8px;
+    font-size: 10px;
   }
   .explore-grid .poster-card > strong {
     font-size: 10px;
@@ -3276,7 +3276,7 @@ details > p {
     font-size: 16px;
   }
   .detail-meta {
-    font-size: 9px;
+    font-size: 10px;
     gap: 8px;
   }
   .episode-grid {
@@ -3326,7 +3326,7 @@ details > p {
     font-size: 22px;
   }
   .studio-header p {
-    font-size: 9px;
+    font-size: 10px;
   }
   .studio-avatar {
     width: 44px;
@@ -3334,7 +3334,7 @@ details > p {
     border-radius: 13px;
   }
   .studio-tabs > button {
-    font-size: 9px;
+    font-size: 10px;
     padding: 15px 7px;
     gap: 5px;
   }
@@ -3351,7 +3351,7 @@ details > p {
     font-size: 23px;
   }
   .stat-card > small {
-    font-size: 7px;
+    font-size: 10px;
   }
   .studio-callout {
     padding: 17px 13px;
@@ -3364,11 +3364,11 @@ details > p {
     font-size: 11px;
   }
   .studio-callout p {
-    font-size: 8px;
+    font-size: 10px;
     line-height: 1.6;
   }
   .studio-callout .primary {
-    font-size: 9px;
+    font-size: 10px;
     padding: 9px;
   }
   .continue-section {
@@ -3384,10 +3384,10 @@ details > p {
     border-radius: 15px;
   }
   .role-badge {
-    font-size: 7px;
+    font-size: 10px;
   }
   .profile-card p {
-    font-size: 9px;
+    font-size: 10px;
   }
   .toast {
     font-size: 11px;
@@ -3526,11 +3526,12 @@ details > p {
     font-size: 12px;
   }
   .feed-tabs .original-tab {
-    font-size: 9px;
+    font-size: 10px;
   }
   .site-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 620px) 240px;
+    /* 좌우 열을 같은 1fr로 맞춰 가운데 앱 화면이 정확히 화면 중앙에 오도록 */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 620px) minmax(240px, 1fr);
     gap: 30px;
     max-width: 1440px;
     padding: 0 32px;
@@ -3559,7 +3560,8 @@ details > p {
     position: sticky;
     grid-column: 3;
     grid-row: 1;
-    width: 100%;
+    width: 240px;
+    justify-self: start;
     left: auto;
     top: 28px;
     max-height: calc(100dvh - 48px);
@@ -3585,7 +3587,7 @@ details > p {
     font-size: 10px;
   }
   .left-rail .rail-copy .eyebrow {
-    font-size: 6px;
+    font-size: 10px;
     letter-spacing: 0.8px;
   }
   .left-rail .rail-art {
@@ -3596,10 +3598,10 @@ details > p {
   }
   .left-rail .rail-caption {
     justify-content: flex-start;
-    font-size: 8px;
+    font-size: 10px;
   }
   .left-rail .rail-copyright {
-    font-size: 6px;
+    font-size: 10px;
     margin-top: 25px;
   }
   .right-rail .app-intro {
@@ -3643,14 +3645,14 @@ details > p {
     font-size: 13px;
   }
   .right-rail .store-button small {
-    font-size: 7px;
+    font-size: 10px;
   }
   .right-rail .store-button > svg {
     width: 19px;
     height: 19px;
   }
   .right-rail .coming-soon {
-    font-size: 8px;
+    font-size: 10px;
     margin: 12px 0 0;
   }
   .right-rail .right-divider,
@@ -3660,19 +3662,20 @@ details > p {
   }
 }
 @media (min-width: 1000px) and (max-width: 1199px) {
+  /* 왼쪽 문구는 숨기되 빈 왼쪽 열을 남겨 앱 화면이 최대한 중앙에 오도록.
+     공간이 부족하면 오른쪽 메뉴(최소 240px)를 지키면서 필요한 만큼만 왼쪽으로 비킨다. */
   .site-layout {
-    grid-template-columns: minmax(0, 620px) 240px;
-    justify-content: center;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 620px) minmax(240px, 1fr);
     padding: 0 28px;
   }
   .site-layout > .left-rail {
     display: none;
   }
   .site-layout > .app-shell {
-    grid-column: 1;
+    grid-column: 2;
   }
   .site-layout > .right-rail {
-    grid-column: 2;
+    grid-column: 3;
   }
 }
 @media (max-width: 999px) {
@@ -3746,7 +3749,7 @@ details > p {
 }
 .management-topbar > a > span:last-child {
   color: #70847b;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 2px;
   border-left: 1px solid #34423c;
   padding-left: 24px;
@@ -3761,7 +3764,7 @@ details > p {
   color: #bcda8e;
   border-radius: 20px;
   padding: 6px 10px;
-  font-size: 9px;
+  font-size: 10px;
   white-space: nowrap;
 }
 .management-sidebar {
@@ -3799,7 +3802,7 @@ details > p {
   color: #86988c;
 }
 .sidebar-caption {
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.5px;
   color: #647c70;
   padding: 0 12px 12px;
@@ -3825,7 +3828,7 @@ details > p {
   text-align: left;
 }
 .management-sidebar nav i {
-  font-size: 9px;
+  font-size: 10px;
   font-style: normal;
   border-radius: 5px;
   padding: 2px 5px;
@@ -3877,7 +3880,7 @@ details > p {
   line-height: 1.8;
 }
 .management-layout .studio-header .eyebrow {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 2px;
 }
 .management-layout .stats-grid:not(.two) {
@@ -3952,7 +3955,7 @@ details > p {
 }
 .panel-heading .eyebrow {
   color: #85998d;
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.5px;
 }
 .panel-heading > strong {
@@ -3979,12 +3982,12 @@ details > p {
   gap: 8px;
 }
 .chart-column small {
-  font-size: 8px;
+  font-size: 10px;
   color: #a6b9a9;
   white-space: nowrap;
 }
 .chart-column > span {
-  font-size: 9px;
+  font-size: 10px;
   color: #819688;
 }
 .chart-track {
@@ -4144,7 +4147,7 @@ details > p {
 .management-table td small {
   display: block;
   color: #6f8978;
-  font-size: 9px;
+  font-size: 10px;
   overflow-wrap: anywhere;
 }
 .nowrap {
@@ -4154,7 +4157,7 @@ details > p {
   display: inline-flex;
   padding: 3px 8px;
   border-radius: 5px;
-  font-size: 9px;
+  font-size: 10px;
   color: #c3e595;
   background: #c4f56212;
   white-space: nowrap;
@@ -4418,7 +4421,7 @@ details > p {
 }
 .support-ticket summary small {
   display: block;
-  font-size: 9px;
+  font-size: 10px;
   color: #849b88;
   margin-top: 8px;
 }
@@ -4444,7 +4447,7 @@ details > p {
   color: #c9e3a5;
 }
 .ticket-reply small {
-  font-size: 9px;
+  font-size: 10px;
   color: #7b937e;
 }
 .ticket-content form {
@@ -4554,7 +4557,7 @@ details > p {
   }
   .left-rail .rail-copy .eyebrow {
     color: var(--copy-eyebrow, #dbe8de);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.25px;
   }
@@ -4563,7 +4566,7 @@ details > p {
   }
   .left-rail .rail-copyright {
     color: var(--copy-copyright, #c7d4cb);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 1px;
     text-shadow: 0 1px 12px #000;
   }
@@ -4652,7 +4655,7 @@ details > p {
 }
 .home-theme-card small {
   color: #81938a;
-  font-size: 9px;
+  font-size: 10px;
 }
 .home-theme-card > i {
   position: absolute;
@@ -4881,10 +4884,10 @@ details > p {
 }
 .sidebar-profile-details small {
   color: #b3ca9d;
-  font-size: 9px;
+  font-size: 10px;
 }
 .sidebar-profile-details > span {
-  font-size: 8px;
+  font-size: 10px;
   color: #789080;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4969,7 +4972,7 @@ details > p {
   white-space: nowrap;
 }
 .channel-chip span {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--muted);
 }
 .channel-more-icon {
@@ -5416,7 +5419,7 @@ details > p {
   font-size: 12px;
 }
 .theme-picker small {
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--muted);
   line-height: 1.6;
 }
@@ -5456,6 +5459,32 @@ details > p {
 }
 .category-chips > span button {
   color: #7f9589;
+}
+.category-presets {
+  margin: 0 0 12px;
+}
+.category-presets > small {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  color: #7f9589;
+}
+.category-presets > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.category-presets .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-style: dashed;
+  color: #aebdb3;
+}
+.category-presets .chip:hover:not(:disabled) {
+  border-color: var(--lime);
+  border-style: solid;
+  color: var(--lime);
 }
 .inline-form {
   display: flex;
@@ -5513,7 +5542,7 @@ details > p {
   margin-bottom: 10px;
 }
 .shelf-select {
-  font-size: 9.5px;
+  font-size: 10px;
   color: #7f9589;
   margin: 0;
 }
@@ -5571,7 +5600,7 @@ details > p {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 9px;
+  font-size: 10px;
   color: #8fa294;
   margin-bottom: 8px;
 }
@@ -5601,7 +5630,7 @@ details > p {
   border-color: #3d5344;
 }
 .order-kind {
-  font-size: 9px;
+  font-size: 10px;
   padding: 2px 6px;
   border-radius: 5px;
   margin-right: 6px;
@@ -5706,7 +5735,7 @@ details > p {
 }
 .overview-tiles span {
   display: block;
-  font-size: 9.5px;
+  font-size: 10px;
   color: #8fa294;
   margin-bottom: 7px;
 }
@@ -5716,7 +5745,7 @@ details > p {
 }
 .overview-tiles small {
   display: block;
-  font-size: 9.5px;
+  font-size: 10px;
   color: #7f9589;
   margin-top: 5px;
   line-height: 1.6;
@@ -5737,7 +5766,7 @@ details > p {
   margin-bottom: 14px;
 }
 .sidebar-group-label {
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1.3px;
   color: #5f7468;
   padding: 6px 12px 4px;
@@ -5762,7 +5791,7 @@ details > p {
 }
 .calendar-head {
   text-align: center;
-  font-size: 9px;
+  font-size: 10px;
   color: #7f9589;
   padding-bottom: 5px;
 }
@@ -5777,7 +5806,7 @@ details > p {
   justify-content: flex-start;
   gap: 2px;
   padding: 6px;
-  font-size: 9px;
+  font-size: 10px;
   color: #93a79a;
   overflow: hidden;
 }
@@ -5789,7 +5818,7 @@ details > p {
   color: #cfe0d3;
 }
 .calendar-cell span {
-  font-size: 8.5px;
+  font-size: 10px;
   font-weight: 600;
   color: #e4f7c2;
   overflow: hidden;
@@ -5798,7 +5827,7 @@ details > p {
   max-width: 100%;
 }
 .calendar-cell small {
-  font-size: 8px;
+  font-size: 10px;
   color: #7f9589;
 }
 .calendar-cell.has {
@@ -5953,7 +5982,7 @@ details > p {
 }
 .member-tabs i {
   font-style: normal;
-  font-size: 9px;
+  font-size: 10px;
   color: #7f9589;
 }
 .member-row {
@@ -6029,7 +6058,7 @@ details > p {
   text-decoration: none;
 }
 .role-chip {
-  font-size: 9px;
+  font-size: 10px;
   padding: 3px 7px;
   border-radius: 5px;
   background: #ffffff0a;
@@ -6079,7 +6108,7 @@ details > p {
 }
 .detail-grid span {
   display: block;
-  font-size: 9px;
+  font-size: 10px;
   color: #8fa294;
   margin-bottom: 6px;
 }
@@ -6127,7 +6156,7 @@ details > p {
   color: #dde8da;
 }
 .detail-list li small {
-  font-size: 9px;
+  font-size: 10px;
   color: #7f9589;
   white-space: nowrap;
 }
@@ -6168,7 +6197,7 @@ details > p {
     padding: 4px;
   }
   .calendar-cell span {
-    font-size: 7.5px;
+    font-size: 10px;
   }
 }
 
@@ -6254,7 +6283,7 @@ details > p {
 }
 .channel-banner-picker small {
   display: block;
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--muted);
   padding: 0 12px 11px;
 }
@@ -6413,7 +6442,7 @@ details > p {
   border-radius: 999px;
   background: var(--lime);
   color: #111519;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
 }
 .ping-ledger {
@@ -6452,7 +6481,7 @@ details > p {
 }
 .ledger-type {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: 10px;
   padding: 3px 7px;
   border-radius: 5px;
   background: #ffffff0d;
@@ -6535,7 +6564,7 @@ details > p {
   accent-color: var(--lime);
 }
 .rate-input {
-  width: 90px;
+  width: 108px;
   padding: 8px 10px !important;
   margin-top: 0 !important;
 }
@@ -6687,7 +6716,7 @@ small.sale-value {
 }
 .source-chip {
   display: inline-block;
-  font-size: 9px;
+  font-size: 10px;
   padding: 2px 7px;
   border-radius: 999px;
   background: #ffffff10;
@@ -8178,7 +8207,7 @@ small.sale-value {
   background: #f5c2620d;
   color: #f5d38e;
 }
-.bulk-bar {
+.model-bulk-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -8190,11 +8219,11 @@ small.sale-value {
   background: #ffffff05;
   border: 1px solid var(--border);
 }
-.bulk-bar > span {
+.model-bulk-bar > span {
   color: #b8c0c4;
   margin-right: auto;
 }
-.bulk-bar label {
+.model-bulk-bar label {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
@@ -8202,8 +8231,16 @@ small.sale-value {
   margin: 0;
   font-size: 12px;
 }
-.bulk-bar input {
-  width: 72px;
+.model-bulk-bar input {
+  width: 96px;
+  margin: 0;
+}
+.model-bulk-bar label {
+  white-space: nowrap;
+}
+.model-bulk-bar select {
+  width: auto;
+  min-width: 150px;
   margin: 0;
 }
 .cn-badge {
@@ -8213,7 +8250,7 @@ small.sale-value {
   border-radius: 4px;
   background: #ff7a7a1a;
   color: #ffb0b0 !important;
-  font-size: 9px !important;
+  font-size: 10px !important;
 }
 label.search-field {
   flex-direction: row;
@@ -8501,4 +8538,243 @@ label.search-field {
 }
 .policy-group input[type="range"] {
   accent-color: #c4f562;
+}
+
+/* ── 계정·운영 고도화(2026-09-29) ───────────────────────────────── */
+/* 오류 알림 띠: 느낌표 아이콘과 붉은 테두리 */
+.toast.toast-error {
+  border-color: #ff8a8a66;
+  background: #3a2224f5;
+  color: #ffe1e1;
+}
+.toast.toast-error svg {
+  color: #ff9a9a;
+}
+/* 창(모달)은 화면 높이의 90%를 넘지 않고 안쪽에서 스크롤(휴대폰 주소창 높이까지 고려한 dvh) */
+.modal {
+  max-height: 90vh;
+  max-height: 90dvh;
+  overscroll-behavior: contain;
+}
+/* 마이페이지 바로가기: 개수(5개)에 맞춰 한 줄로, 좁은 화면에서는 자연스럽게 줄바꿈 */
+.my-shortcuts {
+  grid-template-columns: repeat(auto-fit, minmax(62px, 1fr));
+}
+.my-shortcuts button {
+  min-height: 64px;
+  text-align: center;
+  word-break: keep-all;
+}
+/* 위험한 작업 버튼(탈퇴·확인 창의 위험 작업) */
+button.danger {
+  min-height: 46px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  border: 1px solid #7a3236;
+  background: #3a1d20;
+  color: #ffb8b8;
+  font-size: 13px;
+  font-weight: 700;
+}
+button.danger:hover {
+  background: #4a2226;
+  color: #ffd0d0;
+}
+.danger-zone {
+  border-color: #5a2b2e !important;
+}
+.danger-zone h2 {
+  color: #ffb8b8;
+}
+.withdraw-list {
+  margin: 0 0 16px;
+  padding: 12px 14px 12px 30px;
+  border-radius: 10px;
+  background: #ffffff08;
+  font-size: 12px;
+  line-height: 1.8;
+  color: #d6ded8;
+}
+.withdraw-list.danger {
+  background: #3a1d2080;
+  color: #ffc4c4;
+}
+.withdraw-modal textarea {
+  min-height: 70px;
+}
+/* 로그인: 비밀번호 찾기 */
+.forgot-link {
+  display: flex;
+  margin: 14px auto 0;
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: #b2c5aa;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+/* 휴대폰 인증: 입력칸 + 버튼 한 줄 */
+.phone-verify {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.phone-verify label {
+  flex: 1;
+}
+.phone-verify > button {
+  margin-bottom: 14px;
+  white-space: nowrap;
+}
+/* 관리자: 운영 점검 경고 */
+.readiness-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  margin-top: 10px;
+  border-radius: 10px;
+  border: 1px solid #3c463f;
+  background: #ffffff06;
+}
+.readiness-item strong {
+  font-size: 13px;
+}
+.readiness-item p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #aeb9b2;
+}
+.readiness-item.danger {
+  border-color: #7a3236;
+  background: #3a1d2055;
+}
+.readiness-item.danger svg {
+  color: #ff9a9a;
+}
+.readiness-item.warning svg {
+  color: #ffd66b;
+}
+.readiness-item svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.reveal-account {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.reveal-account .text-link {
+  margin-top: 0;
+  min-height: 32px;
+}
+.subscription-override {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #ffffff12;
+}
+.subscription-override h4 {
+  margin: 0 0 4px;
+}
+/* 터치 영역: 아이콘만 있는 버튼은 최소 40×40px(시청자·관리자 화면) */
+.app-header .header-actions > button,
+.modal-heading > button,
+.profile-card > button,
+.rail-account-card > button:last-child,
+.management-topbar .menu-toggle,
+.viewer-bell-button {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+/* 돋보기 아이콘이 붙은 검색창: 안쪽 입력칸에 따로 테두리를 그리지 않고,
+   바깥 상자 테두리만 연두색으로 바뀌게 해요(이중 테두리 방지). */
+.creator-search input:focus,
+.management-search input:focus,
+.home-picker-search input:focus,
+.search-field input:focus {
+  outline: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+.creator-search:focus-within,
+.management-search:focus-within,
+.home-picker-search:focus-within,
+.search-field:focus-within {
+  border-color: var(--lime);
+}
+
+/* ── 숫자 입력칸: 기본 위/아래 화살표 대신 앱 디자인 버튼(NumberInput) ── */
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.num-field {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.num-field > input {
+  padding-right: 36px !important;
+}
+.num-steps {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  right: 5px;
+  width: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.num-steps button {
+  flex: 1 1 0;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: #ffffff0a;
+  color: #9fb0a5;
+  box-shadow: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.num-steps button:hover:not(:disabled) {
+  background: #c4f56220;
+  color: var(--lime);
+}
+.num-steps button:active:not(:disabled) {
+  background: #c4f5623a;
+  color: var(--lime);
+}
+.num-steps button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.num-field:focus-within .num-steps button {
+  color: #c9d8cd;
+}
+@media (max-width: 760px) {
+  .num-steps {
+    width: 28px;
+  }
+  .num-field > input {
+    padding-right: 40px !important;
+  }
 }

@@ -15,7 +15,7 @@ import { kstLabel, useSerialToast } from './EpisodeStatus';
 import './serial.css';
 import { asset } from '../platform';
 
-// 관리자 · 회차 검수: 이미 공개된 작품에 새로 올라온 회차를 하나씩 확인하고 승인·반려합니다.
+// 관리자 · 회차 심사: 이미 공개된 작품에 새로 올라온 회차를 하나씩 확인하고 승인·반려합니다.
 export type ReviewEpisode = {
   id: string;
   drama_id: string;
@@ -121,10 +121,10 @@ export default function EpisodeReviewQueue({
           </button>
         </p>
       )}
-      {!items && !error && <p className="muted">회차 검수 목록을 불러오는 중…</p>}
+      {!items && !error && <p className="muted">회차 심사 목록을 불러오는 중…</p>}
       {items && !items.length && (
         <p className="muted serial-empty">
-          검수를 기다리는 회차가 없어요. 공개된 작품에 새 회차가 올라오면 여기에 보여요.
+          심사를 기다리는 회차가 없어요. 공개된 작품에 새 회차가 올라오면 여기에 보여요.
         </p>
       )}
       <div className="serial-queue">
@@ -283,7 +283,7 @@ export default function EpisodeReviewQueue({
     return (
       <div className="serial-embedded">
         <h3>
-          <Film size={16} /> 회차 검수 <span className="serial-count">{items?.length ?? 0}</span>
+          <Film size={16} /> 회차 심사 <span className="serial-count">{items?.length ?? 0}</span>
         </h3>
         <p className="muted">
           공개 중인 작품에 새로 올라온 회차예요. 회차마다 영상을 확인하고 승인하거나 반려해 주세요.
@@ -297,7 +297,7 @@ export default function EpisodeReviewQueue({
         <div>
           <span className="eyebrow">EPISODE REVIEW</span>
           <h3>
-            회차 검수 <span className="serial-count">{items?.length ?? 0}</span>
+            회차 심사 <span className="serial-count">{items?.length ?? 0}</span>
           </h3>
           <p>연재 중인 작품의 새 회차예요. 승인하면 바로(예약이 있으면 예약한 시각에) 공개돼요.</p>
         </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
   Clapperboard,
@@ -46,6 +46,9 @@ import {
 import { Empty, Modal } from './App';
 import { useConfirm } from './confirm';
 import { asset } from './platform';
+import NumberInput from './NumberInput';
+// 품질 시험(6단계)은 처음 열 때만 불러와요.
+const AdminAiQuality = lazy(() => import('./AdminAiQuality'));
 
 // 슈퍼관리자 · AI 연결 관리: 공급사(중국 포함)와 API 키, 모델·가격·자동 선택 규칙, 비용 한도, 작업 모니터
 type Tab =
@@ -59,13 +62,15 @@ type Tab =
   | 'jobs'
   | 'projects'
   | 'limits'
-  | 'safety';
+  | 'safety'
+  | 'quality';
 const tabs: { id: Tab; name: string; icon: typeof Cpu }[] = [
   { id: 'readiness', name: '연결 준비', icon: ShieldCheck },
   { id: 'overview', name: '사용 현황', icon: Activity },
   { id: 'providers', name: 'AI 공급사 · API 키', icon: KeyRound },
   { id: 'models', name: '모델 · 가격', icon: Cpu },
   { id: 'matrix', name: '모델 능력표', icon: Activity },
+  { id: 'quality', name: '품질 시험', icon: ShieldCheck },
   { id: 'routes', name: '라우팅 규칙', icon: Route },
   { id: 'policy', name: '비용 한도 · 정책', icon: Settings2 },
   { id: 'jobs', name: '작업 모니터', icon: Plug },
@@ -149,6 +154,11 @@ export default function AdminAiPanel({ notify }: { notify: (s: string) => void }
       {tab === 'routes' && <RoutesTab data={data} busy={busy} run={run} />}
       {tab === 'projects' && <ProjectsTab />}
       {tab === 'safety' && <SafetyTab />}
+      {tab === 'quality' && (
+        <Suspense fallback={<div className="loading"><span className="spinner" /></div>}>
+          <AdminAiQuality notify={notify} goPolicy={() => setTab('policy')} />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -609,8 +619,7 @@ function Providers({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run
             <div className="form-columns">
               <label>
                 동시 작업 수 (0 = 제한 없음)
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   max={100}
                   value={editing.max_concurrency ?? 0}
@@ -621,8 +630,7 @@ function Providers({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run
               </label>
               <label>
                 월 원가 한도 (원 · 0 = 무제한)
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   value={editing.monthly_budget_won ?? 0}
                   onChange={(e) =>
@@ -752,7 +760,7 @@ function Models({
           </span>
         </div>
       )}
-      <div className="member-tabs">
+      <div className="member-tabs cap-tabs">
         {(['all', ...ADMIN_CAPS] as const).map((c) => (
           <button key={c} className={cap === c ? 'active' : ''} onClick={() => setCap(c)}>
             {c === 'all' ? '전체' : capLabel(c, data.capabilities)}
@@ -764,79 +772,82 @@ function Models({
           </button>
         ))}
       </div>
-      <div className="bulk-bar">
-        <label>
-          일괄 조정
-          <select
-            aria-label="가격 일괄 조정 작업"
-            value={cap}
-            onChange={(e) => setCap(e.target.value as AdminCap | 'all')}
+      <div className="model-bulk-bar">
+        <div className="bulk-group">
+          <label>
+            일괄 조정
+            <select
+              aria-label="가격 일괄 조정 작업"
+              value={cap}
+              onChange={(e) => setCap(e.target.value as AdminCap | 'all')}
+            >
+              <option value="all">전체 모델</option>
+              {ADMIN_CAPS.map((c) => (
+                <option key={c} value={c}>
+                  {capLabel(c, data.capabilities)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="secondary compact"
+            disabled={busy}
+            onClick={async () => {
+              // 새 기능(가격 필수) 모델의 고정 단가를 지우면 PD에게 다시 ‘준비 중’으로 닫혀요.
+              const closing = cap === 'all' || PRICE_REQUIRED.includes(cap);
+              if (
+                closing &&
+                !(await ask({
+                  title: '자동 계산으로 되돌릴까요?',
+                  text:
+                    (cap === 'all' ? '전체 모델의' : `${capLabel(cap, data.capabilities)} 모델의`) +
+                    ' 고정 단가를 지워요. 배경음악·효과음·입 모양 맞추기 모델은 가격이 없어지면 PD에게 ‘준비 중’으로 닫혀요.',
+                  ok: '자동 계산으로',
+                  danger: true,
+                }))
+              )
+                return;
+              void run(
+                () => api('/admin/ai/models/bulk', 'POST', { action: 'auto', capability: cap }),
+                '고정 단가를 지우고 자동 계산으로 되돌렸어요.',
+              );
+            }}
           >
-            <option value="all">전체 모델</option>
-            {ADMIN_CAPS.map((c) => (
-              <option key={c} value={c}>
-                {capLabel(c, data.capabilities)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          className="secondary compact"
-          disabled={busy}
-          onClick={async () => {
-            // 새 기능(가격 필수) 모델의 고정 단가를 지우면 PD에게 다시 ‘준비 중’으로 닫혀요.
-            const closing = cap === 'all' || PRICE_REQUIRED.includes(cap);
-            if (
-              closing &&
-              !(await ask({
-                title: '자동 계산으로 되돌릴까요?',
-                text:
-                  (cap === 'all' ? '전체 모델의' : `${capLabel(cap, data.capabilities)} 모델의`) +
-                  ' 고정 단가를 지워요. 배경음악·효과음·입 모양 맞추기 모델은 가격이 없어지면 PD에게 ‘준비 중’으로 닫혀요.',
-                ok: '자동 계산으로',
-                danger: true,
-              }))
-            )
-              return;
-            void run(
-              () => api('/admin/ai/models/bulk', 'POST', { action: 'auto', capability: cap }),
-              '고정 단가를 지우고 자동 계산으로 되돌렸어요.',
-            );
-          }}
-        >
-          자동 계산으로
-        </button>
-        <label>
-          현재 가격 ×
-          <input
-            type="number"
-            step="0.05"
-            min={0.1}
-            max={10}
-            value={factor}
-            onChange={(e) => setFactor(e.target.value)}
-          />
-        </label>
-        <button
-          className="secondary compact"
-          disabled={busy || !(Number(factor) >= 0.1 && Number(factor) <= 10)}
-          onClick={() =>
-            void run(
-              () =>
-                api('/admin/ai/models/bulk', 'POST', {
-                  action: 'multiply',
-                  factor: Number(factor),
-                  capability: cap,
-                }),
-              `라마 가격을 ${factor}배로 고정했어요.`,
-            )
-          }
-        >
-          배율 적용
-        </button>
+            자동 계산으로
+          </button>
+        </div>
+        <div className="bulk-group">
+          <label>
+            현재 가격 ×
+            <NumberInput
+              step="0.05"
+              min={0.1}
+              max={10}
+              value={factor}
+              onChange={(e) => setFactor(e.target.value)}
+            />
+          </label>
+          <button
+            className="secondary compact"
+            disabled={busy || !(Number(factor) >= 0.1 && Number(factor) <= 10)}
+            onClick={() =>
+              void run(
+                () =>
+                  api('/admin/ai/models/bulk', 'POST', {
+                    action: 'multiply',
+                    factor: Number(factor),
+                    capability: cap,
+                  }),
+                `라마 가격을 ${factor}배로 고정했어요.`,
+              )
+            }
+          >
+            배율 적용
+          </button>
+        </div>
       </div>
       <div className="table-scroll">
-        <table className="management-table">
+        <table className="management-table model-table">
           <thead>
             <tr>
               <th>모델</th>
@@ -887,13 +898,15 @@ function Models({
                   <button
                     className="secondary compact"
                     onClick={() => setTrying(m)}
-                    disabled={m.capability === 'stt' || (m.capability as AdminCap) === 'lipsync'}
+                    disabled={m.capability === 'stt' || ['lipsync', 'upscale', 'upscale_video'].includes(m.capability as AdminCap)}
                     title={
                       m.capability === 'stt'
                         ? '음성 인식 모델은 업로드 영상 자막 만들기에서 시험해 주세요.'
                         : (m.capability as AdminCap) === 'lipsync'
                           ? '입 모양 맞추기는 영상과 음성이 필요해 스튜디오 컷에서 시험해 주세요.'
-                          : undefined
+                          : ['upscale', 'upscale_video'].includes(m.capability as AdminCap)
+                            ? '화질 올리기는 원본 이미지·영상이 필요해 스튜디오 컷에서 시험해 주세요.'
+                            : undefined
                     }
                   >
                     시험
@@ -1047,8 +1060,7 @@ function Models({
               </label>
               <label>
                 원가 USD / {unitLabel[capUnit[editing.capability]]}
-                <input
-                  type="number"
+                <NumberInput
                   step="0.0001"
                   min={0}
                   value={editing.cost_usd}
@@ -1059,8 +1071,7 @@ function Models({
                 {PRICE_REQUIRED.includes(editing.capability)
                   ? `고정 라마 단가 (필수 · ${unitLabel[capUnit[editing.capability]]}당)`
                   : '고정 라마 단가 (0 = 자동)'}
-                <input
-                  type="number"
+                <NumberInput
                   step="0.1"
                   min={0}
                   value={editing.price_lama}
@@ -1078,19 +1089,17 @@ function Models({
             <div className="form-columns">
               <label>
                 우선순위 (0~100)
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   max={100}
                   value={editing.priority}
                   onChange={(e) => setEditing({ ...editing, priority: Number(e.target.value) })}
                 />
               </label>
-              {['video', 'music', 'sfx', 'lipsync'].includes(editing.capability) && (
+              {['video', 'music', 'sfx', 'lipsync', 'upscale_video'].includes(editing.capability) && (
                 <label>
                   최대 길이(초)
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={600}
                     value={editing.max_seconds}
@@ -1117,7 +1126,7 @@ function Models({
                   checked={editing.image_input}
                   onChange={(e) => setEditing({ ...editing, image_input: e.target.checked })}
                 />
-                <span>첫 장면 이미지 입력 지원 (스토리보드에서 시작하는 영상)</span>
+                <span>첫 장면 이미지 입력 지원 (컷 이미지에서 시작하는 영상)</span>
               </label>
             )}
             <fieldset className="tag-picker">
@@ -1321,6 +1330,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
     ai_weight_cost: s.ai_weight_cost === undefined ? 50 : n(s.ai_weight_cost),
     ai_weight_speed: n(s.ai_weight_speed),
     ai_weight_reliability: n(s.ai_weight_reliability),
+    ai_weight_quality: n(s.ai_weight_quality),
     ai_assistant_enabled: s.ai_assistant_enabled === undefined ? 1 : n(s.ai_assistant_enabled),
     ai_assistant_daily_limit: s.ai_assistant_daily_limit === undefined ? 100 : n(s.ai_assistant_daily_limit),
     studio_upload_enabled: s.studio_upload_enabled === undefined ? 1 : n(s.studio_upload_enabled),
@@ -1383,8 +1393,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
         <div className="form-columns">
           <label>
             월 AI 원가 한도 (원 · 0 = 무제한)
-            <input
-              type="number"
+            <NumberInput
               min={0}
               required
               value={f.ai_monthly_budget_won}
@@ -1393,8 +1402,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           </label>
           <label>
             공통 PD 하루 사용 한도 (라마 · 0 = 무제한 · PD별 한도가 있으면 그 값 우선)
-            <input
-              type="number"
+            <NumberInput
               min={0}
               required
               value={f.ai_daily_limit_lama}
@@ -1405,8 +1413,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
         <div className="form-columns">
           <label>
             환율 (원/USD)
-            <input
-              type="number"
+            <NumberInput
               min={100}
               max={10000}
               required
@@ -1416,8 +1423,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           </label>
           <label>
             라마 마진 (원가 대비 %)
-            <input
-              type="number"
+            <NumberInput
               min={100}
               max={1000}
               required
@@ -1427,8 +1433,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           </label>
           <label>
             동시 작업 수
-            <input
-              type="number"
+            <NumberInput
               min={1}
               max={20}
               required
@@ -1451,8 +1456,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
         <div className="form-columns">
           <label>
             자동 제외: 연속 실패 횟수
-            <input
-              type="number"
+            <NumberInput
               min={1}
               max={100}
               required
@@ -1462,8 +1466,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           </label>
           <label>
             자동 제외 시간 (분)
-            <input
-              type="number"
+            <NumberInput
               min={1}
               max={1440}
               required
@@ -1497,6 +1500,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
                 ['ai_weight_cost', '비용 (저렴할수록 우선)'],
                 ['ai_weight_speed', '속도 (빠를수록 우선)'],
                 ['ai_weight_reliability', '안정성 (성공률 높을수록 우선)'],
+                ['ai_weight_quality', '품질 (품질 시험 · AI 검수 점수 높을수록 우선)'],
               ] as const
             ).map(([k, label]) => (
               <label key={k}>
@@ -1514,7 +1518,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           </label>
           <label>
             PD 1명의 하루 대화 수 (0 = 무제한)
-            <input type="number" min={0} max={10000} required value={f.ai_assistant_daily_limit} onChange={num('ai_assistant_daily_limit')} />
+            <NumberInput min={0} max={10000} required value={f.ai_assistant_daily_limit} onChange={num('ai_assistant_daily_limit')} />
           </label>
           {data.assistant && (
             <small className="muted">
@@ -1531,25 +1535,25 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           <div className="form-columns">
             <label>
               사진 최대 크기 (MB · 1~50)
-              <input type="number" min={1} max={50} required value={f.studio_upload_image_mb} onChange={num('studio_upload_image_mb')} />
+              <NumberInput min={1} max={50} required value={f.studio_upload_image_mb} onChange={num('studio_upload_image_mb')} />
             </label>
             <label>
               영상 최대 크기 (MB · 1~500)
-              <input type="number" min={1} max={500} required value={f.studio_upload_video_mb} onChange={num('studio_upload_video_mb')} />
+              <NumberInput min={1} max={500} required value={f.studio_upload_video_mb} onChange={num('studio_upload_video_mb')} />
             </label>
             <label>
               영상 최대 길이 (초 · 3~300)
-              <input type="number" min={3} max={300} required value={f.studio_upload_video_seconds} onChange={num('studio_upload_video_seconds')} />
+              <NumberInput min={3} max={300} required value={f.studio_upload_video_seconds} onChange={num('studio_upload_video_seconds')} />
             </label>
           </div>
           <div className="form-columns">
             <label>
               음성 최대 크기 (MB · 1~100)
-              <input type="number" min={1} max={100} required value={f.studio_upload_audio_mb} onChange={num('studio_upload_audio_mb')} />
+              <NumberInput min={1} max={100} required value={f.studio_upload_audio_mb} onChange={num('studio_upload_audio_mb')} />
             </label>
             <label>
               음성·녹음 최대 길이 (초 · 3~600)
-              <input type="number" min={3} max={600} required value={f.studio_upload_audio_seconds} onChange={num('studio_upload_audio_seconds')} />
+              <NumberInput min={3} max={600} required value={f.studio_upload_audio_seconds} onChange={num('studio_upload_audio_seconds')} />
             </label>
           </div>
           <small className="muted">영상은 MP4로, 음성은 MP3로 바꿔 저장해요. 컷 하나에는 영상 앞부분 최대 10초가 쓰여요.</small>
@@ -1562,7 +1566,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
           </label>
           <label>
             프로젝트 1개당 최대 팀원 수 (소유자 제외 · 1~50)
-            <input type="number" min={1} max={50} required value={f.studio_collab_max_members} onChange={num('studio_collab_max_members')} />
+            <NumberInput min={1} max={50} required value={f.studio_collab_max_members} onChange={num('studio_collab_max_members')} />
           </label>
           {data.collab && (
             <small className="muted">
@@ -1586,7 +1590,7 @@ function Policy({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
 }
 
 // 모델 능력표: AI 계열(브랜드)마다 어떤 작업을 할 수 있는지 · 실제 연결된 모델 · 최근 실적을 한눈에
-const MATRIX_CAPS = ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'] as const;
+const MATRIX_CAPS = ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video'] as const;
 function ModelMatrix({ data }: { data: AdminAi }) {
   const families = data.families || [];
   const models = data.models;
@@ -1857,9 +1861,8 @@ function Limits({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
                     <small>{l.email}</small>
                   </td>
                   <td>
-                    <input
+                    <NumberInput
                       className="rate-input"
-                      type="number"
                       min={0}
                       placeholder="공통"
                       value={e.daily}
@@ -1868,9 +1871,8 @@ function Limits({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run })
                     />
                   </td>
                   <td>
-                    <input
+                    <NumberInput
                       className="rate-input"
-                      type="number"
                       min={0}
                       placeholder="없음"
                       value={e.monthly}

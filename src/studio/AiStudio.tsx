@@ -14,8 +14,9 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { api, lama, teamRoleName, type AiOverview } from '../api';
+import { api, lama, teamRoleName, type AiOverview, type AutopilotEstimate } from '../api';
 import { Empty, Modal, navigate } from '../App';
+import { useConfirm } from '../confirm';
 import Workspace from './Workspace';
 import { TABS, hasModel, type TabId } from './ws/shared';
 import { STYLES, TEMPLATES, type Template } from './presets';
@@ -25,6 +26,7 @@ import { asset } from '../platform';
 import { JoinInvite } from './ws/TeamParts';
 import ReverseStart from './ReverseStart';
 import './ws/team.css';
+import NumberInput from '../NumberInput';
 
 // 숏핑 스튜디오(AI 제작) 첫 화면: 이용 약관 동의 → 프로젝트 목록 → 작업 공간
 const TERMS = [
@@ -78,6 +80,7 @@ export default function AiStudio({
     [form, setForm] = useState(blank),
     [quick, setQuick] = useState(quickDefault),
     [reverse, setReverse] = useState(false);
+  const [ask, confirmUi] = useConfirm();
   const pick = (t: Template | null) => {
     setForm(
       t
@@ -234,7 +237,7 @@ export default function AiStudio({
           <span className="eyebrow">SHORTPING STUDIO</span>
           <h2>AI로 숏폼 드라마 만들기</h2>
           <p>
-            아이디어 한 줄 → 기획 → 캐릭터 → 대본 → 스토리보드·음성 → 영상 → 합성 → 검수 신청까지 한
+            아이디어 한 줄 → 기획 → 캐릭터 → 대본 → 컷 이미지·음성 → 영상 → 합성 → 검수 신청까지 한
             곳에서.
           </p>
         </div>
@@ -324,7 +327,7 @@ export default function AiStudio({
         </div>
       )}
       <ol className="flow-steps">
-        {['기획', '캐릭터', '대본', '스토리보드·음성', '영상', '합성·포스터', '검수 신청'].map(
+        {['기획', '캐릭터', '대본', '컷 이미지·음성', '영상', '합성·포스터', '검수 신청'].map(
           (s, i) => (
             <li key={s}>
               <b>{i + 1}</b>
@@ -486,7 +489,7 @@ export default function AiStudio({
                 />
               </label>
               <div className="template-filters" aria-label="템플릿 장르">
-                {['전체', ...data.genres].map((g) => (
+                {['전체', ...data.genres.filter((g) => TEMPLATES.some((t) => t.genre === g))].map((g) => (
                   <button
                     key={g}
                     type="button"
@@ -548,18 +551,30 @@ export default function AiStudio({
                   setCreating(false);
                   let message = '프로젝트를 만들었어요. 기획 · 설정부터 차례로 만들어 보세요.';
                   if (quick.on) {
+                    const body = {
+                      choices: effectiveChoices(),
+                      includeBible: quick.bible,
+                      includeVideo: quick.video,
+                      includeLipsync: quick.video && quick.lipsync,
+                      includeSfx: quick.sfx,
+                      includeMusic: quick.music,
+                      musicMood: form.tone,
+                      ...(quick.cap ? { cap: Number(quick.cap) } : {}),
+                    };
                     try {
-                      await api(`/studio/ai/projects/${r.id}/autopilot`, 'POST', {
-                        choices: effectiveChoices(),
-                        includeBible: quick.bible,
-                        includeVideo: quick.video,
-                        includeLipsync: quick.video && quick.lipsync,
-                        includeSfx: quick.sfx,
-                        includeMusic: quick.music,
-                        musicMood: form.tone,
-                        ...(quick.cap ? { cap: Number(quick.cap) } : {}),
+                      // 시작하기 전에 예상 라마와 보유 라마를 보여 주고 한 번 더 확인해요.
+                      const est = await api<AutopilotEstimate>(`/studio/ai/projects/${r.id}/autopilot/estimate`, 'POST', body);
+                      const total = est.total;
+                      const cap = quick.cap ? ` · 상한 ${lama(Number(quick.cap))}` : '';
+                      const ok = await ask({
+                        title: '빠른 제작을 시작할까요?',
+                        text: `예상 약 ${lama(total)}${cap} · 보유 ${lama(est.wallet.total)}. 단계마다 실제 쓴 만큼만 차감돼요.${est.wallet.total < total ? ' 보유 라마가 모자라면 중간에 멈춰요.' : ''}`,
+                        ok: '빠른 제작 시작',
                       });
-                      message = '빠른 제작을 시작했어요. 화면을 닫아도 계속 만들고, 끝나면 알려 드려요.';
+                      if (ok) {
+                        await api(`/studio/ai/projects/${r.id}/autopilot`, 'POST', body);
+                        message = '빠른 제작을 시작했어요. 화면을 닫아도 계속 만들고, 끝나면 알려 드려요.';
+                      } else message = '프로젝트를 만들었어요. 빠른 제작은 기획 · 설정 탭에서 언제든 시작할 수 있어요.';
                     } catch (err) {
                       message = `프로젝트는 만들었지만 빠른 제작을 시작하지 못했어요: ${(err as Error).message}`;
                     }
@@ -573,6 +588,7 @@ export default function AiStudio({
                 }
               }}
             >
+              {confirmUi}
               <button type="button" className="text-link" onClick={() => setWizard(1)}>
                 <ArrowLeft size={14} /> 템플릿 다시 고르기
               </button>
@@ -623,8 +639,7 @@ export default function AiStudio({
               <div className="form-columns">
                 <label>
                   회차 수
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={60}
                     value={form.episode_count}
@@ -633,8 +648,7 @@ export default function AiStudio({
                 </label>
                 <label>
                   회당 길이(초)
-                  <input
-                    type="number"
+                  <NumberInput
                     min={20}
                     max={180}
                     value={form.episode_seconds}
@@ -691,7 +705,7 @@ export default function AiStudio({
                   {!hasModel(data.models, 'music') && <small className="muted">배경음악 · 효과음 · 입 모양 맞추기는 관리자가 모델을 준비하면 고를 수 있어요.</small>}
                   <label>
                     최대 사용 라마 <small className="muted">비우면 예상치의 1.3배 · 보유 {lama(data.wallet.total)}</small>
-                    <input type="number" min={1} value={quick.cap} placeholder="자동" onChange={(e) => setQuick({ ...quick, cap: e.target.value.replace(/\D/g, '') })} />
+                    <NumberInput min={1} value={quick.cap} placeholder="자동" onChange={(e) => setQuick({ ...quick, cap: e.target.value.replace(/\D/g, '') })} />
                   </label>
                   <div className="info-box">
                     <FileCheck2 size={18} />

@@ -4,12 +4,12 @@ import path from 'node:path';
 import { loadSettings } from '../settings.mjs';
 import { LAMA_WON, captureLama, holdLama, releaseLama } from '../lama.mjs';
 import { probeMedia } from '../media.mjs';
-import { adapters, unitOf, PRICE_REQUIRED } from './providers.mjs';
+import { adapters, unitOf, PRICE_REQUIRED, videoSeconds } from './providers.mjs';
 import { mockAdapter } from './mock.mjs';
 import { decrypt } from './secret.mjs';
 import { download, VendorError } from './http.mjs';
 import { blockedTerm } from './prompts.mjs';
-import { familyOf } from './model-guide.mjs';
+import { familyOf, cameraLevel, endFrameFamily } from './model-guide.mjs';
 
 // AI 작업 엔진: 모델 고르기(자동/직접) → 라마 예약 → 대기열 → 공급사 호출·결과 확인 → 파일 저장 →
 // 실제 사용량만 차감(나머지 반환) / 실패 시 다른 모델로 한 번 더 시도하거나 전액 반환.
@@ -32,17 +32,22 @@ export function publicError(err) {
     if (/^AI 공급사 오류\(|^AI 공급사에 연결하지 못했어요|^AI 공급사 응답을 읽지 못했어요/.test(raw))
       return err.status === 401
         ? 'AI 공급사 인증에 실패했어요. 관리자에게 문의해 주세요.'
-        : 'AI 공급사에서 일시적인 문제가 생겼어요. 잠시 후 다시 시도해 주세요.';
+        : err.status === 403
+          ? 'AI 공급사가 이 요청을 거절했어요(모델 권한 · 지역 · 정책). 다른 모델로 해 보거나 관리자에게 문의해 주세요.'
+          : 'AI 공급사에서 일시적인 문제가 생겼어요. 잠시 후 다시 시도해 주세요.';
   }
   return raw
     .replace(/\b(sk|pk|rk|key|api[_-]?key)[-_][A-Za-z0-9*._-]{6,}/gi, '[비공개]')
     .replace(/Bearer\s+\S+/gi, 'Bearer [비공개]')
     .replace(/https?:\/\/\S+/gi, '[주소]')
+    // 서버 내부 파일 경로(예: /app/uploads/…, C:\\data\\…)는 보여 주지 않아요.
+    .replace(/(?:[A-Za-z]:\\|\/)(?:[\w.@-]+[\\/]){1,}[\w.@-]*/g, '[경로]')
     .slice(0, 300);
 }
 // 공급사 쪽 문제로 볼 수 있는 실패만 장애 차단기에 셉니다(형식 오류·파일 없음 같은 내부 오류 제외).
-const vendorFault = (err) => err instanceof VendorError && (err.status === 401 || err.retryable !== false);
-export const TAGS = ['dialogue', 'closeup', 'action', 'landscape', 'cinematic', 'character', 'consistency', 'lipsync', 'poster', 'korean', 'story', 'emotion', 'fast', 'cheap', 'scene', 'vision'];
+// 403(권한·지역 거절)은 바로 차단하지 않고 연속 실패로만 셉니다.
+const vendorFault = (err) => err instanceof VendorError && (err.status === 401 || err.status === 403 || err.retryable !== false);
+export const TAGS = ['dialogue', 'closeup', 'action', 'landscape', 'cinematic', 'character', 'consistency', 'lipsync', 'poster', 'korean', 'story', 'emotion', 'fast', 'cheap', 'scene', 'vision', 'inpaint'];
 const TIERS = ['draft', 'standard', 'premium'];
 
 export function adapterOf(kind) {
@@ -54,18 +59,26 @@ export function lamaPerUnit(model, settings) {
   if (fixed > 0) return fixed;
   return (Number(model.cost_usd || 0) * settings.usd_krw_rate * settings.ai_margin_rate) / 100 / LAMA_WON;
 }
-export function unitsFor(capability, input) {
+// model을 주면 그 모델이 실제로 만드는 길이로 셉니다(예: 7초를 요청해도 Kling은 10초를 만들고 10초만큼 과금돼요).
+export function unitsFor(capability, input, model = null) {
   if (capability === 'text')
     // 이미지를 함께 읽는 글 작업(AI 결과 검수)은 이미지 한 장을 약 1,200토큰으로 셉니다.
-    return ((String(input.system || '').length + String(input.prompt || '').length) / 2 + (input.maxTokens || 4000) * 0.6 + (Array.isArray(input.refImages) ? input.refImages.length * 1200 : 0)) / 1000;
+    return ((String(input.system || '').length + String(input.prompt || '').length) / 2 + (input.maxTokens || 4000) * 0.6 + (Array.isArray(input.refImages) ? input.refImages.length * 1200 : 0) + Number(input._extraImages || 0) * 1200) / 1000;
   if (capability === 'image') return Number(input.count || 1);
-  if (capability === 'video') return Number(input.seconds || 5);
+  if (capability === 'video') return model?.model_id ? videoSeconds(model.model_id, input.seconds || 5) : Number(input.seconds || 5);
   if (capability === 'tts') return Math.max(0.1, String(input.text || '').length / 1000);
   if (capability === 'stt') return Math.max(0.1, Number(input.duration || 60) / 60);
   if (capability === 'music') return Math.max(1, Number(input.seconds || 30));
   if (capability === 'sfx') return Math.max(1, Number(input.seconds || 4));
   if (capability === 'lipsync') return Math.max(1, Number(input.seconds || 5));
+  if (capability === 'upscale') return Number(input.count || 1);
+  if (capability === 'upscale_video') return Math.max(1, Number(input.seconds || 5));
   return 1;
+}
+// 카메라 제어가 약한 영상 모델에는 복잡한 움직임을 쉬운 움직임으로 바꾼 프롬프트(promptBasic)를 보냅니다.
+export function promptFor(model, input) {
+  if (input?.promptBasic && cameraLevel(familyOf(model)) === 'basic') return { ...input, prompt: input.promptBasic };
+  return input;
 }
 export const lamaFor = (model, settings, units) => Math.max(1, Math.ceil(units * lamaPerUnit(model, settings) - 1e-9));
 export const costWonFor = (model, settings, units) => Math.round(units * Number(model.cost_usd || 0) * settings.usd_krw_rate);
@@ -111,12 +124,17 @@ export function createAiEngine({ db, uploadDir, demo }) {
       map.set(r.model_ref, m);
     }
     const out = new Map([...map].map(([k, m]) => [k, { jobs: m.jobs, success: m.jobs ? m.ok / m.jobs : null, seconds: m.timed ? Math.round(m.secs / m.timed) : null }]));
+    // 6단계(2026-09-30) 품질: 최근 60일 품질 시험 · 실제 AI 검수 점수 평균(표본 3개 이상일 때만 씀)
+    const quality = await db
+      .all('SELECT model_ref, AVG(score) AS q, COUNT(*) AS n FROM ai_quality_samples WHERE created_at>=? GROUP BY model_ref', [new Date(Date.now() - 60 * 86400000).toISOString()])
+      .catch(() => []);
+    for (const r of quality) out.set(r.model_ref, { ...(out.get(r.model_ref) || { jobs: 0, success: null, seconds: null }), quality: Math.round(Number(r.q)), qualityN: Number(r.n) });
     statsCache = { at: Date.now(), map: out };
     return out;
   }
   // 자동 선택 점수: 품질 등급 일치 > 장면 특성 태그 > 관리자 우선순위 > 가격(초안 등급은 저렴할수록 가산)
   // 관리자 가중치(비용·속도·안정성)로 조정합니다. 기본값(비용 50·속도 0·안정성 0)은 예전 방식과 같습니다.
-  function scoreParts(r, { tier, tags, seconds, needImage }, settings, stats) {
+  function scoreParts(r, { tier, tags, seconds, needImage, needCamera, needEnd, needMask }, settings, stats) {
     const parts = [];
     const add = (n, why) => parts.push({ n, why });
     const ti = TIERS.indexOf(tier || 'standard');
@@ -130,6 +148,11 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (r.provider_status === 'error') add(-60, 'error');
     if (seconds && r.capability === 'video' && Number(r.max_seconds) < seconds) add(-25, 'short');
     if (needImage && Number(r.image_input) === 1) add(8, 'image_input');
+    // 컷 연출: 복잡한 카메라 움직임·끝 장면 지정을 잘 따르는 영상 모델을 먼저 고릅니다.
+    if (needCamera && r.capability === 'video' && cameraLevel(familyOf(r)) === 'strong') add(12, 'camera');
+    // 끝 장면은 PD가 직접 고른 것이라, 따르는 모델을 품질 등급 한 칸 차이보다 먼저 골라요.
+    if (needEnd && r.capability === 'video' && endFrameFamily(familyOf(r))) add(30, 'endframe');
+    if (needMask && String(r.tags || '').split(',').includes('inpaint')) add(20, 'inpaint');
     const price = lamaPerUnit(r, settings);
     const wc = Number(settings.ai_weight_cost ?? 50) / 50;
     add(-(tier === 'draft' ? price * 2 : price * 0.2) * wc, '');
@@ -138,8 +161,13 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (ws > 0 && st?.seconds) add(-Math.min(60, st.seconds / 10) * (ws / 50), st.seconds <= 30 ? 'fast' : '');
     const wr = Number(settings.ai_weight_reliability || 0);
     if (wr > 0 && st?.jobs >= 5 && st.success != null) add((st.success - 0.8) * 50 * (wr / 50), st.success >= 0.95 ? 'reliable' : '');
+    // 품질 가중치(6단계): 품질 점수 75점을 기준으로 높으면 가산, 낮으면 감산
+    const wq = Number(settings.ai_weight_quality || 0);
+    if (wq > 0 && st?.qualityN >= 3) add((st.quality - 75) * 0.8 * (wq / 50), st.quality >= 85 ? 'quality' : '');
     return parts;
   }
+  // 끝 장면을 정했는데 고른 모델이 끝 장면 지정을 따르지 않으면 작업에 표시해 화면에서 알려요.
+  const flagsFor = (model, capability, input) => (capability === 'video' && input?.endImage && !endFrameFamily(familyOf(model)) ? 'end_ignored' : '');
   const score = (r, opts, settings, stats) => scoreParts(r, opts, settings, stats).reduce((n, p) => n + p.n, 0);
   // 공급사 이번 달 원가(공급사별 월 예산 확인용)
   async function providerSpend(excludeJobId = null) {
@@ -161,18 +189,20 @@ export function createAiEngine({ db, uploadDir, demo }) {
   async function candidates(opts, settings) {
     const { capability, requested = 'auto', tier, tags, seconds, needImage, excludeCn = false, exclude = [], requireImage = false } = opts;
     const spend = await providerSpend(opts.excludeJobId || null);
-    const units = opts.units ?? unitsFor(capability, opts.input || {});
+    const unitsOf = (r) => opts.units ?? unitsFor(capability, opts.input || {}, r);
     const stats = await modelStats();
     // requireImage: 이미지를 꼭 읽어야 하는 글 작업(AI 결과 검수)은 이미지 입력을 받는 모델만 씁니다.
-    const every = (await modelRows()).filter((r) => r.capability === capability && usable(r) && (!requireImage || Number(r.image_input) === 1));
+    // 인페인팅 전용 모델(태그 inpaint)은 붓으로 칠한 부분 수정에만 씁니다(일반 이미지 생성에는 마스크가 없어 실패해요).
+    const inpaintOnly = (r) => String(r.tags || '').split(',').map((x) => x.trim()).includes('inpaint');
+    const every = (await modelRows()).filter((r) => r.capability === capability && usable(r) && (!requireImage || Number(r.image_input) === 1) && (opts.needMask || !inpaintOnly(r) || r.id === requested));
     if (requireImage && !every.length) throw error(503, '이미지를 읽을 수 있는 글 모델이 아직 연결되지 않았어요. 관리자에게 문의해 주세요.', { code: 'no_model' });
     // 다른 모델로 다시 시도할 때: 실패한 모델은 빼되, 남는 모델이 없으면 그대로 둡니다.
     const all = requested === 'auto' && exclude.length && every.some((r) => !exclude.includes(r.id)) ? every.filter((r) => !exclude.includes(r.id)) : every;
-    const allowed = all.filter((r) => !blockedReason(r, { excludeCn }, settings, spend, costWonFor(r, settings, units)));
+    const allowed = all.filter((r) => !blockedReason(r, { excludeCn }, settings, spend, costWonFor(r, settings, unitsOf(r))));
     if (requested && requested !== 'auto') {
       const one = all.find((r) => r.id === requested);
       if (!one) throw error(400, '선택한 모델을 지금 쓸 수 없어요. 자동 선택을 이용하거나 다른 모델을 골라 주세요.');
-      const reason = blockedReason(one, { excludeCn }, settings, spend, costWonFor(one, settings, units));
+      const reason = blockedReason(one, { excludeCn }, settings, spend, costWonFor(one, settings, unitsOf(one)));
       if (reason) throw error(400, reason + ' 다른 모델을 골라 주세요.', { code: 'model_blocked' });
       return [one];
     }
@@ -181,7 +211,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const rows = healthy.length ? healthy : allowed;
     if (!rows.length) throw error(503, '이 작업에 쓸 수 있는 AI 모델이 아직 연결되지 않았어요. 관리자에게 문의해 주세요.', { code: 'no_model' });
     const ranked = rows
-      .map((r) => ({ r, s: score(r, { tier, tags, seconds, needImage }, settings, stats) }))
+      .map((r) => ({ r, s: score(r, { tier, tags, seconds, needImage, needCamera: opts.needCamera, needEnd: opts.needEnd, needMask: opts.needMask }, settings, stats) }))
       .sort((a, b) => b.s - a.s)
       .map((x) => x.r);
     // 관리자 라우팅 규칙(작업·등급별 우선 모델 순서)이 있으면 그 순서를 먼저 따릅니다.
@@ -231,14 +261,18 @@ export function createAiEngine({ db, uploadDir, demo }) {
     image_input: () => '참고 이미지(인물·장면)를 받아 얼굴·구도를 이어 가요',
     fast: () => '최근 처리 속도가 빨라요',
     reliable: () => '최근 성공률이 높아요',
+    camera: () => '복잡한 카메라 움직임을 잘 따라 해요',
+    endframe: () => '끝 장면 지정을 지원해요',
+    inpaint: () => '칠한 부분만 정확히 고쳐요',
+    quality: () => '품질 시험 · AI 검수 점수가 높아요',
   };
-  const TAG_KO = { dialogue: '대사', closeup: '클로즈업', action: '액션', landscape: '풍경', cinematic: '영화 같은 화면', character: '인물', consistency: '인물 일관성', lipsync: '입 모양', poster: '포스터', korean: '한국어', story: '이야기 구성', emotion: '감정 표현', fast: '빠름', cheap: '저렴', scene: '장면' };
+  const TAG_KO = { dialogue: '대사', closeup: '클로즈업', action: '액션', landscape: '풍경', cinematic: '영화 같은 화면', character: '인물', consistency: '인물 일관성', lipsync: '입 모양', poster: '포스터', korean: '한국어', story: '이야기 구성', emotion: '감정 표현', fast: '빠름', cheap: '저렴', scene: '장면', inpaint: '부분 수정' };
   async function explain(opts) {
     const settings = await loadSettings(db);
     const stats = await modelStats();
     const list = await candidates({ ...opts, requested: 'auto' }, settings);
-    const units = opts.units ?? unitsFor(opts.capability, opts.input || {});
-    const cheapest = Math.min(...list.map((r) => lamaFor(r, settings, units)));
+    const unitsOf = (r) => opts.units ?? unitsFor(opts.capability, opts.input || {}, r);
+    const cheapest = Math.min(...list.map((r) => lamaFor(r, settings, unitsOf(r))));
     return list.slice(0, 4).map((r, i) => {
       const why = [];
       for (const p of scoreParts(r, opts, settings, stats)) {
@@ -246,7 +280,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
         if (p.why.startsWith('tags:')) why.push(p.why.slice(5).split(',').map((t) => TAG_KO[t] || t).join('·') + '에 강해요');
         else if (WHY[p.why]) why.push(WHY[p.why](opts));
       }
-      const l = lamaFor(r, settings, units);
+      const l = lamaFor(r, settings, unitsOf(r));
       if (l === cheapest && list.length > 1) why.push('후보 중 가장 저렴해요');
       const st = stats.get(r.id);
       return { id: r.id, label: r.label, provider: r.provider_name, tier: r.tier, lama: l, rank: i + 1, why: why.slice(0, 3), success: st?.jobs >= 3 ? st.success : null, seconds: st?.seconds ?? null };
@@ -254,8 +288,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
   }
   async function estimate(opts) {
     const settings = await loadSettings(db);
-    const units = opts.units ?? unitsFor(opts.capability, opts.input || {});
-    const list = await candidates({ ...opts, units }, settings);
+    const list = await candidates(opts, settings);
+    const units = opts.units ?? unitsFor(opts.capability, opts.input || {}, list[0]);
     return { model: list[0], lama: lamaFor(list[0], settings, units), units, alternatives: list.length };
   }
   async function checkProviderLimit(provider, costWon, excludeJobId = null) {
@@ -334,9 +368,9 @@ export function createAiEngine({ db, uploadDir, demo }) {
     // 이미지·영상·음성 프롬프트는 PD가 쓴 묘사로 만들어지므로 프롬프트 전체를 검사합니다.
     const banned = blockedTerm([input.userText, capability === 'text' ? '' : input.prompt, input.text], settings.ai_blocked_terms);
     if (banned) throw error(400, `사용할 수 없는 표현이 포함돼 있어요: "${banned}"`, { code: 'blocked_term' });
-    const u = units ?? unitsFor(capability, input);
-    const list = await candidates({ capability, requested, tier, tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), excludeCn, exclude, requireImage: !!input._requireImage, input, units: u }, settings);
+    const list = await candidates({ capability, requested, tier, tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), needCamera: !!input.needCamera, needEnd: !!input.endImage, needMask: !!input.maskImage, excludeCn, exclude, requireImage: !!input._requireImage, input, units }, settings);
     const model = list[0];
+    const u = units ?? unitsFor(capability, input, model);
     // 후보를 고른 뒤 공급사별 잠금을 잡고 최신 예약액을 다시 확인합니다.
     // 동시에 들어온 두 요청이 각각 한도 안이라고 판단한 뒤 합계로 한도를 넘기는 경쟁을 막습니다.
     if (db.engine === 'postgresql' && Number(model.monthly_budget_won || 0) > 0)
@@ -347,8 +381,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const id = randomUUID();
     // 같은 멱등키가 동시에 들어오면 한쪽만 들어가고 다른 쪽은 기존 작업을 돌려받습니다.
     await db.run(
-      'INSERT INTO ai_jobs (id,user_id,actor_id,project_id,target_type,target_id,kind,capability,requested_model,model_ref,provider_id,vendor_model,tier,input,status,estimate_lama,cost_won,idempotency_key,billed,created_at,tried) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
-      [id, userId, actorId || userId, projectId, target.type || '', target.id || '', kind, capability, requested || 'auto', model.id, model.provider_id, model.model_id, tier, JSON.stringify({ ...input, tags, _excludeCn: !!excludeCn, ...(exclude.length ? { _exclude: exclude } : {}) }), 'queued', lama, costWon, idempotencyKey || null, bill ? 1 : 0, iso(), model.id],
+      'INSERT INTO ai_jobs (id,user_id,actor_id,project_id,target_type,target_id,kind,capability,requested_model,model_ref,provider_id,vendor_model,tier,input,status,estimate_lama,cost_won,idempotency_key,billed,created_at,tried,flags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
+      [id, userId, actorId || userId, projectId, target.type || '', target.id || '', kind, capability, requested || 'auto', model.id, model.provider_id, model.model_id, tier, JSON.stringify({ ...input, tags, _excludeCn: !!excludeCn, ...(exclude.length ? { _exclude: exclude } : {}) }), 'queued', lama, costWon, idempotencyKey || null, bill ? 1 : 0, iso(), model.id, flagsFor(model, capability, input)],
     );
     if (!(await db.get('SELECT id FROM ai_jobs WHERE id=?', [id]))) {
       const existing = idempotencyKey && (await db.get('SELECT * FROM ai_jobs WHERE idempotency_key=?', [idempotencyKey]));
@@ -372,15 +406,16 @@ export function createAiEngine({ db, uploadDir, demo }) {
   async function hydrate(input) {
     const out = { ...input };
     const load = async (ref) => {
-      const file = path.join(uploadDir, path.basename(ref.path));
+      // 부분 수정 마스크는 비공개 폴더(uploads/masks)에 있어요.
+      const file = /^\/masks\//.test(ref.path) ? path.join(uploadDir, 'masks', path.basename(ref.path)) : path.join(uploadDir, path.basename(ref.path));
       return { buffer: await readFile(file), mime: ref.mime, ext: path.extname(file).slice(1) };
     };
-    for (const field of ['image', 'refImage', 'audio', 'video', 'endImage', 'editImage']) if (input[field]?.path) out[field] = await load(input[field]);
+    for (const field of ['image', 'refImage', 'audio', 'video', 'endImage', 'editImage', 'maskImage']) if (input[field]?.path) out[field] = await load(input[field]);
     if (Array.isArray(input.refImages)) out.refImages = await Promise.all(input.refImages.filter((r) => r?.path).map(load));
     return out;
   }
   const ctx = (m) => ({ provider: { base_url: m.base_url, kind: m.kind }, model: m, key: m.kind === 'mock' ? '' : decrypt(m.api_key_enc), secret: m.secret_enc ? decrypt(m.secret_enc) : '' });
-  const pollDelay = (capability, kind) => (kind === 'mock' ? 300 : capability === 'video' ? 8000 : 3000);
+  const pollDelay = (capability, kind) => (kind === 'mock' ? 300 : ['video', 'upscale_video'].includes(capability) ? 8000 : 3000);
   const extFor = (mime) => ({ 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'video/mp4': '.mp4', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/x-wav': '.wav' })[mime];
   // 결과 파일의 주인: 관리자가 PD의 프로젝트·작품에서 대신 실행해도 파일은 그 PD 것으로 기록해야
   // PD가 미리보기·포스터 지정 등에 그대로 쓸 수 있습니다.
@@ -401,7 +436,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     let mime = result.mime;
     if (!data && result.url) {
       data = await download(result.url, result.headers || {});
-      mime = mime || { image: 'image/png', video: 'video/mp4', tts: 'audio/mpeg', music: 'audio/mpeg', sfx: 'audio/mpeg', lipsync: 'video/mp4' }[job.capability];
+      mime = mime || { image: 'image/png', video: 'video/mp4', tts: 'audio/mpeg', music: 'audio/mpeg', sfx: 'audio/mpeg', lipsync: 'video/mp4', upscale: 'image/png', upscale_video: 'video/mp4' }[job.capability];
     }
     if (!data?.length) throw Object.assign(new Error('결과 파일이 비어 있어요.'), { retryable: true });
     // 파일 서명으로 실제 형식을 확인합니다.
@@ -413,7 +448,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     else if (head.toString('ascii', 4, 8) === 'ftyp') mime = 'video/mp4';
     else if (head.toString('ascii', 0, 3) === 'ID3' || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)) mime = 'audio/mpeg';
     const ext = extFor(mime);
-    const expected = { image: /^image\//, video: /^video\//, tts: /^audio\//, music: /^audio\//, sfx: /^(audio|video)\//, lipsync: /^video\// }[job.capability];
+    const expected = { image: /^image\//, video: /^video\//, tts: /^audio\//, music: /^audio\//, sfx: /^(audio|video)\//, lipsync: /^video\//, upscale: /^image\//, upscale_video: /^video\// }[job.capability];
     if (!ext || !expected.test(mime)) throw Object.assign(new Error('예상과 다른 형식의 결과가 왔어요.'), { retryable: true });
     const filename = randomUUID() + ext;
     const full = path.join(uploadDir, filename);
@@ -442,7 +477,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const settings = await loadSettings(db);
     const media = await materialize(job, result);
     const input = JSON.parse(job.input || '{}');
-    let units = unitsFor(job.capability, input);
+    let units = unitsFor(job.capability, input, model);
     if (job.capability === 'text' && result.usage && result.usage.input + result.usage.output > 0)
       units = (result.usage.input + result.usage.output) / 1000;
     const handler = handlers.get(job.kind);
@@ -491,6 +526,9 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const settings = await loadSettings(db);
     const detail = String(err?.message || '알 수 없는 오류').slice(0, 500);
     const message = publicError(err);
+    // 이미 취소된 작업(관리자 강제 취소 등)의 뒤늦은 실패는 공급사 장애로 세지 않아요.
+    const current = await db.get('SELECT status FROM ai_jobs WHERE id=?', [job.id]);
+    if (!current || !['running', 'queued'].includes(current.status)) return;
     // 공급사 장애 차단: 키 오류는 바로, 그 밖의 공급사 실패는 연속 횟수가 기준을 넘으면 잠시 자동 선택에서 뺍니다.
     if (model && model.kind !== 'mock' && !err?.modelGone && vendorFault(err)) {
       const p = await db.get('SELECT fail_streak FROM ai_providers WHERE id=?', [model.provider_id]);
@@ -517,9 +555,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
           const input = JSON.parse(fresh.input || '{}');
           const tried = String(fresh.tried || '').split(',');
           try {
-            const units = unitsFor(fresh.capability, input);
-            const list = await candidates({ capability: fresh.capability, tier: fresh.tier, tags: input.tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), excludeCn: !!input._excludeCn, exclude: input._exclude || [], requireImage: !!input._requireImage, input, units, excludeJobId: fresh.id }, settings);
-            target = list.find((r) => !tried.includes(r.id) && (!Number(fresh.billed) || lamaFor(r, settings, units) <= Number(fresh.estimate_lama))) || null;
+            const list = await candidates({ capability: fresh.capability, tier: fresh.tier, tags: input.tags, seconds: input.seconds, needImage: !!(input.image || input.editImage || input.refImage || input.refImages?.length), needCamera: !!input.needCamera, needEnd: !!input.endImage, needMask: !!input.maskImage, excludeCn: !!input._excludeCn, exclude: input._exclude || [], requireImage: !!input._requireImage, input, excludeJobId: fresh.id }, settings);
+            target = list.find((r) => !tried.includes(r.id) && (!Number(fresh.billed) || lamaFor(r, settings, unitsFor(fresh.capability, input, r)) <= Number(fresh.estimate_lama))) || null;
           } catch {}
         }
         if (!target && !err?.modelGone && !switchOnly) {
@@ -529,14 +566,14 @@ export function createAiEngine({ db, uploadDir, demo }) {
         }
         if (target) {
           const retryInput = JSON.parse(fresh.input || '{}');
-          const retryCost = costWonFor(target, settings, unitsFor(fresh.capability, retryInput));
+          const retryCost = costWonFor(target, settings, unitsFor(fresh.capability, retryInput, target));
           if (db.engine === 'postgresql' && Number(target.monthly_budget_won || 0) > 0)
             await db.get('SELECT pg_advisory_xact_lock(hashtext(?))', [`shortping-ai-provider:${target.provider_id}`]);
           await checkProviderLimit(target, retryCost, fresh.id);
           const tried = [...new Set([...String(fresh.tried || '').split(','), target.id].filter(Boolean))].join(',');
           await db.run(
-            "UPDATE ai_jobs SET status='queued',attempts=?,model_ref=?,provider_id=?,vendor_model=?,cost_won=?,vendor_ref='',claimed_by=NULL,started_at=NULL,poll_failures=0,error=?,error_detail=?,tried=?,next_poll_at=? WHERE id=?",
-            [attempts, target.id, target.provider_id, target.model_id, retryCost, message, detail, tried, new Date(Date.now() + 1500 * attempts).toISOString(), fresh.id],
+            "UPDATE ai_jobs SET status='queued',attempts=?,model_ref=?,provider_id=?,vendor_model=?,cost_won=?,vendor_ref='',claimed_by=NULL,started_at=NULL,poll_failures=0,error=?,error_detail=?,tried=?,next_poll_at=?,flags=? WHERE id=?",
+            [attempts, target.id, target.provider_id, target.model_id, retryCost, message, detail, tried, new Date(Date.now() + 1500 * attempts).toISOString(), flagsFor(target, fresh.capability, retryInput), fresh.id],
           );
           return;
         }
@@ -555,7 +592,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (!fresh || fresh.status !== 'running' || !fresh.vendor_ref) return false;
     const failures = Number(fresh.poll_failures || 0) + 1;
     const started = new Date(fresh.started_at || Date.now()).getTime();
-    const limit = fresh.capability === 'video' ? 30 * 60000 : 10 * 60000;
+    const limit = ['video', 'upscale_video'].includes(fresh.capability) ? 30 * 60000 : 10 * 60000;
     if (failures > 8 || Date.now() - started > limit) return false;
     const wait = Math.min(60000, 3000 * 2 ** (failures - 1)) + pollDelay(fresh.capability, model?.kind || '');
     const r = await db.run(
@@ -569,16 +606,17 @@ export function createAiEngine({ db, uploadDir, demo }) {
     try {
       model = await loadModel(job);
       const adapter = adapterOf(model.kind);
-      const input = await hydrate(JSON.parse(job.input || '{}'));
+      const input = promptFor(model, await hydrate(JSON.parse(job.input || '{}')));
       const c = ctx(model);
       const res = job.vendor_ref
         ? await adapter.poll({ ...c, capability: job.capability, ref: job.vendor_ref })
         : await adapter.run({ ...c, capability: job.capability, input });
       if (res.status === 'pending') {
         const started = new Date(job.started_at || Date.now()).getTime();
-        const limit = job.capability === 'video' ? 30 * 60000 : 10 * 60000;
+        const limit = ['video', 'upscale_video'].includes(job.capability) ? 30 * 60000 : 10 * 60000;
         if (Date.now() - started > limit) throw Object.assign(new Error('AI 공급사 응답이 너무 오래 걸려 작업을 중단했어요.'), { retryable: true });
-        await db.run('UPDATE ai_jobs SET vendor_ref=?,next_poll_at=?,claimed_by=NULL,poll_failures=0 WHERE id=?', [
+        // 그사이 취소 · 종료 정리된 작업은 되살리지 않아요.
+        await db.run("UPDATE ai_jobs SET vendor_ref=?,next_poll_at=?,claimed_by=NULL,poll_failures=0 WHERE id=? AND status='running'", [
           res.ref,
           new Date(Date.now() + pollDelay(job.capability, model.kind)).toISOString(),
           job.id,
@@ -626,9 +664,10 @@ export function createAiEngine({ db, uploadDir, demo }) {
     return row.claimed_by === workerId && row.status === 'running' ? row : null;
   }
   let ticking = false;
+  let paused = false;
   async function tick() {
     // 1.5초 타이머와 kick()이 겹쳐 실행되면 동시 작업 한도를 넘을 수 있어 한 번에 하나만 돌립니다.
-    if (ticking) return;
+    if (ticking || paused) return;
     ticking = true;
     try {
       await tickOnce();
@@ -693,14 +732,51 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (db.detach) db.detach(schedule);
     else schedule();
   }
+  // 살아 있음 표시(10초마다)와, 멈춘 처리기가 잡고 있던 작업 되찾기(30초마다).
+  // 여러 서버로 운영해도 살아 있는 다른 서버의 작업은 건드리지 않아요.
+  const STALE_MS = 60_000;
+  let lastBeat = 0;
+  let lastReclaim = 0;
+  async function beat() {
+    lastBeat = Date.now();
+    await db.run('INSERT INTO ai_workers (id,seen_at) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at', [workerId, iso()]);
+  }
+  async function reclaim() {
+    lastReclaim = Date.now();
+    const alive = new Date(Date.now() - STALE_MS).toISOString();
+    const dead = `claimed_by IS NOT NULL AND claimed_by<>? AND claimed_by NOT IN (SELECT id FROM ai_workers WHERE seen_at>=?)`;
+    // 공급사 호출 중이던 작업은 다시 대기열로, 결과 확인 중이던 작업은 계속 확인합니다.
+    // 멈춰 있던 시간 때문에 바로 '너무 오래 걸림'으로 끝나지 않도록 시작 시각도 새로 잡습니다.
+    await db.run(`UPDATE ai_jobs SET status='queued',claimed_by=NULL,started_at=NULL WHERE status='running' AND vendor_ref='' AND ${dead}`, [workerId, alive]);
+    await db.run(`UPDATE ai_jobs SET claimed_by=NULL,started_at=?,poll_failures=0 WHERE status='running' AND ${dead}`, [iso(), workerId, alive]);
+    await db.run('DELETE FROM ai_workers WHERE seen_at<?', [new Date(Date.now() - 24 * 3600_000).toISOString()]);
+  }
+  async function housekeeping() {
+    if (Date.now() - lastBeat >= 10_000) await beat();
+    if (Date.now() - lastReclaim >= 30_000) await reclaim();
+  }
   async function start() {
-    // 서버가 꺼질 때 공급사 호출 중이던 작업은 다시 대기열로, 결과 확인 중이던 작업은 계속 확인합니다.
-    // 꺼져 있던 시간 때문에 바로 '너무 오래 걸림'으로 끝나지 않도록 시작 시각도 새로 잡습니다.
-    await db.run("UPDATE ai_jobs SET status='queued',claimed_by=NULL,started_at=NULL WHERE status='running' AND vendor_ref=''");
-    await db.run("UPDATE ai_jobs SET claimed_by=NULL,started_at=?,poll_failures=0 WHERE status='running'", [iso()]);
-    timer = setInterval(() => void tick().catch((e) => console.error('ai tick', e.message)), 1500);
+    await beat();
+    await reclaim();
+    timer = setInterval(() => {
+      void housekeeping().catch((e) => console.error('ai heartbeat', e.message));
+      void tick().catch((e) => console.error('ai tick', e.message));
+    }, 1500);
     timer.unref();
     kick();
+  }
+  // 정상 종료: 살아 있음 표시를 지워, 다시 켜진 서버(또는 다른 서버)가 이 서버의 작업을 바로 이어받게 해요.
+  // 종료 준비: 새 작업을 더 가져가지 않아요(진행 중인 것은 그대로).
+  function pause() {
+    if (timer) clearInterval(timer);
+    timer = null;
+    paused = true;
+  }
+  async function stop() {
+    pause();
+    await db.run('DELETE FROM ai_workers WHERE id=?', [workerId]).catch(() => {});
+    await db.run("UPDATE ai_jobs SET status='queued',claimed_by=NULL,started_at=NULL WHERE status='running' AND vendor_ref='' AND claimed_by=?", [workerId]).catch(() => {});
+    await db.run("UPDATE ai_jobs SET claimed_by=NULL WHERE status='running' AND claimed_by=?", [workerId]).catch(() => {});
   }
   async function cancel(jobId, actor, { force = false } = {}) {
     return db.transaction(async () => {
@@ -740,7 +816,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
     explain,
     modelStats,
     start,
-    stop: () => timer && clearInterval(timer),
+    stop,
+    pause,
     tick,
     drain,
     cancel,

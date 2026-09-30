@@ -35,7 +35,8 @@ export default function Support({
   const [replies, setReplies] = useState<Record<string, string>>({});
   async function reload() {
     try {
-      setTickets(await api<Ticket[]>('/support'));
+      // 시청자 화면의 '문의하기'는 관리자라도 본인 문의만 보여 줍니다(전체 문의는 관리자 화면에서).
+      setTickets(await api<Ticket[]>(managing ? '/support' : '/support?mine=1'));
       setError('');
     } catch (e) {
       setError((e as Error).message);

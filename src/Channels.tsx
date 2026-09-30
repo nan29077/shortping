@@ -105,7 +105,7 @@ export function ChannelCard({ channel }: { channel: Channel }) {
           <Eye size={12} /> {count(channel.views)}
         </span>
         <span>
-          <Users size={12} /> 구독 {count(channel.followers)}
+          <Users size={12} /> 팔로워 {count(channel.followers)}
         </span>
       </div>
       {posters.length > 0 ? (
@@ -261,9 +261,9 @@ export function ChannelPage({
     try {
       await api('/channels/' + channel.id + '/follow', 'POST', { active: !following });
       await reloadLibrary();
-      // 구독자 수·통계가 바로 반영되도록 방송국 정보를 다시 읽습니다.
+      // 팔로워 수·통계가 바로 반영되도록 방송국 정보를 다시 읽습니다.
       setChannel(await api<ChannelDetail>('/channels/' + channel.id));
-      notify(following ? '방송국 구독을 해제했어요.' : '방송국을 구독했어요.');
+      notify(following ? '방송국 팔로우를 해제했어요.' : '방송국을 팔로우했어요.');
     } catch (e) {
       notify((e as Error).message);
     } finally {
@@ -311,7 +311,7 @@ export function ChannelPage({
           </div>
           <div>
             <strong>{count(channel.followers)}</strong>
-            <span>구독자</span>
+            <span>팔로워</span>
           </div>
         </div>
         {channel.description && <p className="channel-note">{channel.description}</p>}
@@ -324,7 +324,7 @@ export function ChannelPage({
           )}
           <button className={following ? 'secondary following' : 'secondary'} disabled={busy} onClick={follow}>
             <Heart size={16} fill={following ? 'currentColor' : 'none'} />
-            {following ? '구독 중' : '구독하기'}
+            {following ? '팔로우 중' : '팔로우'}
           </button>
           <button className="secondary" onClick={share} aria-label="방송국 공유">
             <Share2 size={16} />

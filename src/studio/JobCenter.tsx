@@ -1,47 +1,18 @@
 import { useState } from 'react';
 import { AlertTriangle, Check, Loader2, RotateCcw, Square, Wallet, X } from 'lucide-react';
-import { api, ApiError, lama, type AiModelOption, type Capability, type StudioJob, type StudioProjectDetail } from '../api';
+import { api, ApiError, jobKindLabel, lama, type AiModelOption, type Capability, type StudioJob, type StudioProjectDetail } from '../api';
 import { Modal } from '../App';
+import NumberInput from '../NumberInput';
 
 // 작업 · 비용 센터(2026-09-24): 진행 중·끝난·실패한 AI 작업을 한곳에서 보고, 실패한 작업은
 // 다른 모델로 바로 다시 시도하고, 프로젝트 예산(라마)을 정해요.
-export const jobKindLabel: Record<string, string> = {
-  plan: '기획안',
-  adapt: '원작 각색',
-  bible: '작품 설정집',
-  season: '시즌 설계',
-  metadata: '작품 소개',
-  poster: '포스터',
-  thumb_bg: '썸네일 배경',
-  music: '배경음악',
-  script: '대본',
-  diagnose: '대본 진단',
-  rewrite_range: '대본 구간 다시 쓰기',
-  character_image: '인물 기준 이미지',
-  character_ref: '인물 참고 이미지',
-  location_image: '장소 이미지',
-  voice_sample: '목소리 미리 듣기',
-  shot_image: '컷 이미지',
-  shot_image_edit: '컷 이미지 고치기',
-  shot_tts: '대사 음성',
-  shot_video: '컷 영상',
-  shot_lipsync: '입 모양 맞추기',
-  shot_sfx: '효과음',
-  rewrite_shot: '컷 다시 쓰기',
-  translate: '묘사 번역',
-  assistant: 'AI 조수',
-  parse_script: '대본 컷 나누기',
-  prop_image: '소품 이미지',
-  verify_shot: 'AI 검수',
-  bridge_shot: '사이 컷',
-  variants: '대본 변형',
-  reverse_script: '영상에서 대본 뽑기',
-};
+export { jobKindLabel };
 export const kindCapability: Record<string, Capability> = {
   parse_script: 'text', verify_shot: 'text', bridge_shot: 'text', variants: 'text', reverse_script: 'text', prop_image: 'image',
   plan: 'text', adapt: 'text', bible: 'text', season: 'text', metadata: 'text', script: 'text', diagnose: 'text', rewrite_range: 'text', rewrite_shot: 'text', translate: 'text', assistant: 'text',
   poster: 'image', thumb_bg: 'image', character_image: 'image', character_ref: 'image', location_image: 'image', shot_image: 'image', shot_image_edit: 'image',
   voice_sample: 'tts', shot_tts: 'tts', shot_video: 'video', shot_lipsync: 'lipsync', shot_sfx: 'sfx', music: 'music',
+  verify_asset: 'text', verify_video: 'text', shot_upscale: 'upscale', shot_upscale_video: 'upscale_video',
 };
 const RETRYABLE = new Set(Object.keys(kindCapability).filter((k) => !['thumb_bg', 'translate', 'assistant'].includes(k)));
 
@@ -156,7 +127,7 @@ export default function JobCenter({
             </div>
           )}
           {owner && <div className="jobc-budget-form">
-            <input type="number" min={0} inputMode="numeric" aria-label="프로젝트 예산(라마)" placeholder="예: 3000 (비우면 제한 없음)" value={budget} onChange={(e) => setBudget(e.target.value.replace(/\D/g, ''))} />
+            <NumberInput min={0} inputMode="numeric" aria-label="프로젝트 예산(라마)" placeholder="예: 3000 (비우면 제한 없음)" value={budget} onChange={(e) => setBudget(e.target.value.replace(/\D/g, ''))} />
             <button type="button" className="secondary compact" disabled={busy === 'budget'} onClick={() => void saveBudget()}>
               저장
             </button>

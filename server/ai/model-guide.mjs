@@ -12,12 +12,13 @@ export const FAMILIES = [
   { id: 'flux', name: 'FLUX', maker: 'Black Forest Labs', caps: ['image'], note: '이미지 전문 — 빠르고 저렴해요.', match: /flux/i },
   { id: 'eleven', name: 'ElevenLabs', maker: 'ElevenLabs', caps: ['tts', 'stt', 'music', 'sfx'], note: '소리 전문 — 감정 있는 목소리·배경음악·효과음을 만들어요.', match: /eleven/i },
   { id: 'sync', name: 'Sync', maker: 'Sync Labs', caps: ['lipsync'], note: '입 모양 맞추기 전문이에요.', match: /sync-lipsync|sync lipsync/i },
+  { id: 'topaz', name: 'Topaz', maker: 'Topaz Labs', caps: ['upscale', 'upscale_video'], note: '화질 올리기 전문 — 이미지·영상을 더 선명하게 키워요.', match: /topaz/i },
   { id: 'mmaudio', name: 'MMAudio', maker: 'MMAudio', caps: ['sfx'], note: '영상에 맞는 효과음을 만들어요.', match: /mmaudio/i },
   { id: 'deepseek', name: 'DeepSeek', maker: 'DeepSeek', caps: ['text'], note: '저렴한 글쓰기 모델이에요.', match: /deepseek/i },
   { id: 'qwen', name: 'Qwen', maker: 'Alibaba', caps: ['text'], note: '저렴한 글쓰기 모델이에요.', match: /qwen/i },
   { id: 'kimi', name: 'Kimi', maker: 'Moonshot', caps: ['text'], note: '긴 이야기 구성에 쓰는 글쓰기 모델이에요.', match: /kimi|moonshot/i },
   { id: 'glm', name: 'GLM', maker: 'Zhipu', caps: ['text'], note: '글쓰기 모델이에요.', match: /glm|zhipu/i },
-  { id: 'mock', name: '개발용 가짜 AI', maker: '숏핑', caps: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'], note: '개발·시험용이에요. 실제 결과물이 아니에요.', match: /mock|가짜/i },
+  { id: 'mock', name: '개발용 가짜 AI', maker: '숏핑', caps: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video'], note: '개발·시험용이에요. 실제 결과물이 아니에요.', match: /mock|가짜/i },
 ];
 // 모델 하나가 어느 계열인지(이름·모델 ID·공급사 종류로 판단). 모르면 'other'
 export function familyOf(row) {
@@ -26,3 +27,10 @@ export function familyOf(row) {
   return FAMILIES.find((f) => f.id !== 'mock' && f.match.test(text))?.id || 'other';
 }
 export const familyList = () => FAMILIES.map(({ match, ...f }) => f);
+// 카메라 연출(2026-09-29): 궤도·크레인·달리 줌 같은 복잡한 카메라 움직임을 잘 따르는 영상 계열과
+// 끝 장면(마지막 프레임) 지정을 받는 계열. 모르는 계열은 '기본'으로 보고 쉬운 움직임으로 바꿔 보냅니다.
+const CAMERA_STRONG = new Set(['kling', 'gemini', 'seed', 'gpt', 'mock']);
+const END_FRAME = new Set(['kling', 'gemini', 'seed', 'mock']);
+export const cameraLevel = (family) => (CAMERA_STRONG.has(family) ? 'strong' : 'basic');
+export const endFrameFamily = (family) => END_FRAME.has(family);
+export const cameraFamilies = () => ({ strong: [...CAMERA_STRONG].filter((f) => f !== 'mock'), endFrame: [...END_FRAME].filter((f) => f !== 'mock') });

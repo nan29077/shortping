@@ -5,6 +5,7 @@ import path from 'node:path';
 import multer from 'multer';
 import { probeMedia } from '../media.mjs';
 import { bibleSchema } from './prompts.mjs';
+import { STRENGTH_IDS, SHOT_EFFECTS, angleOf, lensOf, lightOf, toneOf, heightOf, dofOf, focalOf } from './direction.mjs';
 
 // 숏핑 스튜디오 고도화 API(2026-09-23): 작품 설정집, 장소, 대본 버전, 목소리 라이브러리, 배경음악 올리기,
 // 예고편, 알림. routes-studio-ai.mjs의 공통 도우미(project, queueTranslate 등)를 받아 씁니다.
@@ -85,7 +86,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     bgm: z.string().regex(/^(|\/uploads\/[a-f0-9-]+\.(mp3|wav))$/).optional(),
     bgm_volume: z.number().min(0).max(1).optional(),
     resolution: z.enum(['720p', '1080p']).optional(),
-    paywall_from: z.number().int().min(1).max(60).optional(),
+    paywall_from: z.number().int().min(0).max(60).optional(), // 0 = 정하지 않음(되돌리기)
     budget_lama: z.number().int().min(0).max(100000000).optional(), // 프로젝트 예산(0 = 제한 없음)
     // 드라매직 벤치마킹(2026-09-25)
     script_text: z.string().max(30000).optional(), // 붙여 넣은 완성 대본
@@ -154,18 +155,22 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
       }
       put('relations', JSON.stringify(list));
     }
-    if (b.paywall_from) put('season', JSON.stringify({ ...parse(p.season), paywall_from: b.paywall_from }));
+    if (b.paywall_from !== undefined) put('season', JSON.stringify({ ...parse(p.season), paywall_from: b.paywall_from || undefined }));
     if (!sets.length) return res.json({ ok: true });
     put('updated_at', now());
     await db.run(`UPDATE studio_projects SET ${sets.join(',')} WHERE id=?`, [...vals, p.id]);
     // 완성본 모양(배경음악·화질·자막 위치)이 바뀌면 합성한 회차를 다시 합성해야 합니다.
-    if (b.bgm !== undefined || b.bgm_volume !== undefined || b.resolution || b.subtitle_style)
+    if (b.bgm !== undefined || b.bgm_volume !== undefined || b.resolution || b.subtitle_style) {
       await db.run("UPDATE studio_episodes SET status='scripted' WHERE project_id=? AND status='composed'", [p.id]);
+      await db.run("UPDATE studio_episodes SET compose_dirty=1 WHERE project_id=? AND status='composing'", [p.id]);
+    }
     res.json({ ok: true });
   });
 
   // ── 장소(로케이션): 장면 배경을 고정해 컷마다 같은 장소로 보이게 합니다 ─────────
   const locationSchema = z.object({ name: z.string().trim().min(1).max(40), look: z.string().trim().max(500).default('') });
+  // 고치기(PATCH): 보낸 칸만 바꿔요. 고정(locked) · 금지 요소(forbid, 장소만)는 3단계(2026-09-30)에 추가.
+  const placePatchSchema = z.object({ name: z.string().trim().min(1).max(40).optional(), look: z.string().trim().max(500).optional(), locked: z.boolean().optional(), forbid: z.string().trim().max(200).optional() });
   app.post('/api/studio/ai/projects/:id/locations', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, ['script', 'scene']);
     const b = locationSchema.parse(req.body);
@@ -179,10 +184,11 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
   });
   app.patch('/api/studio/ai/projects/:id/locations/:lid', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, ['script', 'scene']);
-    const b = locationSchema.parse(req.body);
+    const raw = placePatchSchema.parse(req.body);
     const l = await db.get('SELECT * FROM studio_locations WHERE id=? AND project_id=?', [req.params.lid, p.id]);
     if (!l) fail(404, '장소를 찾을 수 없어요.');
-    await db.run('UPDATE studio_locations SET name=?,look=? WHERE id=?', [b.name, b.look, l.id]);
+    const b = { name: raw.name ?? l.name, look: raw.look ?? l.look, locked: raw.locked === undefined ? Number(l.locked || 0) : raw.locked ? 1 : 0, forbid: raw.forbid ?? l.forbid ?? '' };
+    await db.run('UPDATE studio_locations SET name=?,look=?,locked=?,forbid=? WHERE id=?', [b.name, b.look, b.locked, b.forbid, l.id]);
     if (b.look !== l.look && b.look !== l.look_en_src) await queueTranslate(p.id, p.owner_id, [{ id: 'location:' + l.id, ko: b.look }]);
     res.json({ ok: true });
   });
@@ -209,10 +215,11 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
   });
   app.patch('/api/studio/ai/projects/:id/props/:xid', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, ['script', 'scene']);
-    const b = locationSchema.parse(req.body);
+    const raw = placePatchSchema.parse(req.body);
     const x = await db.get('SELECT * FROM studio_props WHERE id=? AND project_id=?', [req.params.xid, p.id]);
     if (!x) fail(404, '소품을 찾을 수 없어요.');
-    await db.run('UPDATE studio_props SET name=?,look=? WHERE id=?', [b.name, b.look, x.id]);
+    const b = { name: raw.name ?? x.name, look: raw.look ?? x.look, locked: raw.locked === undefined ? Number(x.locked || 0) : raw.locked ? 1 : 0 };
+    await db.run('UPDATE studio_props SET name=?,look=?,locked=? WHERE id=?', [b.name, b.look, b.locked, x.id]);
     if (b.look !== x.look && b.look !== x.look_en_src) await queueTranslate(p.id, p.owner_id, [{ id: 'prop:' + x.id, ko: b.look }]);
     res.json({ ok: true });
   });
@@ -263,6 +270,24 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
         return '';
       }
     };
+    // 검수 결과는 그 이미지를 검수한 것일 때만 되살려요.
+    const keepVerify = (raw, image) => {
+      try {
+        const o = raw ? JSON.parse(raw) : null;
+        return o && image && o.image === image ? raw : '';
+      } catch {
+        return '';
+      }
+    };
+    const keepUp = (raw) => {
+      try {
+        const o = raw ? JSON.parse(raw) : null;
+        return o && typeof o === 'object' ? JSON.stringify(o) : '';
+      } catch {
+        return '';
+      }
+    };
+    const seedOf = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Math.trunc(Number(v)));
     await db.transaction(async () => {
       // 지금 상태도 버전으로 남긴 뒤 되돌립니다.
       const current = await shotsOf(e.id);
@@ -279,18 +304,21 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
         const speaker = s.speaker_id && cast.has(s.speaker_id) ? s.speaker_id : null;
         const castIds = String(s.cast_ids || '').split(',').filter((x) => cast.has(x)).join(',');
         await db.run(
-          `INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,location_id,camera,camera_move,emotion,speed,narration,seconds,image,audio,audio_seconds,video,lipsync,sfx,sfx_prompt,sfx_volume,transition,caption,prop_ids,states)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,location_id,camera,camera_move,emotion,speed,narration,seconds,image,audio,audio_seconds,video,lipsync,sfx,sfx_prompt,sfx_volume,transition,caption,prop_ids,states,angle,lens,move_strength,end_image,effect,seed,seed_lock,end_frame,upscaled,verify,light,tone,height,dof,focal)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             randomUUID(), e.id, i++, s.scene || '', s.visual || '', s.visual_en || '', s.visual_en_src || '', s.dialogue || '', speaker, castIds,
             s.location_id && places.has(s.location_id) ? s.location_id : null, s.camera || '', s.camera_move || '', s.emotion || '', Number(s.speed) || 1, Number(s.narration) ? 1 : 0,
             Math.round(Math.min(10, Math.max(2, Number(s.seconds) || 5))), s.image || '', s.audio || '', Number(s.audio_seconds) || 0, s.video || '', s.lipsync || '', s.sfx || '', s.sfx_prompt || '',
             s.sfx_volume ?? 0.6, s.transition || 'cut', s.caption ?? null,
             String(s.prop_ids || '').split(',').filter((x) => things.has(x)).join(','), keepStates(s.states),
+            angleOf(s.angle), lensOf(s.lens), STRENGTH_IDS.includes(s.move_strength) ? s.move_strength : '', /^\/uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(s.end_image || '') ? s.end_image : '', SHOT_EFFECTS.includes(s.effect) ? s.effect : '',
+            seedOf(s.seed), Number(s.seed_lock) ? 1 : 0, Number(s.end_frame) ? 1 : 0, keepUp(s.upscaled), keepVerify(s.verify, s.image || ''),
+            lightOf(s.light), toneOf(s.tone), heightOf(s.height), dofOf(s.dof), focalOf(s.focal),
           ],
         );
       }
-      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='outline' THEN 'scripted' WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='outline' THEN 'scripted' WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END,script_review=CASE WHEN script_review IN ('approved','requested') THEN '' ELSE script_review END WHERE id=?", [e.id]);
     });
     await touch(p.id);
     res.json({ ok: true, shots: shots.length });
@@ -333,23 +361,32 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     const cached = await db.get('SELECT url FROM voice_samples WHERE model_ref=? AND voice=?', [b.model, b.voice]);
     if (cached) return res.json({ url: cached.url, ready: true });
     const key = `${b.model}|${b.voice}`;
-    const pending = voicePreviews.get(key);
-    if (pending) {
-      const j = await db.get('SELECT status,error FROM ai_jobs WHERE id=?', [pending]);
-      if (j && ['queued', 'running'].includes(j.status)) return res.json({ ready: false });
-      voicePreviews.delete(key);
-      if (j?.status === 'failed') fail(502, '미리듣기를 만들지 못했어요. 잠시 후 다시 시도해 주세요.');
-    }
-    const model = (await db.get('SELECT id FROM ai_models WHERE id=? AND capability=?', [b.model, 'tts']))?.id;
+    const model = (await db.get('SELECT m.id, p.kind FROM ai_models m JOIN ai_providers p ON p.id=m.provider_id WHERE m.id=? AND m.capability=?', [b.model, 'tts']));
     if (!model) fail(404, '목소리 모델을 찾을 수 없어요.');
+    // 미리듣기는 플랫폼이 부담하므로 목소리 목록에 있는 목소리만, 하루 횟수 안에서 만들어요.
+    if (!(VOICE_LIBRARY[model.kind] || []).some(([id]) => id === b.voice)) fail(400, '목록에 있는 목소리만 미리 들을 수 있어요.');
+    // 진행 중인 샘플이 있으면 기다려요(서버를 다시 시작해도 작업 기록으로 확인).
+    const pending = await db.get("SELECT id FROM ai_jobs WHERE kind='voice_preview' AND target_id=? AND status IN ('queued','running') LIMIT 1", [key]);
+    if (pending) return res.json({ ready: false });
+    const last = voicePreviews.get(key);
+    if (last) {
+      voicePreviews.delete(key);
+      const j = await db.get('SELECT status FROM ai_jobs WHERE id=?', [last]);
+      if (j?.status === 'failed') fail(502, '미리듣기를 만들지 못했어요. 잠시 후 다시 시도해 주세요.');
+      // 방금 끝났으면 저장된 샘플을 다시 확인해요(같은 샘플을 두 번 만들지 않도록).
+      const done = await db.get('SELECT url FROM voice_samples WHERE model_ref=? AND voice=?', [b.model, b.voice]);
+      if (done) return res.json({ url: done.url, ready: true });
+    }
+    const today = Number((await db.get("SELECT COUNT(*) AS n FROM ai_jobs WHERE kind='voice_preview' AND user_id=? AND created_at>=?", [req.user.id, new Date(Date.now() - 86400000).toISOString()]))?.n || 0);
+    if (today >= 30) fail(429, '미리듣기는 하루 30번까지 만들 수 있어요. 이미 만들어진 샘플은 계속 들을 수 있어요.');
     const job = await db.transaction(() =>
       engine.enqueue({
         userId: req.user.id,
         kind: 'voice_preview',
         capability: 'tts',
-        requested: model,
+        requested: model.id,
         tier: 'standard',
-        input: { text: PREVIEW_TEXT, voice: b.voice, modelRef: model, userText: '' },
+        input: { text: PREVIEW_TEXT, voice: b.voice, modelRef: model.id, userText: '' },
         target: { type: 'voice', id: key },
         bill: false,
       }),
@@ -421,7 +458,7 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
       }
       ids = ids.slice(0, 8);
     }
-    if (!ids.length) fail(400, '예고편에 넣을 컷이 없어요. 스토리보드 이미지나 영상을 먼저 만들어 주세요.');
+    if (!ids.length) fail(400, '예고편에 넣을 컷이 없어요. 컷 이미지나 영상을 먼저 만들어 주세요.');
     for (const url of [b.titleCard, b.endCard].filter(Boolean)) {
       const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [url]);
       if (!f || f.owner_id !== p.owner_id) fail(403, '이 프로젝트에서 만든 이미지만 쓸 수 있어요.');

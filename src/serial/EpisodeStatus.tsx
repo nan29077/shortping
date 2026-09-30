@@ -57,11 +57,11 @@ export function EpisodeStatusChip({
     s === 'approved'
       ? '공개 중'
       : s === 'draft'
-        ? '검수 전'
+        ? '심사 전'
         : s === 'pending'
           ? publishAt
-            ? `검수 대기 · ${kstLabel(publishAt)} 예약`
-            : '검수 대기'
+            ? `심사 대기 · ${kstLabel(publishAt)} 예약`
+            : '심사 대기'
           : s === 'rejected'
             ? '반려'
             : s === 'scheduled'

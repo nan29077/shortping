@@ -16,6 +16,65 @@ export type NotificationItem = {
 
 const POLL_MS = 60_000;
 
+// 알림 목록은 화면에 종이 여러 개(모바일 머리글·PC 오른쪽 메뉴·스튜디오) 있어도 한 곳에서만 받아 옵니다.
+// 첫 종이 붙을 때 1분 주기 확인을 시작하고, 마지막 종이 사라지면 멈춥니다(요청이 두 배로 늘지 않게).
+type BellState = { list: NotificationItem[]; unread: number; loaded: boolean; failed: boolean };
+const store = {
+  state: { list: [], unread: 0, loaded: false, failed: false } as BellState,
+  listeners: new Set<(s: BellState) => void>(),
+  timer: undefined as ReturnType<typeof setInterval> | undefined,
+  inflight: null as Promise<void> | null,
+  set(patch: Partial<BellState>) {
+    this.state = { ...this.state, ...patch };
+    for (const fn of this.listeners) fn(this.state);
+  },
+};
+function loadNotifications() {
+  if (store.inflight) return store.inflight;
+  store.inflight = (async () => {
+    try {
+      const r = await api<{ list: NotificationItem[]; unread: number }>('/notifications');
+      store.set({ list: r.list || [], unread: Number(r.unread) || 0, failed: false, loaded: true });
+    } catch {
+      store.set({ failed: true, loaded: true });
+    } finally {
+      store.inflight = null;
+    }
+  })();
+  return store.inflight;
+}
+const startPolling = () => {
+  if (store.timer) clearInterval(store.timer);
+  store.timer = setInterval(() => void loadNotifications(), POLL_MS);
+};
+const stopPolling = () => {
+  if (store.timer) clearInterval(store.timer);
+  store.timer = undefined;
+};
+const onVisibility = () => {
+  if (document.visibilityState === 'visible') {
+    void loadNotifications();
+    startPolling();
+  } else stopPolling();
+};
+function subscribe(fn: (s: BellState) => void) {
+  store.listeners.add(fn);
+  if (store.listeners.size === 1) {
+    // 다른 계정으로 바뀌었을 수 있으니 새로 시작할 때는 비우고 다시 받습니다.
+    store.set({ list: [], unread: 0, loaded: false, failed: false });
+    void loadNotifications();
+    if (document.visibilityState === 'visible') startPolling();
+    document.addEventListener('visibilitychange', onVisibility);
+  }
+  return () => {
+    store.listeners.delete(fn);
+    if (!store.listeners.size) {
+      stopPolling();
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
+  };
+}
+
 // ‘방금 전’, ‘5분 전’, ‘3시간 전’, ‘2일 전’, 그 이상은 날짜로 보여 줍니다.
 export function relativeTime(value: string, now = Date.now()) {
   const t = new Date(value).getTime();
@@ -44,49 +103,12 @@ export default function NotificationBell({
   onNavigate?: (link: string) => void;
   className?: string;
 }) {
-  const [list, setList] = useState<NotificationItem[]>([]),
-    [unread, setUnread] = useState(0),
-    [open, setOpen] = useState(false),
-    [loaded, setLoaded] = useState(false),
-    [failed, setFailed] = useState(false);
+  const [state, setState] = useState<BellState>(store.state),
+    [open, setOpen] = useState(false);
+  const { list, unread, loaded, failed } = state;
   const root = useRef<HTMLDivElement>(null);
-  const load = useCallback(async () => {
-    try {
-      const r = await api<{ list: NotificationItem[]; unread: number }>('/notifications');
-      setList(r.list || []);
-      setUnread(Number(r.unread) || 0);
-      setFailed(false);
-    } catch {
-      setFailed(true);
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
-  // 탭이 보일 때만 1분마다 새 알림을 확인하고, 다시 보이면 곧바로 한 번 확인합니다.
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const start = () => {
-      if (timer) clearInterval(timer);
-      timer = setInterval(() => void load(), POLL_MS);
-    };
-    const stop = () => {
-      if (timer) clearInterval(timer);
-      timer = undefined;
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void load();
-        start();
-      } else stop();
-    };
-    void load();
-    if (document.visibilityState === 'visible') start();
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [load]);
+  const load = useCallback(() => loadNotifications(), []);
+  useEffect(() => subscribe(setState), []);
   // 바깥을 누르거나 Esc를 누르면 닫습니다.
   useEffect(() => {
     if (!open) return;
@@ -109,9 +131,12 @@ export default function NotificationBell({
   }, [open]);
   const markRead = async (ids?: string[]) => {
     const stamp = new Date().toISOString();
-    // 화면에는 바로 읽음으로 표시하고, 서버 반영은 뒤에서 합니다.
-    setList((cur) => cur.map((n) => (!ids || ids.includes(n.id) ? { ...n, read_at: n.read_at || stamp } : n)));
-    setUnread((cur) => (ids ? Math.max(0, cur - list.filter((n) => ids.includes(n.id) && !n.read_at).length) : 0));
+    // 화면에는 바로 읽음으로 표시하고(모든 종에 함께), 서버 반영은 뒤에서 합니다.
+    const cur = store.state;
+    store.set({
+      list: cur.list.map((n) => (!ids || ids.includes(n.id) ? { ...n, read_at: n.read_at || stamp } : n)),
+      unread: ids ? Math.max(0, cur.unread - cur.list.filter((n) => ids.includes(n.id) && !n.read_at).length) : 0,
+    });
     try {
       await api('/notifications/read', 'POST', ids ? { ids } : {});
     } catch {

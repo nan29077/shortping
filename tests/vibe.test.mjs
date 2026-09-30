@@ -88,7 +88,7 @@ before(async () => {
   ep1 = d.episodes[0].id;
   assert.equal((await run({ action: 'script', targetId: ep1 })).status, 201);
   d = await waitIdle();
-  assert.ok(d.episodes[0].shots.length >= 3, 'script made shots');
+  assert.ok(d.episodes[0].shots.length >= 3, 'script made shots ' + JSON.stringify(d.jobs.map((j) => [j.kind, j.status, j.error])) + output.slice(-1500));
 });
 after(async () => {
   child?.kill();

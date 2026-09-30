@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Bot, Loader2, Pause, Play, Rocket, Square } from 'lucide-react';
 import { api, lama, won, type AiModelOption, type AutopilotEstimate, type StudioProjectDetail } from '../api';
 import { ModelPicker, OptionRow, effectiveChoices, type Choices } from './parts';
+import NumberInput from '../NumberInput';
 
 const stageName: Record<string, string> = {
   plan: '기획안',
@@ -9,7 +10,7 @@ const stageName: Record<string, string> = {
   season: '시즌 설계',
   cast: '인물 이미지',
   script: '대본',
-  board: '스토리보드',
+  board: '컷 이미지',
   voice: '대사 음성',
   video: '컷 영상',
   lipsync: '입 모양',
@@ -67,6 +68,8 @@ export default function AutopilotPanel({
   const [est, setEst] = useState<AutopilotEstimate | null>(null);
   const [busy, setBusy] = useState(false);
   const body = () => ({ choices, includeVideo, ...opts, ...(cap ? { cap: Number(cap) } : {}) });
+  // 회차·컷 상태 요약(작업 중 2초마다 새로 받는 데이터가 같으면 예상 비용을 다시 계산하지 않도록)
+  const episodeSig = data.episodes.map((e) => [e.id, e.status, e.shots.length, e.shots.filter((s) => s.image).length, e.shots.filter((s) => s.audio).length, e.shots.filter((s) => s.video).length, e.shots.filter((s) => s.lipsync).length].join(':')).join('|');
   // 설정이 바뀌면 예상 비용을 다시 계산합니다.
   useEffect(() => {
     if (!open || running) return;
@@ -84,7 +87,7 @@ export default function AutopilotPanel({
       clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, running, choices, includeVideo, JSON.stringify(opts), data.project.id, data.project.updated_at, data.characters.length, data.episodes]);
+  }, [open, running, choices, includeVideo, JSON.stringify(opts), data.project.id, data.project.updated_at, data.characters.length, episodeSig]);
   const suggested = est ? Math.ceil(est.total * 1.3) + 10 : 0;
   const lacking = !!est && est.wallet.total < Math.min(cap ? Number(cap) : suggested, est.total);
   const start = async () => {
@@ -212,9 +215,9 @@ export default function AutopilotPanel({
                 <label>
                   만들 회차
                   <span className="ap-range">
-                    <input type="number" min={1} max={epCount} inputMode="numeric" aria-label="시작 회차" value={range.from} placeholder="1" onChange={(e) => setRange({ ...range, from: e.target.value.replace(/\D/g, '') })} />
+                    <NumberInput min={1} max={epCount} inputMode="numeric" aria-label="시작 회차" value={range.from} placeholder="1" onChange={(e) => setRange({ ...range, from: e.target.value.replace(/\D/g, '') })} />
                     ~
-                    <input type="number" min={1} max={epCount} inputMode="numeric" aria-label="끝 회차" value={range.to} placeholder={String(epCount)} onChange={(e) => setRange({ ...range, to: e.target.value.replace(/\D/g, '') })} />
+                    <NumberInput min={1} max={epCount} inputMode="numeric" aria-label="끝 회차" value={range.to} placeholder={String(epCount)} onChange={(e) => setRange({ ...range, to: e.target.value.replace(/\D/g, '') })} />
                     화
                   </span>
                 </label>
@@ -230,7 +233,7 @@ export default function AutopilotPanel({
               </label>
               <label>
                 최대 사용 라마
-                <input type="number" min={1} value={cap} placeholder={suggested ? `추천 ${suggested.toLocaleString('ko-KR')}` : '자동'} onChange={(e) => setCap(e.target.value.replace(/\D/g, ''))} />
+                <NumberInput min={1} value={cap} placeholder={suggested ? `추천 ${suggested.toLocaleString('ko-KR')}` : '자동'} onChange={(e) => setCap(e.target.value.replace(/\D/g, ''))} />
               </label>
             </div>
             {est ? (

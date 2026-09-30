@@ -31,9 +31,10 @@ import {
 } from './serial/EpisodeStatus';
 import ThumbAB from './serial/ThumbAB';
 import { asset } from './platform';
+import NumberInput from './NumberInput';
 
 // 회차 관리: 여러 회차 한 번에 올리기(분할·이어 올리기), 자동 사전 점검, 자막, 포스터 후보.
-// 공개 중인 작품은 연재형으로 다음 회차를 올리고 회차마다 검수를 신청합니다(원하면 공개 예약).
+// 공개 중인 작품은 연재형으로 다음 회차를 올리고 회차마다 심사를 신청합니다(원하면 공개 예약).
 type QueueItem = {
   key: string;
   file: File;
@@ -164,7 +165,7 @@ export default function EpisodeManager({
   );
   const nextNumber = () =>
     Math.max(0, ...episodes.map((e) => e.number), ...queue.map((q) => q.number)) + 1;
-  // 공개 작품에서 이미 공개됐거나 검수 중인 회차 번호는 새 파일로 바꿀 수 없어요.
+  // 공개 작품에서 이미 공개됐거나 심사 중인 회차 번호는 새 파일로 바꿀 수 없어요.
   const blocked = (n: number) =>
     published && episodes.some((e) => e.number === n && !EDITABLE.includes(statusOf(e)));
   const addFiles = (files: FileList | File[]) => {
@@ -224,7 +225,7 @@ export default function EpisodeManager({
         patch(item.key, {
           status: 'error',
           fatal: 'input',
-          error: `${item.number}화는 이미 공개됐거나 검수 중이라 바꿀 수 없어요. 회차 번호를 고쳐 주세요.`,
+          error: `${item.number}화는 이미 공개됐거나 심사 중이라 바꿀 수 없어요. 회차 번호를 고쳐 주세요.`,
         });
         continue;
       }
@@ -273,7 +274,7 @@ export default function EpisodeManager({
     if (ok)
       notify(
         published
-          ? `${ok}개 회차를 올렸어요. 회차마다 ‘검수 신청’을 눌러 공개를 요청해 주세요.`
+          ? `${ok}개 회차를 올렸어요. 회차마다 ‘심사 신청’을 눌러 공개를 요청해 주세요.`
           : `${ok}개 회차를 등록했어요.`,
       );
   };
@@ -350,8 +351,8 @@ export default function EpisodeManager({
     const ok = await act(
       () => api(`/studio/dramas/${d.id}/episodes/${n}/submit`, 'POST', { publish_at: publishAt }),
       publishAt
-        ? `${n}화 검수를 신청했어요. 승인되면 ${kstLabel(publishAt)}에 공개돼요.`
-        : `${n}화 검수를 신청했어요. 승인되면 바로 공개돼요.`,
+        ? `${n}화 심사를 신청했어요. 승인되면 ${kstLabel(publishAt)}에 공개돼요.`
+        : `${n}화 심사를 신청했어요. 승인되면 바로 공개돼요.`,
     );
     if (ok) setSubmitFor(null);
   };
@@ -413,7 +414,7 @@ export default function EpisodeManager({
           <CalendarClock size={16} />
           <span>
             <b>연재 중인 작품이에요.</b> 공개된 회차는 바꿀 수 없어요. 다음 회차({last + 1}화)를
-            올린 뒤 ‘검수 신청’을 누르면 관리자 확인 후 바로, 또는 예약한 시각에 공개돼요.
+            올린 뒤 ‘심사 신청’을 누르면 관리자 확인 후 바로, 또는 예약한 시각에 공개돼요.
           </span>
         </div>
       )}
@@ -443,7 +444,7 @@ export default function EpisodeManager({
                 {published && rs === 'rejected' && (
                   <p className="serial-note" role="note">
                     <AlertTriangle size={12} /> 반려 사유:{' '}
-                    {e.review_note || '관리자가 사유를 남기지 않았어요.'} · 고친 뒤 다시 검수를
+                    {e.review_note || '관리자가 사유를 남기지 않았어요.'} · 고친 뒤 다시 심사를
                     신청해 주세요.
                   </p>
                 )}
@@ -574,7 +575,7 @@ export default function EpisodeManager({
                           });
                         }}
                       >
-                        <Send size={13} /> {rs === 'rejected' ? '다시 검수 신청' : '검수 신청'}
+                        <Send size={13} /> {rs === 'rejected' ? '다시 심사 신청' : '심사 신청'}
                       </button>
                     )}
                     {published && ['pending', 'scheduled'].includes(rs) && (
@@ -628,7 +629,7 @@ export default function EpisodeManager({
                       void submitEpisode();
                     }}
                   >
-                    <strong>{e.number}화 검수 신청</strong>
+                    <strong>{e.number}화 심사 신청</strong>
                     <label className="check-row">
                       <input
                         type="checkbox"
@@ -665,7 +666,7 @@ export default function EpisodeManager({
                         취소
                       </button>
                       <button className="primary" disabled={busy}>
-                        <Send size={15} /> 검수 신청
+                        <Send size={15} /> 심사 신청
                       </button>
                     </div>
                   </form>
@@ -792,7 +793,7 @@ export default function EpisodeManager({
       {removeNumber !== null && (
         <div className="review-alert">
           {removeNumber}화 등록을 삭제할까요?{' '}
-          {published ? '검수 신청과 공개 예약도 함께 취소돼요. ' : ''}원본 파일은 유지됩니다.
+          {published ? '심사 신청과 공개 예약도 함께 취소돼요. ' : ''}원본 파일은 유지됩니다.
           <div className="form-actions">
             <button className="secondary" disabled={busy} onClick={() => setRemoveNumber(null)}>
               취소
@@ -893,8 +894,7 @@ export default function EpisodeManager({
                   <div className="upload-row-main">
                     <label>
                       회차
-                      <input
-                        type="number"
+                      <NumberInput
                         min={1}
                         max={500}
                         value={q.number}
@@ -930,7 +930,7 @@ export default function EpisodeManager({
                     {q.status === 'done' && <Check size={12} />}
                     {q.status === 'ready' &&
                       blocked(q.number) &&
-                      ' · 공개됐거나 검수 중인 회차 번호예요'}
+                      ' · 공개됐거나 심사 중인 회차 번호예요'}
                     {q.status === 'ready' &&
                       !blocked(q.number) &&
                       episodes.some((e) => e.number === q.number) &&
@@ -1019,7 +1019,7 @@ export default function EpisodeManager({
           <p className="demo-footnote">
             업로드가 끊기면 ‘이어서 올리기’로 멈춘 지점부터 다시 올려요.{' '}
             {published
-              ? '새 회차는 ‘검수 신청’을 눌러야 관리자에게 전달돼요.'
+              ? '새 회차는 ‘심사 신청’을 눌러야 관리자에게 전달돼요.'
               : '회차 등록 후 작품 목록에서 심사를 요청하세요.'}
           </p>
         </>

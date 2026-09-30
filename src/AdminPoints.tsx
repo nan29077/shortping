@@ -24,6 +24,7 @@ import {
   type PingProduct,
 } from './api';
 import { Empty, Modal } from './App';
+import NumberInput from './NumberInput';
 
 // 슈퍼관리자 포인트(핑) 관리: 현황 · 충전 상품 · 가격 정책 · 분배 비율 · 지급/회수.
 type Tab = 'overview' | 'products' | 'policy' | 'rates' | 'adjust';
@@ -424,8 +425,7 @@ function Products({ data, busy, run }: { data: AdminPings; busy: boolean; run: R
             <div className="form-columns">
               <label>
                 가격 (원)
-                <input
-                  type="number"
+                <NumberInput
                   min={100}
                   max={10000000}
                   value={editing.price}
@@ -435,8 +435,7 @@ function Products({ data, busy, run }: { data: AdminPings; busy: boolean; run: R
               </label>
               <label>
                 충전 핑
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   value={editing.pings}
                   onChange={(e) => setEditing({ ...editing, pings: Number(e.target.value) })}
@@ -445,8 +444,7 @@ function Products({ data, busy, run }: { data: AdminPings; busy: boolean; run: R
               </label>
               <label>
                 보너스 핑
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   value={editing.bonus_pings}
                   onChange={(e) => setEditing({ ...editing, bonus_pings: Number(e.target.value) })}
@@ -465,8 +463,7 @@ function Products({ data, busy, run }: { data: AdminPings; busy: boolean; run: R
               </label>
               <label>
                 표시 순서
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   max={999}
                   value={editing.sort_order}
@@ -535,22 +532,24 @@ function Policy({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          await run(() => api('/admin/settings', 'PUT', form), '핑 가격 정책을 저장했어요.');
+          // 이 화면이 다루는 항목만 보냅니다(다른 탭에서 그사이 바꾼 값을 되돌리지 않게).
+          const keys = Object.keys(pick()) as (keyof typeof form)[];
+          await run(() => api('/admin/settings', 'PUT', Object.fromEntries(keys.map((k) => [k, Number(form[k])]))), '핑 가격 정책을 저장했어요.');
         }}
       >
         <h4 className="spaced-title">핑 가격</h4>
         <div className="form-columns">
           <label>
             1핑 기준가 (원)
-            <input type="number" min={1} max={10000} value={form.ping_unit_won} onChange={num('ping_unit_won')} required />
+            <NumberInput min={1} max={10000} value={form.ping_unit_won} onChange={num('ping_unit_won')} required />
           </label>
           <label>
             기본 회차 가격 (핑)
-            <input type="number" min={1} max={1000} value={form.default_episode_pings} onChange={num('default_episode_pings')} required />
+            <NumberInput min={1} max={1000} value={form.default_episode_pings} onChange={num('default_episode_pings')} required />
           </label>
           <label>
             작품 전체 열기 할인 (%)
-            <input type="number" min={0} max={90} step={1} value={form.title_unlock_discount} onChange={num('title_unlock_discount')} required />
+            <NumberInput min={0} max={90} step={1} value={form.title_unlock_discount} onChange={num('title_unlock_discount')} required />
           </label>
         </div>
         <p className="muted settings-note">
@@ -562,21 +561,21 @@ function Policy({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
         <div className="form-columns">
           <label>
             플랫폼 몫 (%) · 공통
-            <input type="number" min={0} max={90} step={0.1} value={form.platform_fee_rate} onChange={num('platform_fee_rate')} required />
+            <NumberInput min={0} max={90} step={0.1} value={form.platform_fee_rate} onChange={num('platform_fee_rate')} required />
           </label>
           <label>
             웹 결제(PG) 수수료 (%)
-            <input type="number" min={0} max={20} step={0.1} value={form.pg_fee_rate} onChange={num('pg_fee_rate')} required />
+            <NumberInput min={0} max={20} step={0.1} value={form.pg_fee_rate} onChange={num('pg_fee_rate')} required />
           </label>
         </div>
         <div className="form-columns">
           <label>
             App Store 수수료 (%)
-            <input type="number" min={0} max={50} step={0.1} value={form.app_store_fee_rate} onChange={num('app_store_fee_rate')} required />
+            <NumberInput min={0} max={50} step={0.1} value={form.app_store_fee_rate} onChange={num('app_store_fee_rate')} required />
           </label>
           <label>
             Google Play 수수료 (%)
-            <input type="number" min={0} max={50} step={0.1} value={form.google_play_fee_rate} onChange={num('google_play_fee_rate')} required />
+            <NumberInput min={0} max={50} step={0.1} value={form.google_play_fee_rate} onChange={num('google_play_fee_rate')} required />
           </label>
         </div>
         <div className="info-box">
@@ -663,9 +662,8 @@ function Rates({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run 
                     <small>{custom ? `개별 설정 · ${moment(r.updated_at)}` : '공통 비율'}</small>
                   </td>
                   <td>
-                    <input
+                    <NumberInput
                       className="rate-input"
-                      type="number"
                       min={0}
                       max={100}
                       step={0.1}
@@ -792,8 +790,7 @@ function Adjust({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
             </label>
             <label>
               핑
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={100000}
                 value={form.pings}

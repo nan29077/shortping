@@ -41,6 +41,9 @@ import {
   parseScriptSchema,
   propPrompt,
   verifyPrompt,
+  lookOf,
+  videoVerifyPrompt,
+  videoVerifySchema,
   verifySchema,
   bridgePrompt,
   variantsPrompt,
@@ -57,10 +60,12 @@ import { qualityRoutes } from './quality.mjs';
 import { libraryRoutes } from './library.mjs';
 import { can, ROLE_NAME, needText, actionNeed } from './team.mjs';
 import { collabRoutes } from './collab.mjs';
+import { CAMERA_MOVES, ANGLE_IDS, LENS_IDS, STRENGTH_IDS, SHOT_EFFECTS, LIGHT_IDS, TONE_IDS, HEIGHT_IDS, angleOf, lensOf, lightOf, toneOf, isComplexMove, toneGrade, lightText } from './direction.mjs';
 
 // 숏핑 스튜디오(AI 제작) API: 프로젝트 → 기획 → 캐릭터 → 대본(컷) → 스토리보드 → 음성 → 영상 → 합성 → 작품으로 내보내기·검수 신청.
 // 비용이 드는 단계는 모두 AI 작업 대기열(engine)을 거치고, 라마 예약·차감·반환은 엔진이 맡습니다.
-export const GENRES = ['로맨스', '스릴러', '판타지', '코미디', '청춘'];
+export { GENRES } from '../genres.mjs';
+import { GENRES } from '../genres.mjs';
 const parseAutopilot = (raw) => {
   try {
     return raw ? JSON.parse(raw) : null;
@@ -74,7 +79,7 @@ const AP_STAGES = {
   season: '회차별 훅·반전 설계',
   cast: '인물 이미지',
   script: '대본',
-  board: '스토리보드',
+  board: '컷 이미지',
   voice: '대사 음성',
   video: '컷 영상',
   lipsync: '입 모양 맞추기',
@@ -112,6 +117,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     return db.get('SELECT * FROM studio_members WHERE project_id=? AND user_id=?', [projectId, user.id]);
   };
   let chatApi = null; // AI 조수(assistant.mjs) — 아래에서 연결
+  let shotMedia = null; // 내 소재·마스크(shot-media.mjs) — 아래에서 연결
   const touch = (id) => db.run('UPDATE studio_projects SET updated_at=? WHERE id=?', [now(), id]);
   const charactersOf = (pid) => db.all('SELECT * FROM studio_characters WHERE project_id=? ORDER BY sort_order, name', [pid]);
   const episodesOf = (pid) => db.all('SELECT * FROM studio_episodes WHERE project_id=? ORDER BY number', [pid]);
@@ -133,7 +139,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (/와이드|풍경|wide|landscape|skyline/i.test(`${shot.camera} ${shot.visual}`)) tags.push('landscape');
     return tags.length ? tags : ['scene'];
   };
-  const imageRef = (url) => (url && url.startsWith('/uploads/') ? { path: url, mime: /\.png$/.test(url) ? 'image/png' : 'image/jpeg' } : undefined);
+  const imageRef = (url) => (url && url.startsWith('/uploads/') ? { path: url, mime: /\.png$/.test(url) ? 'image/png' : /\.webp$/.test(url) ? 'image/webp' : 'image/jpeg' } : undefined);
   const loadShot = async (req, shotId, need = 'manage') => {
     const s = await db.get(
       'SELECT s.*, e.project_id, e.number AS episode_number FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE s.id=?',
@@ -207,8 +213,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       }
       const propIds = [...new Set((s.props || []).map(propOf).filter(Boolean))].join(',');
       await db.run(
-        'INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,camera,camera_move,emotion,narration,sfx_prompt,seconds,location_id,prop_ids,states) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [randomUUID(), episodeId, i++, s.scene, s.visual, en, en ? s.visual : '', s.dialogue, s.dialogue ? speakerId : null, castIds, s.camera, s.camera_move || '', s.emotion || '', narration && s.dialogue ? 1 : 0, s.sfx || '', Math.round(Math.min(10, Math.max(2, s.seconds))), placeOf(s.location), propIds, Object.keys(states).length ? JSON.stringify(states) : ''],
+        'INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,camera,camera_move,angle,lens,light,tone,emotion,narration,sfx_prompt,seconds,location_id,prop_ids,states) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [randomUUID(), episodeId, i++, s.scene, s.visual, en, en ? s.visual : '', s.dialogue, s.dialogue ? speakerId : null, castIds, s.camera, s.camera_move || '', angleOf(s.angle), lensOf(s.lens), lightOf(s.light), toneOf(s.tone), s.emotion || '', narration && s.dialogue ? 1 : 0, s.sfx || '', Math.round(Math.min(10, Math.max(2, s.seconds))), placeOf(s.location), propIds, Object.keys(states).length ? JSON.stringify(states) : ''],
       );
     }
     return i;
@@ -228,7 +234,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         scene: s.scene, visual: s.visual, visual_en: s.visual_en || '', visual_en_src: s.visual_en ? s.visual : '', dialogue: s.dialogue, speaker_id: s.dialogue ? speakerId : null,
         cast_ids: [...new Set([...(s.cast || []).map(idOf), speakerId].filter(Boolean))].join(','),
         location_id: places.find((l) => l.name === String(s.location || '').trim())?.id || null,
-        camera: s.camera, camera_move: s.camera_move || '', emotion: s.emotion || '', speed: 1, narration: narration && s.dialogue ? 1 : 0,
+        camera: s.camera, camera_move: s.camera_move || '', angle: angleOf(s.angle), lens: lensOf(s.lens), light: lightOf(s.light), tone: toneOf(s.tone), emotion: s.emotion || '', speed: 1, narration: narration && s.dialogue ? 1 : 0,
         seconds: Math.round(Math.min(10, Math.max(2, s.seconds))), sfx_prompt: s.sfx || '', transition: 'cut',
         prop_ids: [...new Set((s.props || []).map((n) => things.find((x) => x.name === String(n).trim())?.id).filter(Boolean))].join(','),
         states: Object.keys(states).length ? JSON.stringify(states) : '',
@@ -246,6 +252,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       location_id: x.location_id, camera: x.camera, camera_move: x.camera_move, emotion: x.emotion, speed: x.speed, narration: x.narration, seconds: x.seconds,
       image: x.image, audio: x.audio, audio_seconds: x.audio_seconds, video: x.video, lipsync: x.lipsync, sfx: x.sfx, sfx_prompt: x.sfx_prompt, sfx_volume: x.sfx_volume, transition: x.transition, caption: x.caption,
       prop_ids: x.prop_ids, states: x.states,
+      angle: x.angle, lens: x.lens, move_strength: x.move_strength, end_image: x.end_image, effect: x.effect,
+      // 되돌려도 같은 그림이 이어지도록 시드 · 끝 장면 · 화질 올림 · 검수 결과까지 남겨요.
+      seed: x.seed, seed_lock: x.seed_lock, end_frame: x.end_frame, upscaled: x.upscaled, verify: x.verify,
+      light: x.light, tone: x.tone, height: x.height, dof: x.dof, focal: x.focal,
     }));
     await db.run('INSERT INTO studio_script_versions (id,project_id,episode_id,version,shots,source,note,created_at) VALUES (?,?,?,?,?,?,?,?)', [
       randomUUID(), projectId, episodeId, version, JSON.stringify(keep), source, note.slice(0, 200), now(),
@@ -256,6 +266,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     await db.run('DELETE FROM studio_script_versions WHERE episode_id=? AND version<=?', [episodeId, version - 30]);
     return version;
   }
+  // 대본 내용(장면·대사·화자·순서·길이)을 직접 고치면 받아 둔 대본 승인(요청·승인)은 다시 받아야 해요.
+  const resetScriptReview = (episodeId) => db.run("UPDATE studio_episodes SET script_review=CASE WHEN script_review IN ('approved','requested') THEN '' ELSE script_review END WHERE id=?", [episodeId]);
   engine.registerHandler('script', {
     async onSuccess({ job, result }) {
       const script = parseJson(result.text, scriptSchema);
@@ -293,7 +305,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       const end = await insertShots(e.id, e.project_id, next.shots, first);
       let k = end;
       for (const x of after) await db.run('UPDATE studio_shots SET sort_order=? WHERE id=?', [k++, x.id]);
-      await db.run("UPDATE studio_episodes SET status=CASE WHEN status IN ('composed','outline') THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status IN ('composed','outline') THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [e.id]);
       await touch(e.project_id);
       return { shots: next.shots.length };
     },
@@ -367,7 +379,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           (table === 'studio_shots' && (column === 'image' || column === 'video') ? ",verify=''" : '');
         await db.run(`UPDATE ${table} SET ${column}=?${column === 'audio' ? ',audio_seconds=?' : ''}${resetSync} WHERE id=?`, column === 'audio' ? [result.url, result.duration || 0, row.id] : [result.url, row.id]);
         // 컷이 바뀌면 이미 합성한 회차 영상은 다시 만들어야 합니다.
-        if (table === 'studio_shots') await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [row.episode_id]);
+        if (table === 'studio_shots') await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [row.episode_id]);
       }
       if (job.project_id) await asset(job, job.project_id, { type: job.target_type, id: job.target_id }, kind, result.url, model);
       return { url: result.url, duration: result.duration || 0 };
@@ -381,26 +393,97 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       const cast = await charactersOf(s.project_id);
       const speaker = cast.find((c) => c.name === next.speaker.trim());
       const speakerId = next.dialogue ? speaker?.id || s.speaker_id : null;
-      const audioReset = next.dialogue !== s.dialogue || speakerId !== s.speaker_id;
+      const emotion = String(next.emotion || '').trim() || s.emotion || '';
+      const audioReset = next.dialogue !== s.dialogue || speakerId !== s.speaker_id || emotion !== (s.emotion || '');
+      // 영어 묘사: AI가 함께 준 영어 프롬프트를 쓰고, 없으면 번역을 맡겨요. 카메라 움직임은 AI가 새로 정했을 때만 바꾸고 앵글·렌즈 느낌은 그대로 둬요.
+      const en = String(next.visual_en || '').trim();
+      const move = CAMERA_MOVES.includes(String(next.camera_move || '')) ? next.camera_move : s.camera_move || '';
       await db.run(
-        `UPDATE studio_shots SET scene=?,visual=?,dialogue=?,speaker_id=?,camera=?,seconds=?${audioReset ? ",audio='',audio_seconds=0,lipsync=''" : ''} WHERE id=?`,
-        [next.scene, next.visual, next.dialogue, speakerId, next.camera, Math.round(Math.min(10, Math.max(2, next.seconds))), s.id],
+        `UPDATE studio_shots SET scene=?,visual=?,visual_en=?,visual_en_src=?,dialogue=?,speaker_id=?,camera=?,camera_move=?,emotion=?,seconds=?,updated_at=?${audioReset ? ",audio='',audio_seconds=0,lipsync=''" : ''} WHERE id=?`,
+        [next.scene, next.visual, en || (next.visual === s.visual ? s.visual_en || '' : ''), en ? next.visual : next.visual === s.visual ? s.visual_en_src || '' : '', next.dialogue, speakerId, next.camera || s.camera, move, emotion, Math.round(Math.min(10, Math.max(2, next.seconds))), now(), s.id],
       );
-      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+      if (!en && next.visual !== s.visual) {
+        const owner = (await db.get('SELECT owner_id FROM studio_projects WHERE id=?', [s.project_id]))?.owner_id;
+        // 작업 확정 트랜잭션 안이라 같은 트랜잭션으로 번역을 걸어요(따로 열면 SQLite에서 서로 기다리며 멈춰요).
+        if (owner) await queueTranslate(s.project_id, owner, [{ id: 'shot:' + s.id, ko: next.visual }], { inTx: true }).catch(() => {});
+      }
+      // 대본 내용이 바뀌었으니 받아 둔 대본 승인은 다시 받아야 해요.
+      await resetScriptReview(s.episode_id);
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
       const values = await db.get('SELECT scene,visual,dialogue,camera,seconds,emotion,camera_move,audio,audio_seconds,lipsync FROM studio_shots WHERE id=?', [s.id]);
       return { audioReset, values };
     },
   });
   engine.registerHandler('voice_sample', mediaHandler('voice_sample', 'studio_characters', 'audio'));
   engine.registerHandler('character_image', mediaHandler('image', 'studio_characters', 'image'));
-  engine.registerHandler('shot_image', mediaHandler('image', 'studio_shots', 'image'));
+  // 후보 여러 장(2026-09-29): 같은 요청의 후보는 묶음(batch)으로 버전 기록에 남기고, 컷에 아직 결과가 없을 때만
+  // 먼저 끝난 후보를 넣어 둡니다. PD가 후보 칸에서 고르면 그 후보로 바꿔요.
+  const candidateAware = (base, column) => ({
+    async onSuccess(args) {
+      const { job, result, model } = args;
+      const input = JSON.parse(job.input || '{}');
+      if (!input.candidate) return base.onSuccess(args);
+      // 두 후보가 동시에 끝나도 한 장만 컷에 들어가게 컷 행을 잠그고 읽어요(PostgreSQL).
+      const row = await db.get('SELECT * FROM studio_shots WHERE id=?' + (db.engine === 'postgresql' ? ' FOR UPDATE' : ''), [job.target_id]);
+      let out;
+      if (row && !row[column]) out = await base.onSuccess(args);
+      else {
+        if (job.project_id) await asset(job, job.project_id, { type: 'shot', id: job.target_id }, column, result.url, model);
+        out = { url: result.url, candidate: true };
+      }
+      await db.run('UPDATE studio_assets SET batch=? WHERE job_id=?', [String(input.candidate).slice(0, 40), job.id]);
+      return out;
+    },
+  });
+  engine.registerHandler('shot_image', candidateAware(mediaHandler('image', 'studio_shots', 'image'), 'image'));
+  // 후보 AI 검수: 검사한 후보 이미지(버전 기록)에 결과를 남겨 '추천' 표시에 써요.
+  engine.registerHandler('verify_asset', {
+    async onSuccess({ job, result }) {
+      const v = parseJson(result.text, verifySchema);
+      const input = JSON.parse(job.input || '{}');
+      const a = await db.get('SELECT id,url FROM studio_assets WHERE id=?', [job.target_id]);
+      if (!a || a.url !== input.checkedImage) return { skipped: true };
+      const record = { ok: v.ok, score: Math.round(v.score), issues: v.issues, faces: v.faces || [], summary: v.summary, at: now(), image: a.url };
+      await db.run('UPDATE studio_assets SET verify=? WHERE id=?', [JSON.stringify(record), a.id]);
+      await recordQuality(a.url, record.score, record.faces, 'image');
+      return { ok: record.ok, score: record.score };
+    },
+  });
   engine.registerHandler('shot_tts', mediaHandler('audio', 'studio_shots', 'audio'));
-  engine.registerHandler('shot_video', mediaHandler('video', 'studio_shots', 'video'));
+  engine.registerHandler('shot_video', candidateAware(mediaHandler('video', 'studio_shots', 'video'), 'video'));
   engine.registerHandler('poster', mediaHandler('poster', 'studio_projects', 'image'));
   engine.registerHandler('shot_image_edit', mediaHandler('image', 'studio_shots', 'image'));
   engine.registerHandler('shot_lipsync', mediaHandler('lipsync', 'studio_shots', 'lipsync'));
   engine.registerHandler('shot_sfx', mediaHandler('sfx', 'studio_shots', 'sfx'));
   engine.registerHandler('prop_image', mediaHandler('image', 'studio_props', 'image'));
+  // 화질 올리기(2026-09-29): 올리는 동안 컷 이미지·영상이 바뀌지 않았을 때만 바꿔 끼웁니다(바뀌었으면 버전 기록에만 남김).
+  const parseUp = (raw) => {
+    try {
+      const v = raw ? JSON.parse(raw) : {};
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  };
+  const upscaleHandler = (which) => ({
+    async onSuccess({ job, result, model }) {
+      const input = JSON.parse(job.input || '{}');
+      const s = await db.get('SELECT * FROM studio_shots WHERE id=?' + (db.engine === 'postgresql' ? ' FOR UPDATE' : ''), [job.target_id]);
+      const column = which === 'image' ? 'image' : input.column === 'lipsync' ? 'lipsync' : 'video';
+      let applied = false;
+      if (s && s[column] === input.sourceUrl) {
+        const up = { ...parseUp(s.upscaled), [which]: result.url };
+        // 이미지가 바뀌면 예전 검수 결과는 맞지 않으므로 지웁니다(열 이름은 위에서 정한 세 가지 중 하나).
+        await db.run(`UPDATE studio_shots SET ${column}=?,upscaled=?${column === 'image' ? ",verify=''" : ''} WHERE id=?`, [result.url, JSON.stringify(up), s.id]);
+        await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
+        applied = true;
+      }
+      if (job.project_id) await asset(job, job.project_id, { type: 'shot', id: job.target_id }, column === 'lipsync' ? 'lipsync' : which, result.url, { label: `${model?.label || 'AI'} · 화질 올림` });
+      return { url: result.url, applied, column };
+    },
+  });
+  engine.registerHandler('shot_upscale', upscaleHandler('image'));
+  engine.registerHandler('shot_upscale_video', upscaleHandler('video'));
   // 사이 컷: 고른 컷 바로 뒤에 짧은 연결 컷을 끼워 넣습니다(지금 대본은 버전으로 남김).
   engine.registerHandler('bridge_shot', {
     async onSuccess({ job, result }) {
@@ -410,7 +493,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       await snapshotScript(s.episode_id, s.project_id, 'before_bridge', '사이 컷 넣기 전');
       await db.run('UPDATE studio_shots SET sort_order=sort_order+1 WHERE episode_id=? AND sort_order>?', [s.episode_id, s.sort_order]);
       await insertShots(s.episode_id, s.project_id, [{ ...next, seconds: Math.min(4, Math.max(2, next.seconds)) }], Number(s.sort_order) + 1);
-      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
       return { inserted: 1 };
     },
   });
@@ -432,14 +515,22 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     },
   });
   // AI 결과 검수: 검사한 그 이미지가 아직 컷 이미지일 때만 결과를 남깁니다.
+  // 6단계(2026-09-30): AI 검수 점수를 그 결과를 만든 모델의 품질 표본으로 남겨요(자동 선택 품질 가중치 · 관리자 품질 표).
+  async function recordQuality(url, score, faces, kind) {
+    const j = await db.get('SELECT j.model_ref FROM studio_assets a JOIN ai_jobs j ON j.id=a.job_id WHERE a.url=? AND a.job_id IS NOT NULL LIMIT 1', [url]);
+    if (!j?.model_ref) return;
+    const face = faces?.length ? Math.round(Math.min(...faces.map((f) => Number(f.match)))) : null;
+    await db.run('INSERT INTO ai_quality_samples (id,model_ref,kind,source,score,face,created_at) VALUES (?,?,?,?,?,?,?)', [randomUUID(), j.model_ref, kind, 'real', Math.round(Number(score) || 0), face, now()]);
+  }
   engine.registerHandler('verify_shot', {
     async onSuccess({ job, result }) {
       const v = parseJson(result.text, verifySchema);
       const input = JSON.parse(job.input || '{}');
       const s = await db.get('SELECT id,image FROM studio_shots WHERE id=?', [job.target_id]);
       if (!s || s.image !== input.checkedImage) return { skipped: true };
-      const record = { ok: v.ok, score: Math.round(v.score), issues: v.issues, summary: v.summary, at: now(), image: s.image };
+      const record = { ok: v.ok, score: Math.round(v.score), issues: v.issues, faces: v.faces || [], summary: v.summary, at: now(), image: s.image };
       await db.run('UPDATE studio_shots SET verify=? WHERE id=?', [JSON.stringify(record), s.id]);
+      await recordQuality(s.image, record.score, record.faces, 'image');
       return { ok: record.ok, issues: v.issues.length };
     },
   });
@@ -551,7 +642,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       const [type, id] = [job.target_type, job.target_id];
       if (type === 'episode') await db.run('UPDATE studio_episodes SET bgm=? WHERE id=?', [result.url, id]);
       await db.run("UPDATE studio_projects SET bgm=CASE WHEN bgm='' THEN ? ELSE bgm END WHERE id=?", [result.url, job.project_id]);
-      if (type === 'episode') await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [id]);
+      if (type === 'episode') await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [id]);
       await asset(job, job.project_id, { type: 'music', id: job.project_id }, 'music', result.url, model);
       return { url: result.url, duration: result.duration || 0 };
     },
@@ -571,6 +662,66 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     await db.run('DELETE FROM media_files WHERE url=?', [url]).catch(() => {});
     await rm(path.join(uploadDir, path.basename(url)), { force: true }).catch(() => {});
   };
+  // 영상에서 장면 몇 장을 잠깐 뽑아(비율 0~1 위치) 검수 모델에 보여 줘요. 작업이 끝나면 지웁니다.
+  async function grabFrames(clip, spots, ownerId, projectId) {
+    const src = path.join(uploadDir, path.basename(clip));
+    const info = await probeMedia(src).catch(() => null);
+    const dur = Math.max(0.1, Number(info?.duration || 1));
+    const out = [];
+    try {
+      for (const r of spots) {
+        const id = randomUUID();
+        const file = path.join(uploadDir, id + '.jpg');
+        await runFfmpeg(['-ss', Math.max(0, Math.min(dur - 0.05, dur * r)).toFixed(3), '-i', src, '-frames:v', '1', '-vf', 'scale=540:-2', '-q:v', '4', '-y', file], 60000);
+        const url = '/uploads/' + id + '.jpg';
+        await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [url, ownerId, 'image/jpeg', now(), projectId]);
+        out.push(url);
+      }
+    } catch (e) {
+      await removeFrames(out);
+      throw Object.assign(new Error('영상에서 검수할 장면을 뽑지 못했어요. 영상을 다시 만든 뒤 검수해 주세요.'), { status: 400 });
+    }
+    return out;
+  }
+  const removeFrames = async (list) => {
+    for (const url of list || []) {
+      if (!/^\/uploads\/[a-f0-9-]+\.jpg$/.test(url)) continue;
+      await db.run('DELETE FROM media_files WHERE url=?', [url]).catch(() => {});
+      await rm(path.join(uploadDir, path.basename(url)), { force: true }).catch(() => {});
+    }
+  };
+  // 확정(커밋)된 뒤에만 임시 장면을 지워요. 확정이 실패해 다시 시도하게 되면 파일이 남아 있어야 하니까요.
+  const afterCommit = (jobId, frames) => {
+    if (!frames?.length) return;
+    const later = () =>
+      setTimeout(async () => {
+        const j = await db.get('SELECT status FROM ai_jobs WHERE id=?', [jobId]).catch(() => null);
+        if (!j || ['succeeded', 'failed', 'canceled'].includes(j.status)) await removeFrames(frames);
+      }, 1500);
+    if (db.detach) db.detach(later);
+    else later();
+  };
+  const tempFramesOf = (job) => {
+    try {
+      return JSON.parse(job.input || '{}').tempFrames || [];
+    } catch {
+      return [];
+    }
+  };
+  engine.registerHandler('verify_video', {
+    async onSuccess({ job, result }) {
+      const v = parseJson(result.text, videoVerifySchema);
+      const input = JSON.parse(job.input || '{}');
+      afterCommit(job.id, input.tempFrames);
+      const s = await db.get('SELECT id,video,lipsync FROM studio_shots WHERE id=?', [job.target_id]);
+      if (!s || (s.lipsync || s.video) !== input.checkedClip) return { skipped: true };
+      const record = { ok: v.ok, score: Math.round(v.score), issues: v.issues, faces: v.faces || [], summary: v.summary, at: now(), video: input.checkedClip };
+      await db.run('UPDATE studio_shots SET video_verify=? WHERE id=?', [JSON.stringify(record), s.id]);
+      await recordQuality(input.checkedClip, record.score, record.faces, 'video');
+      return { ok: record.ok, issues: v.issues.length };
+    },
+    onFail: async ({ job }) => removeFrames(tempFramesOf(job)),
+  });
   const tempAudioOf = (job) => {
     try {
       return JSON.parse(job.input || '{}').audio?.path || '';
@@ -590,18 +741,22 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       };
       const text = 'WEBVTT\n\n' + segments.map((s) => `${t(s.start)} --> ${t(Math.max(Number(s.end), Number(s.start) + 0.5))}\n${s.text}`).join('\n\n') + '\n';
       const vtt = toVtt(text);
-      await removeTemp(tempAudioOf(job));
       const [dramaId, number] = String(job.target_id).split('#');
       const row = await db.get('SELECT e.id, e.subtitles AS old_subtitles, e.review_status, d.status AS drama_status FROM episodes e JOIN dramas d ON d.id=e.drama_id WHERE e.drama_id=? AND e.number=?', [dramaId, Number(number)]);
       // 작품이 임시저장·반려 상태이거나, 연재 중 작품의 아직 공개 전(초안·반려) 회차만 자막을 바꿉니다.
       const e = row && episodeEditable({ status: row.drama_status }, row) ? row : null;
-      if (!e || !vtt) return { skipped: true };
+      if (!e || !vtt) {
+        await removeTemp(tempAudioOf(job));
+        return { skipped: true };
+      }
       const file = randomUUID() + '.vtt';
       await mkdir(subsDir, { recursive: true });
       await writeFile(path.join(subsDir, file), vtt, 'utf8');
       await db.run('UPDATE episodes SET subtitles=? WHERE id=?', [file, e.id]);
       // 이전 자막 파일은 더 이상 쓰이지 않으므로 지웁니다.
       if (e.old_subtitles && e.old_subtitles !== file) await rm(path.join(subsDir, path.basename(e.old_subtitles)), { force: true }).catch(() => {});
+      // 임시 음성 파일은 자막을 다 저장한 뒤에 지워요(중간에 실패하면 다시 시도할 때 그대로 써요).
+      await removeTemp(tempAudioOf(job));
       return { cues: segments.length };
     },
     onFail: async ({ job }) => removeTemp(tempAudioOf(job)),
@@ -617,10 +772,28 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       return [];
     }
   };
-  // 컷 이미지에 넘길 참고 이미지: 등장 인물의 기준 이미지(+정면 참고) → 장소 이미지, 최대 4장
+  // 인물 카드(2026-09-29): 컷에 맞는 참고 자세를 고릅니다. 전신 샷엔 전신, 옆·어깨 너머엔 옆모습, 감정엔 표정 참고.
+  const posesFor = (shot) => {
+    if (!shot) return ['front'];
+    const cam = `${shot.camera || ''} ${shot.angle || ''}`;
+    const out = [];
+    if (/풀샷|와이드|전신/.test(cam)) out.push('full');
+    if (/어깨|오버숄더/.test(cam) || /옆모습|옆얼굴|측면/.test(shot.visual || '')) out.push('side');
+    const face = { 기쁨: 'smile', 설렘: 'smile', 분노: 'angry', 슬픔: 'sad' }[shot.emotion || ''];
+    if (face && !/풀샷|와이드/.test(cam)) out.push(face);
+    out.push('front');
+    return out;
+  };
+  const personRefs = (c, shot, max) => {
+    const refs = refsOf(c);
+    const picked = posesFor(shot).map((pose) => refs.find((r) => r.pose === pose)?.url).filter(Boolean);
+    return [c.image, ...picked].filter((v, i, a) => v && a.indexOf(v) === i).slice(0, max);
+  };
+  // 컷 이미지에 넘길 참고 이미지: 등장 인물의 기준 이미지(+컷에 맞는 자세 참고) → 장소 이미지, 최대 4장
   // 소품 이미지(최대 1장)와 스타일 잠금 참고 이미지(1장)는 자리를 남겨 두고 넣습니다(최대 5장).
-  const shotRefs = (people, place, props = [], style = []) => {
-    const base = [...people.flatMap((c) => [c.image, refsOf(c).find((r) => r.pose === 'front')?.url]), place?.image].filter(Boolean);
+  const shotRefs = (people, place, props = [], style = [], shot = null) => {
+    const per = people.length <= 1 ? 3 : 2;
+    const base = [...people.flatMap((c) => personRefs(c, shot, per)), place?.image].filter(Boolean);
     const extra = [props.find((x) => x.image)?.image, style[0]].filter(Boolean);
     const keep = Math.max(1, 5 - extra.length);
     return [...base.filter((v, i, a) => a.indexOf(v) === i).slice(0, Math.min(4, keep)), ...extra]
@@ -809,6 +982,33 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       if (!l) fail(404, '장소를 찾을 수 없어요.');
       return { kind: 'location_image', capability: 'image', tags: ['landscape'], target: { type: 'location', id: l.id }, input: { prompt: locationPrompt(p, l), aspect: '9:16', refImages: styleRefsOf(p).slice(0, 1).map(imageRef).filter(Boolean), userText: l.look } };
     }
+    if (action === 'verify_asset') {
+      const a = await db.get("SELECT * FROM studio_assets WHERE id=? AND project_id=? AND target_type='shot' AND kind='image'", [targetId, p.id]);
+      if (!a) fail(404, '후보를 찾을 수 없어요.');
+      const s = await loadShot(req, a.target_id, 'view');
+      const faces = castOf(s, cast).filter((c) => c.image).slice(0, 3);
+      return {
+        kind: 'verify_asset',
+        capability: 'text',
+        tags: ['vision'],
+        requestedOverride: 'auto',
+        target: { type: 'asset', id: a.id },
+        input: {
+          ...verifyPrompt({
+            shot: s,
+            people: faces.length ? faces : castOf(s, cast),
+            props: await propsOfShot(s, p.id),
+            states: await effectiveStates(s),
+            styleLock: styleRefsOf(p).length > 0,
+            place: s.location_id ? await db.get('SELECT * FROM studio_locations WHERE id=? AND project_id=?', [s.location_id, p.id]) : null,
+          }),
+          refImages: [a.url, ...faces.map((c) => c.image)].map(imageRef).filter(Boolean),
+          checkedImage: a.url,
+          _requireImage: true,
+          userText: '',
+        },
+      };
+    }
     const shot = await loadShot(req, targetId, 'view');
     if (shot.project_id !== p.id) fail(404, '컷을 찾을 수 없어요.');
     const speaker = cast.find((c) => c.id === shot.speaker_id);
@@ -848,29 +1048,74 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         input: {
           prompt: shotImagePrompt(p, shot, people.length ? people : cast.slice(0, 2), place, { states: await effectiveStates(shot), props: things, styleLock: style.length > 0 }),
           aspect: '9:16',
-          refImages: shotRefs(people, place, things, style),
+          refImages: shotRefs(people, place, things, style, shot),
           seed: seedOf(shot),
           userText: shot.visual,
         },
       };
     }
     if (action === 'shot_image_edit') {
-      const instruction = String(extra.instruction || '').trim();
+      let instruction = String(extra.instruction || '').trim();
+      // 인물 바꾸기 · 배경 바꾸기(4단계): 고른 인물 · 장소의 기준 이미지를 참고로 붙이고, 지시문은 서버가 만들어요.
+      let swapRef = null;
+      if (opt.swap === 'character') {
+        const who = cast.find((c) => c.id === opt.swapId);
+        if (!who) fail(400, '바꿔 넣을 인물을 골라 주세요.');
+        if (!who.image) fail(400, `${who.name}의 기준 이미지를 먼저 만들어 주세요.`);
+        swapRef = who.image;
+        instruction = `Replace the person${opt.mask ? ' inside the painted area' : ''} with ${who.name} from the character reference image (${lookOf(who)}${who.hair ? `, hair: ${who.hair}` : ''}${who.outfit ? `, wearing ${who.outfit}` : ''}). Keep the same pose, position, expression intent, lighting and camera angle.${instruction ? ' ' + instruction : ''}`;
+      } else if (opt.swap === 'background') {
+        const where = opt.swapId ? await db.get('SELECT * FROM studio_locations WHERE id=? AND project_id=?', [opt.swapId, p.id]) : null;
+        if (opt.swapId && !where) fail(400, '이 프로젝트의 장소만 고를 수 있어요.');
+        if (!where && instruction.length < 2) fail(400, '어떤 배경으로 바꿀지 장소를 고르거나 적어 주세요.');
+        swapRef = where?.image || null;
+        instruction = `Replace only the background${where ? ` with ${where.name}: ${lookOf(where)}${where.image ? ' (match the location reference image)' : ''}` : ''}. Keep every person exactly the same (faces, hair, outfits, pose, position) and keep the lighting direction consistent.${instruction ? ' ' + instruction : ''}`;
+      }
       if (instruction.length < 2) fail(400, '어떻게 바꿀지 적어 주세요.');
-      if (!shot.image) fail(400, '고칠 스토리보드 이미지가 없어요. 이미지를 먼저 만들어 주세요.');
+      if (!shot.image) fail(400, '고칠 컷 이미지가 없어요. 이미지를 먼저 만들어 주세요.');
+      // 붓으로 칠한 부분만 고치기(2026-09-29): 흰색 = 고칠 곳. 이 프로젝트에서 올린 마스크만 써요.
+      const mask = opt.mask ? String(opt.mask) : '';
+      if (mask) {
+        const file = shotMedia?.maskFile(mask, shot.id);
+        if (!file || !existsSync(file)) fail(400, '칠한 영역이 없어졌어요. 다시 칠해 주세요.');
+      }
       return {
         kind: 'shot_image_edit',
         capability: 'image',
-        tags: ['consistency'],
+        tags: mask ? ['consistency', 'inpaint'] : ['consistency'],
         target: { type: 'shot', id: shot.id },
         input: {
-          prompt: `Edit the first image. Change only this: ${instruction}. Keep everything else (faces, outfits, composition, lighting) the same. Vertical 9:16, no text.`,
+          prompt: mask
+            ? `Edit the first image only inside the white area of the black-and-white mask (the last image). Change only this: ${instruction}. Keep everything outside the mask exactly the same (faces, outfits, composition, lighting). Vertical 9:16, no text.`
+            : `Edit the first image. Change only this: ${instruction}. Keep everything else (faces, outfits, composition, lighting) the same. Vertical 9:16, no text.`,
           aspect: '9:16',
           editImage: imageRef(shot.image),
-          refImages: shotRefs(people, null).slice(0, 2),
+          refImages: swapRef ? [imageRef(swapRef), ...shotRefs(people, null)].filter(Boolean).slice(0, 3) : shotRefs(people, null).slice(0, 2),
+          ...(mask ? { maskImage: { path: mask, mime: 'image/png' } } : {}),
           needImage: true,
-          userText: instruction,
+          // 다시 시도할 때 같은 요청을 만들 수 있게 PD가 적은 글과 바꾸기 설정을 남겨요.
+          userText: opt.swap ? String(extra.instruction || '').trim() : instruction,
+          ...(opt.swap ? { swap: opt.swap, swapId: opt.swapId || '' } : {}),
         },
+      };
+    }
+    if (action === 'shot_upscale') {
+      if (!shot.image) fail(400, '화질을 올릴 컷 이미지가 없어요.');
+      if (parseUp(shot.upscaled).image === shot.image) fail(400, '이 이미지는 이미 화질을 올렸어요.');
+      return { kind: 'shot_upscale', capability: 'upscale', tags: ['poster'], target: { type: 'shot', id: shot.id }, input: { image: imageRef(shot.image), sourceUrl: shot.image, factor: 2, userText: '' } };
+    }
+    if (action === 'shot_upscale_video') {
+      const column = shot.lipsync ? 'lipsync' : 'video';
+      const clip = shot[column];
+      if (!clip) fail(400, '화질을 올릴 컷 영상이 없어요. 영상을 먼저 만들어 주세요.');
+      if (parseUp(shot.upscaled).video === clip) fail(400, '이 영상은 이미 화질을 올렸어요.');
+      const meta = await db.get('SELECT duration FROM media_metadata WHERE url=?', [clip]);
+      return {
+        kind: 'shot_upscale_video',
+        capability: 'upscale_video',
+        tags: ['cinematic'],
+        target: { type: 'shot', id: shot.id },
+        input: { video: { path: clip, mime: 'video/mp4' }, sourceUrl: clip, column, seconds: Math.max(1, Math.ceil(Number(meta?.duration) || Number(shot.seconds) || 5)), factor: 2, userText: '' },
       };
     }
     if (action === 'verify_shot') {
@@ -884,11 +1129,47 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         requestedOverride: 'auto',
         target: { type: 'shot', id: shot.id },
         input: {
-          ...verifyPrompt({ shot, people: faces.length ? faces : people, props: await propsOfShot(shot, p.id), states: await effectiveStates(shot), styleLock: styleRefsOf(p).length > 0 }),
+          ...verifyPrompt({ shot, people: faces.length ? faces : people, props: await propsOfShot(shot, p.id), states: await effectiveStates(shot), styleLock: styleRefsOf(p).length > 0, place }),
           refImages: [shot.image, ...faces.map((c) => c.image)].map(imageRef).filter(Boolean),
           checkedImage: shot.image,
           _requireImage: true,
           userText: '',
+        },
+      };
+    }
+    if (action === 'verify_video') {
+      const clip = shot.lipsync || shot.video;
+      if (!clip) fail(400, '검수할 컷 영상이 없어요. 영상을 먼저 만들어 주세요.');
+      const faces = people.filter((c) => c.image).slice(0, 2);
+      const prev = await db.get('SELECT lipsync,video FROM studio_shots WHERE episode_id=? AND sort_order<? ORDER BY sort_order DESC LIMIT 1', [shot.episode_id, shot.sort_order]);
+      const prevClip = prev?.lipsync || prev?.video || '';
+      // 기준 얼굴 이미지가 있는 인물만 넘겨요(이미지 없이 이름만 넘기면 모델이 다른 이미지를 얼굴로 읽어요).
+      const base = videoVerifyPrompt({ shot, people: faces, hasPrevFrame: !!prevClip });
+      return {
+        kind: 'verify_video',
+        capability: 'text',
+        tags: ['vision'],
+        requestedOverride: 'auto',
+        target: { type: 'shot', id: shot.id },
+        input: {
+          ...base,
+          refImages: faces.map((c) => imageRef(c.image)).filter(Boolean),
+          // 장면 3장(+ 앞 컷 마지막 장면)은 실제로 실행할 때만 뽑아요. 예상 라마에는 그만큼 미리 셉니다.
+          _extraImages: 3 + (prevClip ? 1 : 0),
+          checkedClip: clip,
+          _requireImage: true,
+          userText: '',
+        },
+        prepare: async (input) => {
+          const frames = await grabFrames(clip, [0.08, 0.5, 0.92], p.owner_id, p.id);
+          let tail = [];
+          try {
+            tail = prevClip ? await grabFrames(prevClip, [0.97], p.owner_id, p.id) : [];
+          } catch {
+            tail = []; // 앞 컷 장면을 못 뽑으면 이어짐 검사만 빼고 진행해요.
+          }
+          const { _extraImages, ...rest } = input;
+          return { ...rest, refImages: [...frames.map(imageRef), ...rest.refImages, ...tail.map(imageRef)], tempFrames: [...frames, ...tail] };
         },
       };
     }
@@ -906,9 +1187,31 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       };
     }
     if (action === 'shot_video') {
-      // 끝 장면 지정: 다음 컷의 스토리보드로 자연스럽게 이어지게(지원하는 모델만)
+      // 움직임만 입히기(4단계): 지금 컷 이미지를 그대로 두고 숨 · 눈 깜빡임 · 머리카락 · 옷자락만 살짝 움직여요.
+      if (opt.motionOnly) {
+        if (!shot.image) fail(400, '움직임을 입힐 컷 이미지가 없어요. 이미지를 먼저 만들어 주세요.');
+        return {
+          kind: 'shot_video',
+          capability: 'video',
+          tags: ['consistency', ...(shot.dialogue ? ['lipsync'] : [])],
+          target: { type: 'shot', id: shot.id },
+          input: {
+            prompt: `Animate this exact image with only subtle natural motion: breathing, blinking, slight hair and cloth movement${lightText(shot) ? `, ${lightText(shot)} kept the same` : ''}. Do not change the composition, faces, outfits or background. Locked static camera. Vertical 9:16, no text overlay.${
+              shot.dialogue && speaker ? ` ${speaker.name} speaks in Korean${shot.emotion ? ` (${shot.emotion})` : ''}: "${shot.dialogue}"` : ''
+            }`,
+            seconds: Number(shot.seconds) || 5,
+            aspect: '9:16',
+            image: imageRef(shot.image),
+            seed: seedOf(shot),
+            motionOnly: true,
+            userText: shot.visual,
+          },
+        };
+      }
+      // 끝 장면 지정: PD가 고른 이미지 > 다음 컷의 스토리보드로 자연스럽게 이어지게(지원하는 모델만)
       let endImage;
-      if (Number(shot.end_frame)) {
+      if (shot.end_image) endImage = imageRef(shot.end_image);
+      else if (Number(shot.end_frame)) {
         const next = await db.get('SELECT image FROM studio_shots WHERE episode_id=? AND sort_order>? ORDER BY sort_order LIMIT 1', [shot.episode_id, shot.sort_order]);
         endImage = imageRef(next?.image);
       }
@@ -917,7 +1220,17 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         capability: 'video',
         tags: [...shotTags(shot), ...(shot.dialogue ? ['lipsync'] : [])],
         target: { type: 'shot', id: shot.id },
-        input: { prompt: shotVideoPrompt(p, shot, speaker), seconds: Number(shot.seconds) || 5, aspect: '9:16', image: imageRef(shot.image), endImage, seed: seedOf(shot), userText: shot.visual },
+        input: {
+          prompt: shotVideoPrompt(p, shot, speaker, { locked: people.filter((c) => Number(c.locked)) }),
+          // 복잡한 카메라 움직임: 잘 따르는 모델을 먼저 고르고, 약한 모델에는 비슷한 쉬운 움직임으로 보냅니다.
+          ...(isComplexMove(shot.camera_move) ? { needCamera: true, promptBasic: shotVideoPrompt(p, shot, speaker, { basic: true, locked: people.filter((c) => Number(c.locked)) }) } : {}),
+          seconds: Number(shot.seconds) || 5,
+          aspect: '9:16',
+          image: imageRef(shot.image),
+          endImage,
+          seed: seedOf(shot),
+          userText: shot.visual,
+        },
       };
     }
     if (action === 'shot_lipsync') {
@@ -967,7 +1280,12 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const busy = new Set(
       (await db.all("SELECT target_id FROM ai_jobs WHERE project_id=? AND target_type='shot' AND kind=? AND status IN ('queued','running')", [p.id, action])).map((r) => r.target_id),
     );
-    const col = { shot_image: 'image', shot_tts: 'audio', shot_video: 'video', shot_lipsync: 'lipsync', shot_sfx: 'sfx', verify_shot: 'verify' }[action];
+    const col = { shot_image: 'image', shot_tts: 'audio', shot_video: 'video', shot_lipsync: 'lipsync', shot_sfx: 'sfx', verify_shot: 'verify', shot_upscale: 'upscaled', shot_upscale_video: 'upscaled' }[action];
+    // 화질 올리기: 이미지·영상이 있고 아직 올리지 않은 컷만(고른 컷이어도 이미 올린 파일은 건너뜀)
+    if (action === 'shot_upscale') return shots.filter((s) => s.image && parseUp(s.upscaled).image !== s.image && !busy.has(s.id));
+    // 영상 검수(5단계): 영상이 있고, 지금 영상을 아직 검수하지 않은 컷만(고른 컷은 다시 검수)
+    if (action === 'verify_video') return shots.filter((s) => (s.lipsync || s.video) && !busy.has(s.id) && (chosen || !String(s.video_verify || '').includes(`"video":"${s.lipsync || s.video}"`)));
+    if (action === 'shot_upscale_video') return shots.filter((s) => (s.lipsync || s.video) && parseUp(s.upscaled).video !== (s.lipsync || s.video) && !busy.has(s.id));
     return shots.filter(
       (s) =>
         (chosen || action === 'verify_shot' || !s[col]) &&
@@ -990,6 +1308,11 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       'character_image', 'character_ref', 'character_sheet', 'location_image', 'voice_sample',
       'shot_image', 'shot_image_edit', 'shot_tts', 'shot_video', 'shot_lipsync', 'shot_sfx', 'rewrite_shot',
       'batch_shot_image', 'batch_shot_tts', 'batch_shot_video', 'batch_shot_lipsync', 'batch_shot_sfx',
+      // 힉스필드 벤치마킹 고도화(2026-09-29): 화질 올리기
+      'shot_upscale', 'shot_upscale_video', 'batch_shot_upscale', 'batch_shot_upscale_video',
+      'verify_candidates', 'verify_asset',
+      // 5단계(2026-09-30): 컷 영상 AI 검수
+      'verify_video', 'batch_verify_video',
     ]),
     instruction: z.string().trim().max(300).optional(),
     options: z
@@ -1003,6 +1326,11 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         prompt: z.string().max(200).optional(),
         shotIds: z.array(z.string().max(80)).max(20).optional(),
         angles: z.array(z.string().trim().max(60)).max(3).optional(), // 대본 변형 방향
+        mask: z.string().regex(/^\/masks\/[a-f0-9-]+\.[a-f0-9-]+\.png$/).optional(), // 부분 수정 붓(흰색 = 고칠 곳, 비공개 폴더)
+        // 4단계(2026-09-30): 인물 바꾸기 · 배경 바꾸기(칠한 곳 + 인물 · 장소 참고 이미지), 움직임만 입히기
+        swap: z.enum(['character', 'background']).optional(),
+        swapId: z.string().max(80).optional(),
+        motionOnly: z.boolean().optional(),
       })
       .default({}),
     targetId: z.string().max(80).optional(),
@@ -1028,6 +1356,39 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (b.action === 'thumb_bg') {
       const specs = [];
       for (let i = 0; i < (b.options.count || 4); i++) specs.push(await buildJob(req, p, 'thumb_bg', p.id, { index: i, options: b.options }));
+      return specs;
+    }
+    // 후보 여러 장: 이미지 2~4장, 영상 2개. 같은 묶음 번호로 버전 기록에 남아요.
+    if ((b.action === 'shot_image' || b.action === 'shot_video') && Number(b.options.count) > 1) {
+      const max = b.action === 'shot_video' ? 2 : 4;
+      if (Number(b.options.count) > max) fail(400, b.action === 'shot_video' ? '영상 후보는 2개까지 만들 수 있어요.' : '이미지 후보는 4장까지 만들 수 있어요.');
+      const family = b.action === 'shot_video' ? ['shot_video', 'shot_upscale_video'] : ['shot_image', 'shot_image_edit', 'shot_upscale'];
+      if (await db.get(`SELECT id FROM ai_jobs WHERE target_id=? AND kind IN (${family.map(() => '?').join(',')}) AND status IN ('queued','running') LIMIT 1`, [b.targetId, ...family]))
+        fail(409, '이 컷을 만드는 작업이 진행 중이에요. 끝난 뒤 후보를 만들어 주세요.');
+      const batch = randomUUID().slice(0, 8);
+      const specs = [];
+      for (let i = 0; i < Number(b.options.count); i++) {
+        const spec = await buildJob(req, p, b.action, b.targetId, { options: b.options });
+        const seed = (Number.isInteger(spec.input.seed) ? spec.input.seed : 1000 + Math.floor(Math.random() * 1e8)) + i * 7919;
+        specs.push({ ...spec, keySuffix: `c${i + 1}`, input: { ...spec.input, seed, candidate: batch } });
+      }
+      return specs;
+    }
+    // 후보 이미지 AI 검수(추천 표시용): 가장 최근 후보 묶음 중 아직 검수하지 않은 이미지
+    if (b.action === 'verify_candidates') {
+      const s = await loadShot(req, b.targetId, 'view');
+      if (s.project_id !== p.id) fail(404, '컷을 찾을 수 없어요.');
+      const last = await db.get("SELECT batch FROM studio_assets WHERE target_id=? AND kind='image' AND batch<>'' ORDER BY created_at DESC LIMIT 1", [s.id]);
+      // 검수 중인 후보는 빼서 두 번 누르거나 다시 보내도 두 번 결제되지 않게 합니다.
+      const list = last
+        ? await db.all(
+            "SELECT a.id FROM studio_assets a WHERE a.target_id=? AND a.kind='image' AND a.batch=? AND a.verify='' AND NOT EXISTS (SELECT 1 FROM ai_jobs j WHERE j.kind='verify_asset' AND j.target_id=a.id AND j.status IN ('queued','running'))",
+            [s.id, last.batch],
+          )
+        : [];
+      if (!list.length) fail(400, '검수할 후보 이미지가 없어요(이미 검수했거나 검수 중이에요).');
+      const specs = [];
+      for (const a of list) specs.push(await buildJob(req, p, 'verify_asset', a.id));
       return specs;
     }
     if (b.action.startsWith('batch_')) {
@@ -1072,12 +1433,12 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     });
   });
   // 모델 센터: 작업별로 '지금 자동이면 어떤 모델을 왜 고르는지' 알려 줍니다(라마 들지 않음).
-  const DEFAULT_TAGS = { text: ['story', 'korean'], image: ['character', 'consistency'], video: ['cinematic'], tts: ['korean'], music: ['emotion'], sfx: ['scene'], lipsync: ['lipsync'] };
-  const DEFAULT_INPUT = { text: { prompt: 'x'.repeat(2000), maxTokens: 4000 }, image: { count: 1 }, video: { seconds: 5 }, tts: { text: 'x'.repeat(100) }, music: { seconds: 30 }, sfx: { seconds: 4 }, lipsync: { seconds: 5 } };
+  const DEFAULT_TAGS = { text: ['story', 'korean'], image: ['character', 'consistency'], video: ['cinematic'], tts: ['korean'], music: ['emotion'], sfx: ['scene'], lipsync: ['lipsync'], upscale: ['poster'], upscale_video: ['cinematic'] };
+  const DEFAULT_INPUT = { text: { prompt: 'x'.repeat(2000), maxTokens: 4000 }, image: { count: 1 }, video: { seconds: 5 }, tts: { text: 'x'.repeat(100) }, music: { seconds: 30 }, sfx: { seconds: 4 }, lipsync: { seconds: 5 }, upscale: { count: 1 }, upscale_video: { seconds: 5 } };
   app.post('/api/studio/ai/models/explain', roles('pd', 'admin'), async (req, res) => {
     const b = z
       .object({
-        items: z.array(z.object({ capability: z.enum(['text', 'image', 'video', 'tts', 'music', 'sfx', 'lipsync']), tier: z.enum(['draft', 'standard', 'premium']).default('standard') })).max(10),
+        items: z.array(z.object({ capability: z.enum(['text', 'image', 'video', 'tts', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video']), tier: z.enum(['draft', 'standard', 'premium']).default('standard') })).max(10),
         projectId: z.string().max(80).optional(),
       })
       .parse(req.body);
@@ -1153,12 +1514,12 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       characters: await charactersOf(p.id),
       episodes: episodes.map((e) => ({ ...e, shots: shots.filter((s) => s.episode_id === e.id) })),
       jobs: await db.all(
-        "SELECT j.id,j.kind,j.target_type,j.target_id,j.status,j.estimate_lama,j.charged_lama,j.error,j.created_at,j.finished_at,j.attempts,j.requested_model,j.model_ref,j.tier,m.label AS model_label,j.user_id,j.actor_id,u.name AS actor_name FROM ai_jobs j LEFT JOIN ai_models m ON m.id=j.model_ref LEFT JOIN users u ON u.id=j.actor_id WHERE j.project_id=? AND (j.status IN ('queued','running') OR j.created_at>=?) ORDER BY j.created_at DESC LIMIT 300",
+        "SELECT j.id,j.kind,j.target_type,j.target_id,j.status,j.estimate_lama,j.charged_lama,j.error,j.created_at,j.finished_at,j.attempts,j.requested_model,j.model_ref,j.tier,j.flags,m.label AS model_label,j.user_id,j.actor_id,u.name AS actor_name FROM ai_jobs j LEFT JOIN ai_models m ON m.id=j.model_ref LEFT JOIN users u ON u.id=j.actor_id WHERE j.project_id=? AND (j.status IN ('queued','running') OR j.created_at>=?) ORDER BY j.created_at DESC LIMIT 300",
         [p.id, new Date(Date.now() - 3 * 86400000).toISOString()],
       ),
       // 결과 버전: 대상(인물·컷·포스터)마다 최근 12개씩(큰 프로젝트에서도 예전 버전이 목록에서 사라지지 않게)
       assets: await db.all(
-        `SELECT id,target_type,target_id,kind,url,model_label,created_at FROM (
+        `SELECT id,target_type,target_id,kind,url,model_label,created_at,batch,verify FROM (
            SELECT a.*, ROW_NUMBER() OVER (PARTITION BY a.target_id, a.kind ORDER BY a.created_at DESC) AS rn FROM studio_assets a WHERE a.project_id=?
          ) x WHERE rn<=12 ORDER BY created_at DESC`,
         [p.id],
@@ -1257,15 +1618,22 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     voice_model: z.string().max(80).default('auto'),
     voice: z.string().trim().max(80).default(''),
     voice_style: z.string().trim().max(40).default(''),
+    // 3단계(2026-09-30): 모든 컷에서 지킬 외형(헤어 · 체형 · 금지 요소)과 외형 고정
+    hair: z.string().trim().max(120).default(''),
+    body: z.string().trim().max(120).default(''),
+    forbid: z.string().trim().max(200).default(''),
+    locked: z.boolean().optional(),
   });
+  // 고치기(PATCH)는 보낸 칸만 바꿔요(다른 칸은 지금 값을 그대로 둠).
+  const characterPatchSchema = z.object(Object.fromEntries(Object.entries(characterSchema.shape).map(([k, v]) => [k, v instanceof z.ZodDefault ? v.unwrap().optional() : v.optional()])));
   app.post('/api/studio/ai/projects/:id/characters', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, 'script');
     const b = characterSchema.parse(req.body);
     const count = (await charactersOf(p.id)).length;
     if (count >= 8) fail(400, '인물은 8명까지 만들 수 있어요.');
     const id = randomUUID();
-    await db.run('INSERT INTO studio_characters (id,project_id,name,role,description,look,outfit,voice_model,voice,voice_style,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?)', [
-      id, p.id, b.name, b.role, b.description, b.look, b.outfit, b.voice_model, b.voice, b.voice_style, count,
+    await db.run('INSERT INTO studio_characters (id,project_id,name,role,description,look,outfit,voice_model,voice,voice_style,hair,body,forbid,locked,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+      id, p.id, b.name, b.role, b.description, b.look, b.outfit, b.voice_model, b.voice, b.voice_style, b.hair, b.body, b.forbid, b.locked ? 1 : 0, count,
     ]);
     await touch(p.id);
     await queueTranslate(p.id, p.owner_id, [{ id: 'character:' + id, ko: b.look }]);
@@ -1273,11 +1641,13 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   });
   app.patch('/api/studio/ai/projects/:id/characters/:cid', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, ['script', 'scene']);
-    const b = characterSchema.parse(req.body);
+    const raw = characterPatchSchema.parse(req.body);
     const c = await db.get('SELECT * FROM studio_characters WHERE id=? AND project_id=?', [req.params.cid, p.id]);
     if (!c) fail(404, '인물을 찾을 수 없어요.');
-    await db.run('UPDATE studio_characters SET name=?,role=?,description=?,look=?,outfit=?,voice_model=?,voice=?,voice_style=? WHERE id=?', [
-      b.name, b.role, b.description, b.look, b.outfit, b.voice_model, b.voice, b.voice_style, c.id,
+    const b = { ...c, ...Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined)) };
+    b.locked = raw.locked === undefined ? Number(c.locked || 0) : raw.locked ? 1 : 0;
+    await db.run('UPDATE studio_characters SET name=?,role=?,description=?,look=?,outfit=?,voice_model=?,voice=?,voice_style=?,hair=?,body=?,forbid=?,locked=? WHERE id=?', [
+      b.name, b.role, b.description, b.look, b.outfit, b.voice_model, b.voice, b.voice_style, b.hair || '', b.body || '', b.forbid || '', b.locked, c.id,
     ]);
     await touch(p.id);
     if (b.look !== c.look && b.look !== c.look_en_src) await queueTranslate(p.id, p.owner_id, [{ id: 'character:' + c.id, ko: b.look }]);
@@ -1307,6 +1677,20 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     bgm: z.string().regex(/^(|\/uploads\/[a-f0-9-]+\.(mp3|wav))$/).optional(),
     bgm_volume: z.number().min(-1).max(1).optional(),
   });
+  // 이 프로젝트의 파일인지: 주인 + (프로젝트 표시 또는 이 프로젝트의 버전 기록·인물·장소·소품에서 쓰임)
+  const projectMedia = async (projectId, url) => {
+    const pr = await db.get('SELECT owner_id FROM studio_projects WHERE id=?', [projectId]);
+    const hit = await db.get(
+      `SELECT 1 AS ok FROM media_files f WHERE f.url=? AND f.owner_id=? AND (f.project_id=?
+        OR EXISTS (SELECT 1 FROM studio_assets a WHERE a.url=f.url AND a.project_id=?)
+        OR EXISTS (SELECT 1 FROM studio_characters c WHERE c.project_id=? AND c.image=f.url)
+        OR EXISTS (SELECT 1 FROM studio_locations l WHERE l.project_id=? AND l.image=f.url)
+        OR EXISTS (SELECT 1 FROM studio_props x WHERE x.project_id=? AND x.image=f.url)
+        OR EXISTS (SELECT 1 FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=? AND (s.image=f.url OR s.end_image=f.url)))`,
+      [url, pr?.owner_id || '', projectId, projectId, projectId, projectId, projectId, projectId],
+    );
+    if (!hit) fail(403, '이 프로젝트에서 만든 이미지만 고를 수 있어요.');
+  };
   const ownedMedia = async (p, url) => {
     if (!url) return;
     const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [url]);
@@ -1324,7 +1708,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     ]);
     // 완성본에 들어가는 요소(카드·음악)가 바뀌면 다시 합성해야 합니다.
     if (['intro_card', 'outro_card', 'bgm', 'bgm_volume'].some((k) => b[k] !== undefined && b[k] !== e[k]))
-      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [e.id]);
     await touch(p.id);
     res.json({ ok: true });
   });
@@ -1360,7 +1744,28 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     seconds: z.number().int().min(2).max(10),
     prop_ids: z.array(z.string().max(80)).max(6).optional(),
     states: z.record(z.string().max(80), z.string().trim().max(120)).optional(), // {인물ID: '젖은 머리'}
+    // 컷 연출(2026-09-29): 앵글·렌즈 느낌·움직임 강도 · 끝 장면 이미지 · 합성 효과
+    angle: z.string().trim().max(20).refine((v) => v === '' || ANGLE_IDS.includes(v), '앵글을 목록에서 골라 주세요.').optional(),
+    lens: z.string().trim().max(20).refine((v) => v === '' || LENS_IDS.includes(v), '화면 느낌을 목록에서 골라 주세요.').optional(),
+    move_strength: z.enum(STRENGTH_IDS).optional(),
+    end_image: z.string().regex(/^(|\/uploads\/[a-f0-9-]+\.(jpg|png|webp))$/).optional(),
+    effect: z.enum(SHOT_EFFECTS).optional(),
+    // 2단계(2026-09-30): 조명 · 시간과 색감 · 카메라 높이 · 조리개(f값) · 초점 거리(mm, 0 = 자동)
+    light: z.string().trim().max(20).refine((v) => v === '' || LIGHT_IDS.includes(v), '조명을 목록에서 골라 주세요.').optional(),
+    tone: z.string().trim().max(20).refine((v) => v === '' || TONE_IDS.includes(v), '시간 · 색감을 목록에서 골라 주세요.').optional(),
+    height: z.string().trim().max(20).refine((v) => v === '' || HEIGHT_IDS.includes(v), '카메라 높이를 목록에서 골라 주세요.').optional(),
+    dof: z.union([z.literal(''), z.string().regex(/^\d{1,2}(\.\d)?$/).refine((v) => Number(v) >= 1.2 && Number(v) <= 22, '조리개는 f/1.2~f/22 사이로 적어 주세요.')]).optional(),
+    focal: z.number().int().refine((v) => v === 0 || (v >= 12 && v <= 300), '초점 거리는 12~300mm 사이로 적어 주세요.').optional(),
     base_updated_at: z.string().max(40).nullable().optional(), // 협업: 불러올 때의 수정 시각(다른 사람이 먼저 고쳤는지 확인)
+  });
+  // 컷 고치기(PATCH)는 바꾼 칸만 보내도 돼요. 보내지 않은 칸은 지금 값을 그대로 둡니다(다른 탭에서 고친 내용을 덮어쓰지 않도록).
+  const shotPatchSchema = shotSchema.extend({
+    scene: z.string().trim().max(200).optional(),
+    visual: z.string().trim().max(800).optional(),
+    dialogue: z.string().trim().max(300).optional(),
+    speaker_id: z.string().max(80).nullable().optional(),
+    camera: z.string().trim().max(80).optional(),
+    seconds: z.number().int().min(2).max(10).optional(),
   });
   const checkProps = async (projectId, ids) => {
     for (const id of ids) if (!(await db.get('SELECT id FROM studio_props WHERE id=? AND project_id=?', [id, projectId]))) fail(400, '이 프로젝트의 소품만 고를 수 있어요.');
@@ -1379,13 +1784,23 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       'INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,dialogue,speaker_id,cast_ids,location_id,camera,camera_move,emotion,seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
       [id, e.id, Number(last?.n ?? -1) + 1, b.scene, b.visual, b.dialogue, b.speaker_id, (b.cast_ids || []).join(','), b.location_id || null, b.camera, b.camera_move || '', b.emotion || '', b.seconds],
     );
-    await db.run("UPDATE studio_episodes SET status=CASE WHEN status IN ('outline','composed') THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+    await db.run("UPDATE studio_episodes SET status=CASE WHEN status IN ('outline','composed') THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [e.id]);
+    await resetScriptReview(e.id);
     await queueTranslate(p.id, p.owner_id, [{ id: 'shot:' + id, ko: b.visual }]);
     res.status(201).json({ id });
   });
   app.patch('/api/studio/ai/shots/:sid', roles('pd', 'admin'), async (req, res) => {
     const s = await loadShot(req, req.params.sid, ['script', 'scene']);
-    const b = shotSchema.parse(req.body);
+    const raw = shotPatchSchema.parse(req.body);
+    const b = {
+      ...raw,
+      scene: raw.scene ?? s.scene,
+      visual: raw.visual ?? s.visual,
+      dialogue: raw.dialogue ?? s.dialogue,
+      speaker_id: raw.speaker_id === undefined ? s.speaker_id : raw.speaker_id,
+      camera: raw.camera ?? s.camera,
+      seconds: raw.seconds ?? Number(s.seconds),
+    };
     // 편집·연출(대본 권한 없음)은 장면·대사·화자·내레이션 같은 대본 내용은 바꿀 수 없어요.
     if (req.teamRole && !can(req.teamRole, 'script') && (b.scene !== s.scene || b.dialogue !== s.dialogue || b.speaker_id !== s.speaker_id || (b.narration !== undefined && (b.narration ? 1 : 0) !== Number(s.narration))))
       fail(403, `${ROLE_NAME[req.teamRole]} 역할은 장면 이름·대사·화자를 바꿀 수 없어요. 작가에게 요청해 주세요.`);
@@ -1413,27 +1828,45 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       sfx_prompt: b.sfx_prompt ?? s.sfx_prompt,
       sfx_volume: b.sfx_volume ?? s.sfx_volume,
       caption: b.caption === undefined ? s.caption : b.caption,
+      angle: b.angle ?? s.angle ?? '',
+      lens: b.lens ?? s.lens ?? '',
+      move_strength: b.move_strength ?? s.move_strength ?? '',
+      end_image: b.end_image ?? s.end_image ?? '',
+      effect: b.effect ?? s.effect ?? '',
+      light: b.light ?? s.light ?? '',
+      tone: b.tone ?? s.tone ?? '',
+      height: b.height ?? s.height ?? '',
+      dof: b.dof ?? s.dof ?? '',
+      focal: b.focal ?? Number(s.focal || 0),
     };
+    // 끝 장면은 이 프로젝트에서 만든 이미지만 쓸 수 있어요(같은 주인의 다른 프로젝트 파일도 안 됨).
+    if (b.end_image && b.end_image !== s.end_image) await projectMedia(s.project_id, b.end_image);
     // 대사·화자·감정·속도·내레이션이 바뀌면 이전 음성(과 입 모양 영상)은 맞지 않으므로 지웁니다(버전 기록에는 남음).
     const audioReset =
       b.dialogue !== s.dialogue || b.speaker_id !== s.speaker_id || next.emotion !== s.emotion || Number(next.speed) !== Number(s.speed) || next.narration !== Number(s.narration);
     // 시드 고정을 켜면 지금 시드를 정해 두고, 같은 컷을 다시 만들 때 비슷한 그림이 나오게 합니다.
     const seed = next.seed_lock && (s.seed === null || s.seed === undefined) ? Math.floor(Math.random() * 2147483647) : s.seed;
     await db.run(
-      `UPDATE studio_shots SET scene=?,visual=?,dialogue=?,speaker_id=?,cast_ids=?,location_id=?,camera=?,camera_move=?,emotion=?,speed=?,narration=?,seed_lock=?,seed=?,end_frame=?,transition=?,sfx_prompt=?,sfx_volume=?,caption=?,seconds=?,prop_ids=?,states=?,updated_at=?,updated_by=?${
+      `UPDATE studio_shots SET scene=?,visual=?,dialogue=?,speaker_id=?,cast_ids=?,location_id=?,camera=?,camera_move=?,emotion=?,speed=?,narration=?,seed_lock=?,seed=?,end_frame=?,transition=?,sfx_prompt=?,sfx_volume=?,caption=?,seconds=?,prop_ids=?,states=?,angle=?,lens=?,move_strength=?,end_image=?,effect=?,light=?,tone=?,height=?,dof=?,focal=?,updated_at=?,updated_by=?${
         audioReset ? ",audio='',audio_seconds=0,lipsync=''" : ''
       } WHERE id=?`,
       [
         b.scene, b.visual, b.dialogue, b.speaker_id, next.cast_ids, next.location_id, b.camera, next.camera_move, next.emotion, next.speed, next.narration, next.seed_lock, seed, next.end_frame, next.transition, next.sfx_prompt, next.sfx_volume, next.caption, b.seconds,
         b.prop_ids ? b.prop_ids.join(',') : s.prop_ids || '',
         states ? (Object.keys(states).length ? JSON.stringify(states) : '') : s.states || '',
+        next.angle, next.lens, next.move_strength, next.end_image, next.effect,
+        next.light, next.tone, next.height, next.dof, next.focal,
         now(), req.user.id,
         s.id,
       ],
     );
-    const changed = ['scene', 'visual', 'dialogue', 'speaker_id', 'camera', 'seconds'].some((k) => b[k] !== s[k]) || audioReset || next.transition !== s.transition || next.caption !== s.caption || Number(next.sfx_volume) !== Number(s.sfx_volume);
+    // 합성본에 들어가는 값(이미지만 있는 컷의 카메라 움직임·강도, 효과 포함)이 바뀌면 다시 합성해야 해요.
+    const changed =
+      ['scene', 'visual', 'dialogue', 'speaker_id', 'camera'].some((k) => b[k] !== s[k]) || Number(b.seconds) !== Number(s.seconds) || audioReset || next.transition !== s.transition || next.caption !== s.caption || Number(next.sfx_volume) !== Number(s.sfx_volume) ||
+      next.effect !== (s.effect || '') || toneGrade(next.tone) !== toneGrade(s.tone) || (!s.video && !s.lipsync && (next.camera_move !== s.camera_move || next.move_strength !== (s.move_strength || '')));
     const stamp = (await db.get('SELECT updated_at FROM studio_shots WHERE id=?', [s.id]))?.updated_at;
-    if (changed) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+    if (changed) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
+    if (['scene', 'visual', 'dialogue', 'speaker_id'].some((k) => b[k] !== s[k]) || Number(b.seconds) !== Number(s.seconds) || next.narration !== Number(s.narration)) await resetScriptReview(s.episode_id);
     if (b.visual !== s.visual && b.visual !== s.visual_en_src) await queueTranslate(s.project_id, (await db.get('SELECT owner_id FROM studio_projects WHERE id=?', [s.project_id])).owner_id, [{ id: 'shot:' + s.id, ko: b.visual }]);
     res.json({ ok: true, audioReset, updated_at: stamp });
   });
@@ -1441,7 +1874,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const s = await loadShot(req, req.params.sid, 'script');
     await db.run('DELETE FROM studio_shots WHERE id=?', [s.id]);
     // 합성한 뒤 컷이 바뀌면 완성본을 다시 만들어야 합니다.
-    await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+    await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
+    await resetScriptReview(s.episode_id);
     res.json({ ok: true });
   });
   app.post('/api/studio/ai/shots/:sid/move', roles('pd', 'admin'), async (req, res) => {
@@ -1454,7 +1888,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       if (j < 0 || j >= shots.length) return;
       [shots[i], shots[j]] = [shots[j], shots[i]];
       for (let k = 0; k < shots.length; k++) await db.run('UPDATE studio_shots SET sort_order=? WHERE id=?', [k, shots[k].id]);
-      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
+      await resetScriptReview(s.episode_id);
     });
     res.json({ ok: true });
   });
@@ -1469,7 +1904,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       if (b.ids.length !== shots.length || new Set(b.ids).size !== b.ids.length || !b.ids.every((id) => shots.some((s) => s.id === id)))
         fail(409, '컷 목록이 바뀌었어요. 새로고침한 뒤 다시 옮겨 주세요.');
       for (let k = 0; k < b.ids.length; k++) await db.run('UPDATE studio_shots SET sort_order=? WHERE id=?', [k, b.ids[k]]);
-      if (b.ids.some((id, k) => shots[k].id !== id)) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+      if (b.ids.some((id, k) => shots[k].id !== id)) {
+        await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [e.id]);
+        await resetScriptReview(e.id);
+      }
     });
     res.json({ ok: true });
   });
@@ -1485,15 +1923,25 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         transition: z.enum(['cut', 'fade', 'dip', 'flash']).optional(),
         speaker_id: z.string().max(80).nullable().optional(),
         seconds: z.number().int().min(2).max(10).optional(),
+        // 연출 세트 한 번에(샷 크기·앵글·렌즈 느낌·움직임 강도) · 효과
+        camera: z.string().trim().max(80).optional(),
+        angle: z.string().trim().max(20).refine((v) => v === '' || ANGLE_IDS.includes(v), '앵글을 목록에서 골라 주세요.').optional(),
+        lens: z.string().trim().max(20).refine((v) => v === '' || LENS_IDS.includes(v), '화면 느낌을 목록에서 골라 주세요.').optional(),
+        move_strength: z.enum(STRENGTH_IDS).optional(),
+        effect: z.enum(SHOT_EFFECTS).optional(),
+        light: z.string().trim().max(20).refine((v) => v === '' || LIGHT_IDS.includes(v), '조명을 목록에서 골라 주세요.').optional(),
+        tone: z.string().trim().max(20).refine((v) => v === '' || TONE_IDS.includes(v), '시간 · 색감을 목록에서 골라 주세요.').optional(),
+        height: z.string().trim().max(20).refine((v) => v === '' || HEIGHT_IDS.includes(v), '카메라 높이를 목록에서 골라 주세요.').optional(),
       })
       .parse(req.body);
     const e = await db.get('SELECT id FROM studio_episodes WHERE id=? AND project_id=?', [req.params.eid, p.id]);
     if (!e) fail(404, '회차를 찾을 수 없어요.');
     if (b.speaker_id !== undefined) await checkSpeaker(p.id, b.speaker_id);
-    const fields = ['emotion', 'speed', 'camera_move', 'transition', 'speaker_id', 'seconds'].filter((k) => b[k] !== undefined);
+    const fields = ['emotion', 'speed', 'camera_move', 'transition', 'speaker_id', 'seconds', 'camera', 'angle', 'lens', 'move_strength', 'effect', 'light', 'tone', 'height'].filter((k) => b[k] !== undefined);
     if (!fields.length) fail(400, '바꿀 내용을 골라 주세요.');
     let changed = 0;
     let reset = 0;
+    let scriptTouched = false;
     await db.transaction(async () => {
       for (const s of (await shotsOf(e.id)).filter((x) => b.ids.includes(x.id))) {
         const diff = fields.filter((k) => String(b[k] ?? '') !== String(s[k] ?? ''));
@@ -1503,8 +1951,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         await db.run(`UPDATE studio_shots SET ${diff.map((k) => `${k}=?`).join(',')}${audioReset ? ",audio='',audio_seconds=0,lipsync=''" : ''}${b.speaker_id !== undefined && diff.includes('speaker_id') ? ',narration=0' : ''} WHERE id=?`, [...diff.map((k) => b[k]), s.id]);
         changed++;
         if (audioReset) reset++;
+        if (diff.some((k) => ['speaker_id', 'seconds'].includes(k))) scriptTouched = true;
       }
-      if (changed) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [e.id]);
+      if (scriptTouched) await resetScriptReview(e.id);
+      if (changed) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [e.id]);
     });
     res.json({ changed, audioReset: reset });
   });
@@ -1515,17 +1965,25 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     await project(req, a.project_id, 'scene');
     const map = {
       character: ['studio_characters', { image: 'image', audio: 'voice_sample' }[a.kind]],
-      shot: ['studio_shots', { image: 'image', audio: 'audio', video: 'video' }[a.kind]],
+      shot: ['studio_shots', { image: 'image', audio: 'audio', video: 'video', lipsync: 'lipsync', sfx: 'sfx' }[a.kind]],
       project: ['studio_projects', 'poster'],
     }[a.target_type];
     if (!map || !map[1]) fail(400, '적용할 수 없는 결과예요.');
     if (a.target_type === 'shot' && a.kind === 'audio') {
       const meta = await db.get('SELECT duration FROM media_metadata WHERE url=?', [a.url]);
-      await db.run('UPDATE studio_shots SET audio=?,audio_seconds=? WHERE id=?', [a.url, Number(meta?.duration || 0), a.target_id]);
-    } else await db.run(`UPDATE ${map[0]} SET ${map[1]}=?${a.target_type === 'shot' && (map[1] === 'image' || map[1] === 'video') ? ",verify=''" : ''} WHERE id=?`, [a.url, a.target_id]);
+      // 음성이 바뀌면 예전 음성에 맞춘 입 모양 영상은 맞지 않아요.
+      await db.run("UPDATE studio_shots SET audio=?,audio_seconds=?,lipsync='' WHERE id=?", [a.url, Number(meta?.duration || 0), a.target_id]);
+    } else if (a.target_type === 'shot' && map[1] === 'image' && a.verify) {
+      // 후보를 검수해 두었으면 그 결과를 컷 검수로 그대로 이어 써요(같은 이미지).
+      await db.run('UPDATE studio_shots SET image=?,verify=? WHERE id=?', [a.url, a.verify, a.target_id]);
+    } else
+      await db.run(
+        `UPDATE ${map[0]} SET ${map[1]}=?${a.target_type === 'shot' && (map[1] === 'image' || map[1] === 'video') ? ",verify=''" : ''}${a.target_type === 'shot' && map[1] === 'video' ? ",lipsync=''" : ''} WHERE id=?`,
+        [a.url, a.target_id],
+      );
     if (a.target_type === 'shot') {
       const shot = await db.get('SELECT episode_id FROM studio_shots WHERE id=?', [a.target_id]);
-      if (shot) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [shot.episode_id]);
+      if (shot) await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [shot.episode_id]);
     }
     res.json({ ok: true });
   });
@@ -1572,7 +2030,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     let lama = 0;
     let label = '';
     for (const spec of specs) {
-      const e = await engine.estimate({ capability: spec.capability, requested: spec.requestedOverride || b.requested, tier: b.tier, tags: spec.tags, seconds: spec.input.seconds, needImage: needsImage(spec.input), input: spec.input, excludeCn: !!Number(p.exclude_cn), exclude, requireImage: !!spec.input._requireImage });
+      const e = await engine.estimate({ capability: spec.capability, requested: spec.requestedOverride || b.requested, tier: b.tier, tags: spec.tags, seconds: spec.input.seconds, needImage: needsImage(spec.input), needCamera: !!spec.input.needCamera, needEnd: !!spec.input.endImage, needMask: !!spec.input.maskImage, input: spec.input, excludeCn: !!Number(p.exclude_cn), exclude, requireImage: !!spec.input._requireImage });
       lama += e.lama;
       label = e.model.label;
     }
@@ -1589,7 +2047,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const first = specs[0];
     if (b.requested === 'auto' && first && !first.requestedOverride) {
       try {
-        why = await engine.explain({ capability: first.capability, tier: b.tier, tags: first.tags, seconds: first.input.seconds, needImage: needsImage(first.input), input: first.input, excludeCn: !!Number(p.exclude_cn), requireImage: !!first.input._requireImage });
+        why = await engine.explain({ capability: first.capability, tier: b.tier, tags: first.tags, seconds: first.input.seconds, needImage: needsImage(first.input), needCamera: !!first.input.needCamera, needEnd: !!first.input.endImage, needMask: !!first.input.maskImage, input: first.input, excludeCn: !!Number(p.exclude_cn), requireImage: !!first.input._requireImage });
       } catch {}
     }
     const budget = await budgetOf(p);
@@ -1612,20 +2070,47 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     for (const spec of specs) {
       await engine.screen({ userId: req.user.id, kind: spec.kind, texts: [spec.input.userText, spec.input.text] });
     }
-    const needPrice = (Number(p.budget_lama) > 0 && !b.budgetOk) || (req.teamMember?.pay_mode === 'sponsor' && req.teamRole !== 'owner');
+    const needPrice = (Number(p.budget_lama) > 0 && !b.budgetOk) || (!!req.teamMember && req.teamRole !== 'owner');
     const price = needPrice ? (await priceSpecs(p, b, specs, exclude)).lama : 0;
-    const payer = await payerFor(req, p, b, price);
-    if (Number(p.budget_lama) > 0 && !b.budgetOk) {
-      const budget = await budgetOf(p);
-      const lama = price;
-      if (budget.spent + lama > budget.limit)
-        throw Object.assign(new Error(`프로젝트 예산(${budget.limit.toLocaleString('ko-KR')}라마)을 넘어요. 지금까지 ${budget.spent.toLocaleString('ko-KR')}라마를 썼고, 이번 작업은 약 ${lama.toLocaleString('ko-KR')}라마예요.`), {
-          status: 409,
-          code: 'project_budget',
-        });
+    // 실제로 실행할 때만 하는 준비(예: 영상 검수용 장면 뽑기). 작업이 만들어지지 않으면 뽑은 파일을 지워요.
+    const prepared = [];
+    const cleanup = async (keep = new Set()) => {
+      for (const spec of prepared) if (!keep.has(spec)) await removeFrames(spec.input.tempFrames);
+    };
+    let made;
+    try {
+      for (const spec of specs)
+        if (spec.prepare) {
+          spec.input = await spec.prepare(spec.input);
+          prepared.push(spec);
+        }
+      made = await runSpecsTx(req, p, b, specs, exclude, price);
+    } catch (e) {
+      await cleanup();
+      throw e;
     }
-    return db.transaction(async () => {
+    // 이미 있던 작업(같은 요청 · 진행 중)을 돌려받은 경우 새로 뽑은 파일은 쓰이지 않아요.
+    await cleanup(new Set(specs.filter((spec, i) => made.created[i])));
+    return made.jobs;
+  }
+  async function runSpecsTx(req, p, b, specs, exclude, price) {
+    const createdFlags = [];
+    const jobs = await db.transaction(async () => {
       if (db.engine === 'postgresql') await db.get('SELECT id FROM studio_projects WHERE id=? FOR UPDATE', [p.id]);
+      // 결제자 · 지원 한도 · 프로젝트 예산은 프로젝트 잠금 안에서 확인해요(동시에 누른 두 작업이 함께 한도를 넘지 않도록).
+      if (req.teamMember && req.teamRole !== 'owner') {
+        const fresh = await db.get('SELECT pay_mode,sponsor_limit FROM studio_members WHERE project_id=? AND user_id=?', [p.id, req.user.id]);
+        if (fresh) req.teamMember = { ...req.teamMember, pay_mode: fresh.pay_mode, sponsor_limit: fresh.sponsor_limit };
+      }
+      const payer = await payerFor(req, p, b, price);
+      if (Number(p.budget_lama) > 0 && !b.budgetOk) {
+        const budget = await budgetOf(p);
+        if (budget.spent + price > budget.limit)
+          throw Object.assign(new Error(`프로젝트 예산(${budget.limit.toLocaleString('ko-KR')}라마)을 넘어요. 지금까지 ${budget.spent.toLocaleString('ko-KR')}라마를 썼고, 이번 작업은 약 ${price.toLocaleString('ko-KR')}라마예요.`), {
+            status: 409,
+            code: 'project_budget',
+          });
+      }
       const out = [];
       for (const spec of specs) {
         const multi = specs.length > 1 || b.action.startsWith('batch_');
@@ -1635,7 +2120,14 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           if (previous.user_id !== payer || previous.project_id !== p.id || previous.kind !== spec.kind || previous.target_id !== spec.target.id)
             fail(409, '다른 AI 작업에 사용된 요청입니다. 다시 시작해 주세요.');
           out.push(previous);
+          createdFlags.push(false);
           continue;
+        }
+        // 후보 여러 장: 잠금 안에서 한 번 더 확인해요(두 번 빨리 눌러 후보가 두 배로 생기지 않도록).
+        if (spec.input?.candidate && /^c1$/.test(spec.keySuffix || '')) {
+          const family = spec.kind === 'shot_video' ? ['shot_video', 'shot_upscale_video'] : ['shot_image', 'shot_image_edit', 'shot_upscale'];
+          if (await db.get(`SELECT id FROM ai_jobs WHERE target_id=? AND kind IN (${family.map(() => '?').join(',')}) AND status IN ('queued','running') LIMIT 1`, [spec.target.id, ...family]))
+            fail(409, '이 컷을 만드는 작업이 진행 중이에요. 끝난 뒤 후보를 만들어 주세요.');
         }
         // 같은 대상의 같은 작업이 진행 중이면 새로 만들지 않습니다(인물 참고 이미지는 자세별로 따로).
         const active = spec.keySuffix
@@ -1644,8 +2136,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         if (active) {
           if (!multi) fail(409, '같은 작업이 이미 진행 중이에요.');
           out.push(active);
+          createdFlags.push(false);
           continue;
         }
+        createdFlags.push(true);
         out.push(
           await engine.enqueue({
             userId: payer,
@@ -1668,6 +2162,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       await db.run("UPDATE studio_projects SET status=CASE WHEN status='draft' THEN 'producing' ELSE status END,updated_at=? WHERE id=?", [now(), p.id]);
       return out;
     });
+    return { jobs, created: createdFlags };
   }
   const jobsView = async (req, jobs) => ({
     jobs: jobs.map((j) => ({ id: j.id, kind: j.kind, estimate_lama: Number(j.estimate_lama), status: j.status })),
@@ -1684,7 +2179,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     res.status(201).json(await jobsView(req, jobs));
   });
   // 실패한 작업 다시 시도: 같은 작업을 다시 만들되, 자동 선택이면 실패한 모델은 빼고 다음 후보로(직접 고르면 그 모델로).
-  const RETRYABLE = new Set(['plan', 'poster', 'adapt', 'bible', 'season', 'metadata', 'music', 'script', 'diagnose', 'rewrite_range', 'character_image', 'character_ref', 'location_image', 'voice_sample', 'shot_image', 'shot_image_edit', 'shot_tts', 'shot_video', 'shot_lipsync', 'shot_sfx', 'rewrite_shot', 'parse_script', 'reverse_script', 'prop_image', 'verify_shot', 'bridge_shot', 'variants']);
+  const RETRYABLE = new Set(['plan', 'poster', 'adapt', 'bible', 'season', 'metadata', 'music', 'script', 'diagnose', 'rewrite_range', 'character_image', 'character_ref', 'location_image', 'voice_sample', 'shot_image', 'shot_image_edit', 'shot_tts', 'shot_video', 'shot_lipsync', 'shot_sfx', 'rewrite_shot', 'parse_script', 'reverse_script', 'prop_image', 'verify_shot', 'bridge_shot', 'variants', 'shot_upscale', 'shot_upscale_video', 'verify_asset', 'verify_video']);
   app.post('/api/studio/ai/jobs/:jid/retry', roles('pd', 'admin'), async (req, res) => {
     await requireTerms(req);
     const job = await db.get('SELECT * FROM ai_jobs WHERE id=?', [req.params.jid]);
@@ -1701,6 +2196,13 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (job.kind === 'character_ref') options.pose = input.pose;
     if (job.kind === 'rewrite_range') options.shotIds = input.shotIds;
     if (job.kind === 'variants') options.angles = input.context?.angles || [];
+    if (job.kind === 'shot_image_edit' && input.maskImage?.path) {
+      // 예전 방식(컷에 묶이지 않은) 마스크는 더 쓸 수 없어요.
+      if (!/^\/masks\/[a-f0-9-]+\.[a-f0-9-]+\.png$/.test(input.maskImage.path)) fail(400, '칠한 영역이 만료됐어요. 장면 편집에서 다시 칠해 주세요.');
+      options.mask = input.maskImage.path;
+    }
+    if (job.kind === 'shot_image_edit' && input.swap) Object.assign(options, { swap: input.swap, ...(input.swapId ? { swapId: input.swapId } : {}) });
+    if (job.kind === 'shot_video' && input.motionOnly) options.motionOnly = true;
     if (job.kind === 'music') {
       options.seconds = input.seconds;
       if (input.userText) options.mood = String(input.userText).slice(0, 200);
@@ -1716,7 +2218,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       budgetOk: body.budgetOk,
       payOwn: body.payOwn,
     });
-    const specs = await plan(req, p, b);
+    let specs = await plan(req, p, b);
+    // 후보 묶음의 한 장을 다시 시도하면 후보로 다시 만들어요(이미 고른 컷 이미지·영상을 덮어쓰지 않게).
+    if (input.candidate && ['shot_image', 'shot_video'].includes(job.kind))
+      specs = specs.map((x) => ({ ...x, keySuffix: 'r' + job.id.slice(0, 8), input: { ...x.input, candidate: input.candidate, seed: Number.isInteger(input.seed) ? input.seed + 1 : x.input.seed } }));
     const exclude = body.requested === 'auto' && job.model_ref ? [job.model_ref] : [];
     res.status(201).json(await jobsView(req, await runSpecs(req, p, b, specs, { exclude })));
   });
@@ -1740,7 +2245,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (busy) fail(409, '이 회차의 AI 작업이 끝난 뒤 합성해 주세요.');
     if (!shots.length) fail(400, '대본(컷)이 없어요. 대본을 먼저 만들어 주세요.');
     const missing = shots.findIndex((s) => !s.video && !s.image && !s.lipsync);
-    if (missing >= 0) fail(400, `${missing + 1}번째 컷에 영상이나 스토리보드 이미지가 없어요.`);
+    if (missing >= 0) fail(400, `${missing + 1}번째 컷에 영상이나 컷 이미지가 없어요.`);
     try {
       // 대기열에 넣고 바로 돌려줍니다(같은 회차를 동시에 눌러도 한 번만 들어감).
       await renderer.queueEpisode(p, e);
@@ -1954,7 +2459,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const withShots = new Set(shots.map((x) => x.episode_id));
     const unscripted = eps.filter((e) => !withShots.has(e.id));
     if (unscripted.length) return { stage: 'script', specs: await specs('script', unscripted.map((e) => e.id)) };
-    const board = shots.filter((x) => !x.image);
+    // 화면 묘사가 빈 컷은 이미지를 만들 수 없어 건너뜁니다(같은 컷을 계속 다시 시도하지 않도록).
+    const board = shots.filter((x) => !x.image && String(x.visual || '').trim());
     if (board.length) return { stage: 'board', specs: await specs('shot_image', board.map((x) => x.id)) };
     const voice = shots.filter((x) => String(x.dialogue || '').trim() && !x.audio);
     if (voice.length) return { stage: 'voice', specs: await specs('shot_tts', voice.map((x) => x.id)) };
@@ -1980,7 +2486,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     let lama = 0;
     for (const spec of specs) {
       const c = choiceFor(ap, spec.capability);
-      const e = await engine.estimate({ capability: spec.capability, requested: spec.requestedOverride || c.requested, tier: c.tier, tags: spec.tags, seconds: spec.input.seconds, needImage: needsImage(spec.input), input: spec.input, excludeCn: !!Number(p.exclude_cn) });
+      const e = await engine.estimate({ capability: spec.capability, requested: spec.requestedOverride || c.requested, tier: c.tier, tags: spec.tags, seconds: spec.input.seconds, needImage: needsImage(spec.input), needCamera: !!spec.input.needCamera, needEnd: !!spec.input.endImage, needMask: !!spec.input.maskImage, requireImage: !!spec.input._requireImage, input: spec.input, excludeCn: !!Number(p.exclude_cn) });
       lama += e.lama;
     }
     return lama;
@@ -2022,7 +2528,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     };
     const add = (a, b) => (a === null || b === null ? null : a + b);
     const castCount = cast.length ? cast.filter((c) => !c.image).length : 4;
-    const boardCount = shots.filter((x) => !x.image).length + unscripted * guessShots;
+    const boardCount = shots.filter((x) => !x.image && String(x.visual || '').trim()).length + unscripted * guessShots;
     const voiceCount = shots.filter((x) => String(x.dialogue || '').trim() && !x.audio).length + Math.ceil(unscripted * guessShots * 0.7);
     const videoSeconds = shots.filter((x) => !x.video).reduce((n, x) => n + Number(x.seconds || 5), 0) + unscripted * Number(p.episode_seconds);
     const sfxCount = shots.filter((x) => String(x.sfx_prompt || '').trim() && !x.sfx).length + Math.ceil(unscripted * guessShots * 0.4);
@@ -2398,8 +2904,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     res.type('text/vtt; charset=utf-8').sendFile(path.join(subsDir, e.subtitles));
   });
   studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, uploadDir, project, touch, queueTranslate, shotsOf, charactersOf, episodesOf });
-  shotMediaRoutes({ app, db, fail, now, roles, uploadDir, loadShot, project });
-  qualityRoutes({ app, db, fail, now, roles, project, charactersOf, episodesOf, shotsOf });
+  shotMedia = shotMediaRoutes({ app, db, fail, now, roles, uploadDir, loadShot, project });
+  qualityRoutes({ app, db, fail, now, roles, project, charactersOf, episodesOf, shotsOf, hasModel: async (cap) => (await engine.listForPicker(cap, await settingsOf())).length > 0 });
   libraryRoutes({ app, db, fail, now, roles, project, charactersOf, locationsOf, propsOf, queueTranslate });
   chatApi = assistantRoutes({ app, db, fail, now, roles, engine, project, requireTerms, plan, runSpecs, runSchema, estimateSpecs: priceSpecs, charactersOf, episodesOf, shotsOf, locationsOf, queueTranslate, settingsOf });
   // 목소리 라이브러리 샘플은 모든 PD가 함께 들을 수 있습니다.

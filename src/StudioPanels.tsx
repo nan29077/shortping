@@ -55,7 +55,7 @@ export function StudioInsights({ data, admin = false }: { data: StudioData; admi
     };
   });
   const max = Math.max(...days.map((d) => d.amount), 1);
-  // 연재 중인 작품에 새 회차 검수 요청이 있으면 관리자 대시보드에서 바로 처리할 수 있게 보여 줍니다.
+  // 연재 중인 작품에 새 회차 심사 요청이 있으면 관리자 대시보드에서 바로 처리할 수 있게 보여 줍니다.
   const pendingEpisodes = data.dramas.reduce(
     (n, d) => n + Number((d as Drama & { pending_episodes?: number }).pending_episodes || 0),
     0,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronRight, Save, ShieldCheck, Upload } from 'lucide-react';
+import { ChevronRight, Save, ShieldCheck, Smartphone, TriangleAlert, Upload } from 'lucide-react';
 import {
   api,
   won,
@@ -175,17 +175,250 @@ function AccountOverview({ user }: { user: User }) {
   );
 }
 
+// 서버가 본인에게만 내려 주는 휴대폰 인증 정보(api.ts의 User 타입에는 아직 없는 칸)
+type AccountUser = User & { phone?: string; phone_verified?: boolean };
+
+// 휴대폰 인증: 인증번호(6자리, 5분 유효)를 문자로 받아 확인합니다. 하루 5번까지 받을 수 있어요.
+function PhoneVerification({
+  user,
+  onUser,
+  notify,
+}: {
+  user: AccountUser;
+  onUser: (user: User) => void;
+  notify: (text: string) => void;
+}) {
+  const [phone, setPhone] = useState(user.phone || ''),
+    [sentTo, setSentTo] = useState(''),
+    [expiresAt, setExpiresAt] = useState(0),
+    [code, setCode] = useState(''),
+    [busy, setBusy] = useState(false),
+    [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!expiresAt) return;
+    const t = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [expiresAt]);
+  const left = Math.max(0, Math.round((expiresAt - clock) / 1000));
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="settings-card">
+      <h2>
+        <Smartphone size={19} />
+        휴대폰 인증
+      </h2>
+      <p className="muted">
+        {user.phone_verified
+          ? `${user.phone} 번호로 인증했어요. 번호를 바꾸려면 새 번호로 다시 인증해 주세요.`
+          : '휴대폰 번호를 인증해 두면 계정을 더 안전하게 지킬 수 있어요. 지금은 선택 사항이에요.'}
+      </p>
+      {user.phone_verified && <span className="role-chip viewer">인증 완료</span>}
+      <form
+        className="phone-verify"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run(async () => {
+            const r = await api<{ phone: string; expires_at: string }>('/account/phone/send', 'POST', { phone });
+            setSentTo(r.phone);
+            setPhone(r.phone);
+            setCode('');
+            setExpiresAt(new Date(r.expires_at).getTime());
+            notify('인증번호를 문자로 보냈어요. 5분 안에 입력해 주세요.');
+          });
+        }}
+      >
+        <label>
+          휴대폰 번호
+          <input
+            type="tel"
+            inputMode="tel"
+            autoComplete="tel"
+            placeholder="010-1234-5678"
+            maxLength={13}
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            required
+          />
+        </label>
+        <button className="secondary" disabled={busy || !phone.trim()}>
+          {sentTo ? '인증번호 다시 받기' : '인증번호 받기'}
+        </button>
+      </form>
+      {sentTo && (
+        <form
+          className="phone-verify"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(async () => {
+              const r = await api<{ user: User }>('/account/phone/verify', 'POST', { phone: sentTo, code });
+              onUser(r.user);
+              setSentTo('');
+              setExpiresAt(0);
+              setCode('');
+              notify('휴대폰 인증을 마쳤어요.');
+            });
+          }}
+        >
+          <label>
+            인증번호 6자리 {left > 0 ? `(${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} 남음)` : '(시간이 지났어요. 다시 받아 주세요)'}
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="[0-9]{6}"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+              required
+            />
+          </label>
+          <button className="primary" disabled={busy || code.length !== 6 || left <= 0}>
+            확인
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+// 회원 탈퇴: 막히는 이유(처리 중인 출금 등)와 사라지는 항목(핑·라마·정산금)을 먼저 보여 주고,
+// 비밀번호를 한 번 더 확인한 뒤 진행합니다.
+type WithdrawCheck = { blockers: string[]; warnings: string[]; demo: boolean };
+function WithdrawDialog({
+  close,
+  notify,
+  onWithdrawn,
+}: {
+  close: () => void;
+  notify: (text: string) => void;
+  onWithdrawn: () => void;
+}) {
+  const [check, setCheck] = useState<WithdrawCheck | null>(null),
+    [password, setPassword] = useState(''),
+    [reason, setReason] = useState(''),
+    [agree, setAgree] = useState(false),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  useEffect(() => {
+    api<WithdrawCheck>('/account/withdraw')
+      .then(setCheck)
+      .catch((e) => setError((e as Error).message));
+  }, []);
+  const blocked = !!check && (check.demo || check.blockers.length > 0);
+  return (
+    <Modal title="정말 탈퇴할까요?" close={() => !busy && close()} className="withdraw-modal">
+      {error ? (
+        <p role="alert">{error}</p>
+      ) : !check ? (
+        <div className="loading compact">
+          <span className="spinner" />
+        </div>
+      ) : (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              const r = await api<{ message: string }>('/account/withdraw', 'POST', {
+                password,
+                reason,
+                confirm: agree,
+              });
+              notify(r.message);
+              onWithdrawn();
+            } catch (err) {
+              notify((err as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <p className="modal-text">
+            탈퇴하면 이 계정으로 다시 로그인할 수 없고, 닉네임·이메일·연락처·정산 계좌 같은 개인정보는 지워져요.
+            결제·정산 기록은 관련 법에 따라 보관돼요. 같은 이메일로 새로 가입할 수는 있어요.
+          </p>
+          {check.demo && <p className="info-box">공용 테스트 계정은 탈퇴할 수 없어요.</p>}
+          {check.blockers.length > 0 && (
+            <ul className="withdraw-list danger" role="alert">
+              {check.blockers.map((b) => (
+                <li key={b}>{b}</li>
+              ))}
+            </ul>
+          )}
+          {!blocked && check.warnings.length > 0 && (
+            <>
+              <ul className="withdraw-list">
+                {check.warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+              <label className="settings-toggle">
+                <span>
+                  <strong>위 내용을 확인했어요</strong>
+                  <small>남은 핑·라마·정산금은 돌려받을 수 없어요.</small>
+                </span>
+                <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
+              </label>
+            </>
+          )}
+          {!blocked && (
+            <>
+              <label>
+                비밀번호 확인
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  maxLength={128}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </label>
+              <label>
+                떠나시는 이유 (선택)
+                <textarea maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="더 나은 숏핑을 만드는 데 참고할게요." />
+              </label>
+            </>
+          )}
+          <div className="form-actions">
+            <button type="button" className="secondary" disabled={busy} onClick={close}>
+              취소
+            </button>
+            <button
+              className="danger"
+              disabled={busy || blocked || !password || (check.warnings.length > 0 && !agree)}
+            >
+              {busy ? '처리 중…' : '탈퇴하기'}
+            </button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 export default function AccountSettings({
   user,
   onUser,
   notify,
   onHistoryCleared,
+  onWithdrawn,
 }: {
   user: User;
   onUser: (user: User) => void;
   notify: (text: string) => void;
   onHistoryCleared: () => Promise<void>;
+  onWithdrawn?: () => void;
 }) {
+  const [withdrawing, setWithdrawing] = useState(false);
   const [form, setForm] = useState({
     name: user.name,
     bio: user.bio || '',
@@ -281,8 +514,8 @@ export default function AccountSettings({
               const file = e.target.files?.[0];
               e.target.value = '';
               if (!file) return;
-              if (file.size > 10 * 1024 * 1024) {
-                notify('10MB 이하의 이미지를 선택해 주세요.');
+              if (file.size > 5 * 1024 * 1024) {
+                notify('5MB 이하의 이미지를 선택해 주세요.');
                 return;
               }
               setUploading(true);
@@ -301,7 +534,7 @@ export default function AccountSettings({
           />
         </label>
         <p className="muted settings-note">
-          JPG · PNG · WEBP / 최대 10MB. 저장한 이미지는 다시 로그인해도 유지됩니다.
+          JPG · PNG · WEBP / 최대 5MB · 가로세로 64~4096px. 새 이미지를 저장하면 전에 올린 이미지는 지워져요.
         </p>
         <label className="settings-toggle">
           <span>
@@ -433,6 +666,7 @@ export default function AccountSettings({
           </button>
         </div>
       </section>
+      <PhoneVerification user={user} onUser={onUser} notify={notify} />
       <section className="settings-card">
         <h2>시청 기록 관리</h2>
         <p className="muted">
@@ -446,6 +680,23 @@ export default function AccountSettings({
           내 시청 기록 삭제
         </button>
       </section>
+      {onWithdrawn && (
+        <section className="settings-card danger-zone">
+          <h2>
+            <TriangleAlert size={19} />
+            회원 탈퇴
+          </h2>
+          <p className="muted">
+            탈퇴하면 계정과 개인정보가 지워지고 남은 핑·라마·정산금은 사라져요. 처리 중인 출금이 있으면 끝난 뒤에 탈퇴할 수 있어요.
+          </p>
+          <button className="danger full" disabled={busy} onClick={() => setWithdrawing(true)}>
+            회원 탈퇴
+          </button>
+        </section>
+      )}
+      {withdrawing && onWithdrawn && (
+        <WithdrawDialog close={() => setWithdrawing(false)} notify={notify} onWithdrawn={onWithdrawn} />
+      )}
       {confirmation && (
         <Modal
           title={

@@ -18,6 +18,7 @@ import './ws/workspace.css';
 import './ws/vibe.css';
 import './ws/drama.css';
 import './ws/team.css';
+import './ws/direction.css';
 import { actionNeed, CommentsPanel, needMessage, RoleBanner, ShareModal, TeamChips, teamCan, type CommentTarget } from './ws/TeamParts';
 
 const icons = { plan: Wand2, script: Clapperboard, scene: Film, finish: Send } as const;
@@ -127,6 +128,7 @@ export default function Workspace({
   const [ask, confirmUi] = useConfirm();
   // 불러오는 중에 또 부르면(저장 직후 등) 끝난 뒤 한 번 더 불러 최신 값을 보장합니다.
   const inflight = useRef<Promise<void> | null>(null);
+  const lastKey = useRef('');
   const again = useRef(false);
   const load = useCallback((): Promise<void> => {
     if (inflight.current) {
@@ -138,7 +140,12 @@ export default function Workspace({
         do {
           again.current = false;
           const d = await api<StudioProjectDetail>('/studio/ai/projects/' + projectId);
-          setData(d);
+          // 바뀐 것이 없으면 화면을 다시 그리지 않아요(작업 중 2초마다 불러올 때 입력 · 스크롤이 흔들리지 않도록).
+          const key = JSON.stringify(d);
+          if (key !== lastKey.current) {
+            lastKey.current = key;
+            setData(d);
+          }
           setError('');
           setEpisodeId((cur) => (cur && d.episodes.some((e) => e.id === cur) ? cur : d.episodes[0]?.id || ''));
         } while (again.current);
@@ -154,6 +161,16 @@ export default function Workspace({
   useEffect(() => {
     void load();
   }, [load]);
+  // 탭을 옮기면 떠나는 탭의 남은 저장이 끝난 뒤 한 번 더 불러와, 다른 탭에서 고친 내용이 바로 보이게 해요.
+  const firstTab = useRef(true);
+  useEffect(() => {
+    if (firstTab.current) {
+      firstTab.current = false;
+      return;
+    }
+    const t = setTimeout(() => void load(), 500);
+    return () => clearTimeout(t);
+  }, [tab, load]);
   // 진행 중인 AI 작업 · 합성 · 예고편 · 빠른 제작이 있으면 2초마다(화면이 보일 때만) 새로 봅니다.
   const active =
     !!data &&
@@ -268,8 +285,8 @@ export default function Workspace({
             {runningJobs ? `진행 ${runningJobs}` : failedCount ? `실패 ${failedCount}` : '작업'}
             {Number(p.budget_lama) > 0 && <small>{Math.round((Number(data.spent) / Number(p.budget_lama)) * 100)}%</small>}
           </button>
-          <button className="wallet-chip lama-chip" onClick={goLama}>
-            <Sparkles size={14} /> {lama(data.wallet.total)}
+          <button className="wallet-chip lama-chip" onClick={goLama} title="보유 라마(누르면 충전)">
+            <Sparkles size={14} /> 보유 {lama(data.wallet.total)}
           </button>
         </div>
       </div>

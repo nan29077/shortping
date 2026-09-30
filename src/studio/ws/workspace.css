@@ -1343,3 +1343,296 @@ button.job-badge {
     padding: 10px;
   }
 }
+
+/* ── 컷 상세 3층 구조(2026-09-30, 전체 점검 D) ─────────────── */
+.ws-detail-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-detail-nav {
+  flex-wrap: wrap;
+}
+.shot-mode {
+  display: inline-flex;
+  border: 1px solid #2f3c34;
+  border-radius: 999px;
+  padding: 2px;
+  margin-left: auto;
+}
+.shot-mode button {
+  border: 0;
+  background: transparent;
+  color: #9aa79f;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  min-height: 30px;
+  cursor: pointer;
+}
+.shot-mode button.on {
+  background: #c4f562;
+  color: #111;
+  font-weight: 700;
+}
+.shot-status {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+}
+.shot-status span {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #2f3c34;
+  color: #8a9a90;
+}
+.shot-status span.ok {
+  border-color: #c4f56255;
+  color: #c4f562;
+}
+.shot-primary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.shot-primary button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 40px;
+  font-size: 13px;
+  padding: 8px 6px;
+  white-space: nowrap;
+}
+.shot-primary.mob {
+  display: none;
+}
+.shot-jobs:empty {
+  display: none;
+}
+.shot-jobs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ws-conflict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid #f5a62366;
+  background: #f5a62314;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #f7c77a;
+}
+.ws-detail-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.ws-detail-fields:disabled input,
+.ws-detail-fields:disabled textarea,
+.ws-detail-fields:disabled select {
+  opacity: 0.7;
+}
+.ws-lock-note {
+  display: block;
+  font-size: 11px;
+  color: #f7c77a;
+  margin-bottom: 8px;
+}
+.ws-seconds-field input {
+  max-width: 110px;
+}
+.ws-fold {
+  border: 1px solid #26312d;
+  border-radius: 12px;
+  margin: 0 0 10px;
+  background: #0f1517;
+}
+.ws-fold-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: #dfe6e1;
+  user-select: none;
+  border-radius: 12px;
+}
+.ws-fold-head:focus-visible {
+  outline: 2px solid #c4f562;
+  outline-offset: 2px;
+}
+.ws-fold-head strong {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.ws-fold-head small {
+  font-size: 11px;
+  color: #8a9a90;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 2px;
+}
+.ws-fold-caret {
+  flex: 0 0 auto;
+  transform: rotate(-90deg);
+  transition: transform 0.15s;
+  color: #8a9a90;
+}
+.ws-fold.open .ws-fold-caret {
+  transform: none;
+}
+.ws-fold-body {
+  padding: 4px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-fold-body > label,
+.ws-fold-body > .ws-field {
+  margin-bottom: 4px;
+}
+.ws-mode-hint {
+  display: block;
+  font-size: 11px;
+  margin-top: 4px;
+}
+@media (max-width: 760px) {
+  .ws-detail-top {
+    position: sticky;
+    /* 관리 화면 위쪽 고정 막대(휴대폰 65px) 바로 아래에 붙어요 */
+    top: 65px;
+    z-index: 15;
+    margin: -14px -14px 10px;
+    padding: 10px 14px;
+    background: #11181af2;
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid #26312d;
+    border-radius: 14px 14px 0 0;
+  }
+  .ws-detail-nav {
+    margin-bottom: 0;
+    /* 고정 줄이 두 줄로 커지지 않게 한 줄로 두고 옆으로 밀어 봐요 */
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .ws-detail-nav > * {
+    flex: 0 0 auto;
+  }
+  .shot-primary.mob {
+    display: grid;
+  }
+  .shot-primary.desk {
+    display: none;
+  }
+  .ws-detail-fields {
+    padding-bottom: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-fold-caret {
+    transition: none;
+  }
+}
+.ws-clip-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+  background: linear-gradient(90deg, transparent, #c4f56233);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.ws-clip:hover .ws-clip-resize,
+.ws-clip.active .ws-clip-resize {
+  opacity: 1;
+}
+.ws-clip-resize::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  width: 2px;
+  height: 22px;
+  margin-top: -11px;
+  border-radius: 2px;
+  background: #c4f562;
+}
+.ws-clip-cands {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: #b28cff;
+  box-shadow: 3px -3px 0 -1px #b28cff88;
+}
+.ws-clip-transition {
+  width: 6px;
+}
+@media (hover: none) {
+  .ws-clip-resize {
+    opacity: 0.8;
+    width: 16px;
+  }
+}
+/* 역할별 보기 전용 묶음(fieldset): 모양은 그대로 두고 잠긴 칸만 흐리게 */
+.ro-fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.ro-fieldset:disabled input,
+.ro-fieldset:disabled textarea,
+.ro-fieldset:disabled select {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+/* 손가락으로 누르는 기기: 작은 버튼 · 칩의 누르는 영역을 넓혀요(겉모양은 거의 그대로) */
+@media (pointer: coarse) {
+  .ws .icon-button,
+  .ws-detail-nav .icon-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  .ws button.compact,
+  .ws .version-select {
+    min-height: 38px;
+  }
+  .ws .chip {
+    min-height: 36px;
+  }
+  .ws .ws-line-index button {
+    min-width: 36px;
+    min-height: 36px;
+  }
+}
+@media (max-width: 760px) {
+  /* 위쪽 고정 줄(컷 이동 · 주 버튼) 아래로 가려지지 않게: 초점 이동 · 자동 스크롤 때 여백을 둬요 */
+  .ws-detail button,
+  .ws-detail select,
+  .ws-detail input,
+  .ws-detail textarea,
+  .ws-detail [role='button'] {
+    scroll-margin-top: 190px;
+  }
+}

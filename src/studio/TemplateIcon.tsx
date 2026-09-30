@@ -48,6 +48,18 @@ const tones: Record<string, string> = {
   판타지: 'violet',
   코미디: 'mint',
   청춘: 'sky',
+  '로맨틱 코미디': 'rose',
+  미스터리: 'amber',
+  복수: 'amber',
+  '회귀·환생': 'violet',
+  학원: 'sky',
+  오피스: 'mint',
+  사극: 'violet',
+  액션: 'amber',
+  가족: 'mint',
+  휴먼: 'sky',
+  호러: 'amber',
+  SF: 'violet',
 };
 
 export default function TemplateIcon({ id, genre }: { id: string; genre?: string }) {

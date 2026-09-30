@@ -53,7 +53,7 @@ export function StudioOverviewCard({ go }: { go: () => void }) {
         <div>
           <span className="eyebrow lime">SHORTPING STUDIO</span>
           <h3>AI로 숏폼 드라마 만들기</h3>
-          <p>아이디어 한 줄이면 기획·대본·스토리보드·음성·합성까지. 보유 라마 {lama(d.wallet.total)}</p>
+          <p>아이디어 한 줄이면 기획·대본·컷 이미지·음성·합성까지. 보유 라마 {lama(d.wallet.total)}</p>
         </div>
         <button className="primary compact" onClick={go}>
           {recent.length ? <Sparkles size={15} /> : <Plus size={15} />} {recent.length ? '스튜디오 열기' : '첫 작품 만들기'}

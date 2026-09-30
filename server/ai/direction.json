@@ -1,0 +1,560 @@
+{
+  "_note": "컷 연출(카메라) 사전. 서버(프롬프트·합성)와 화면(연출 카드)이 같은 파일을 씁니다. id는 DB에 그대로 저장되는 한국어 값이라 바꾸면 안 돼요(이름을 바꾸려면 label을 바꾸세요). 조명(lights)·시간과 색감(tones)·카메라 높이(heights)·초점 거리(focals, mm)·조리개(apertures, f값)는 2단계(2026-09-30)에 추가했어요. tones의 grade는 합성할 때 입히는 색 보정(ffmpeg 필터)이에요.",
+  "sizes": [
+    {
+      "id": "익스트림 클로즈업",
+      "en": "extreme close-up",
+      "hint": "눈·입술·손처럼 한 부분만"
+    },
+    {
+      "id": "클로즈업",
+      "en": "close-up",
+      "hint": "얼굴 가득 — 감정 전달"
+    },
+    {
+      "id": "바스트",
+      "en": "bust shot, chest up",
+      "hint": "가슴 위 — 대화 장면 기본"
+    },
+    {
+      "id": "미디엄",
+      "en": "medium shot, waist up",
+      "hint": "허리 위 — 몸짓까지"
+    },
+    {
+      "id": "풀샷",
+      "en": "full shot, head to toe",
+      "hint": "전신 — 옷차림·동작"
+    },
+    {
+      "id": "와이드",
+      "en": "wide shot",
+      "hint": "인물과 장소를 함께"
+    },
+    {
+      "id": "투샷",
+      "en": "two-shot, both characters in frame",
+      "hint": "두 사람을 한 화면에"
+    },
+    {
+      "id": "오버숄더",
+      "en": "over-the-shoulder shot",
+      "hint": "한 사람 어깨 너머로",
+      "legacy": true
+    },
+    {
+      "id": "하이앵글",
+      "en": "high angle shot",
+      "hint": "위에서 내려다봄",
+      "legacy": true
+    },
+    {
+      "id": "로우앵글",
+      "en": "low angle shot",
+      "hint": "아래에서 올려다봄",
+      "legacy": true
+    },
+    {
+      "id": "시점샷",
+      "en": "POV shot",
+      "hint": "인물 눈으로 보는 화면",
+      "legacy": true
+    }
+  ],
+  "angles": [
+    {
+      "id": "눈높이",
+      "en": "eye-level angle",
+      "hint": "자연스럽고 편안하게"
+    },
+    {
+      "id": "올려다봄",
+      "en": "low angle looking up",
+      "hint": "인물이 크고 강해 보여요"
+    },
+    {
+      "id": "내려다봄",
+      "en": "high angle looking down",
+      "hint": "인물이 작고 약해 보여요"
+    },
+    {
+      "id": "어깨 너머",
+      "en": "over-the-shoulder angle",
+      "hint": "대화·대치 장면"
+    },
+    {
+      "id": "머리 위",
+      "en": "top-down bird's-eye view",
+      "hint": "위에서 수직으로 — 상황 정리"
+    },
+    {
+      "id": "기울임",
+      "en": "dutch tilted angle",
+      "hint": "불안·혼란"
+    },
+    {
+      "id": "인물 시점",
+      "en": "first-person POV",
+      "hint": "인물 눈으로 보는 화면"
+    }
+  ],
+  "lenses": [
+    {
+      "id": "넓게",
+      "en": "wide-angle lens, deep focus",
+      "hint": "공간이 넓고 깊게"
+    },
+    {
+      "id": "망원 압축",
+      "en": "telephoto lens, compressed background",
+      "hint": "배경이 가깝게 붙어 보여요"
+    },
+    {
+      "id": "배경 흐림",
+      "en": "shallow depth of field, soft bokeh background",
+      "hint": "인물만 또렷하게"
+    },
+    {
+      "id": "초근접",
+      "en": "macro lens detail",
+      "hint": "소품·눈물 같은 작은 것"
+    }
+  ],
+  "strengths": [
+    {
+      "id": "약하게",
+      "label": "약하게",
+      "en": "subtle and gentle",
+      "factor": 0.55
+    },
+    {
+      "id": "",
+      "label": "보통",
+      "en": "",
+      "factor": 1
+    },
+    {
+      "id": "강하게",
+      "label": "강하게",
+      "en": "dramatic and fast",
+      "factor": 1.8
+    }
+  ],
+  "moves": [
+    {
+      "id": "고정",
+      "en": "static camera, locked-off tripod shot",
+      "anim": "static",
+      "hint": "움직이지 않아요 — 대사에 집중"
+    },
+    {
+      "id": "천천히 다가가기",
+      "en": "slow push-in toward the subject",
+      "anim": "push",
+      "hint": "감정이 점점 깊어질 때"
+    },
+    {
+      "id": "천천히 멀어지기",
+      "en": "slow pull-out away from the subject",
+      "anim": "pull",
+      "hint": "여운·고립감"
+    },
+    {
+      "id": "빠르게 다가가기",
+      "en": "fast crash zoom into the subject",
+      "anim": "crash",
+      "hint": "충격·깨달음의 순간"
+    },
+    {
+      "id": "왼쪽으로 패닝",
+      "en": "pan left",
+      "anim": "panl",
+      "hint": "시선을 따라 옆으로"
+    },
+    {
+      "id": "오른쪽으로 패닝",
+      "en": "pan right",
+      "anim": "panr",
+      "hint": "시선을 따라 옆으로"
+    },
+    {
+      "id": "위로 틸트",
+      "en": "tilt up",
+      "anim": "tiltu",
+      "hint": "아래에서 위로 훑기 — 등장"
+    },
+    {
+      "id": "아래로 틸트",
+      "en": "tilt down",
+      "anim": "tiltd",
+      "hint": "위에서 아래로 훑기"
+    },
+    {
+      "id": "옆으로 이동",
+      "en": "lateral dolly move, trucking sideways",
+      "anim": "truck",
+      "hint": "걷는 인물과 나란히"
+    },
+    {
+      "id": "따라가기",
+      "en": "tracking shot following the subject",
+      "anim": "track",
+      "hint": "움직이는 인물 뒤를 따라"
+    },
+    {
+      "id": "핸드헬드",
+      "en": "handheld camera with natural shake",
+      "anim": "hand",
+      "hint": "현장감·긴박함"
+    },
+    {
+      "id": "인물 주위 돌기",
+      "en": "orbiting camera circling around the subject",
+      "anim": "orbit",
+      "complex": true,
+      "fallback": "오른쪽으로 패닝",
+      "hint": "고백·대치의 클라이맥스"
+    },
+    {
+      "id": "올려다보며 다가가기",
+      "en": "low-angle push-in, rising toward the subject",
+      "anim": "rise",
+      "complex": true,
+      "fallback": "천천히 다가가기",
+      "hint": "인물의 첫 등장·위압감"
+    },
+    {
+      "id": "위로 올라가기",
+      "en": "crane up, camera rising high above the scene",
+      "anim": "craneu",
+      "complex": true,
+      "fallback": "천천히 멀어지기",
+      "hint": "이별·엔딩의 여운"
+    },
+    {
+      "id": "내려오며 다가가기",
+      "en": "crane down, descending toward the subject",
+      "anim": "craned",
+      "complex": true,
+      "fallback": "천천히 다가가기",
+      "hint": "장면의 시작·도착"
+    },
+    {
+      "id": "현기증 효과",
+      "en": "dolly zoom (vertigo effect), background stretching",
+      "anim": "vertigo",
+      "complex": true,
+      "fallback": "빠르게 다가가기",
+      "hint": "충격·혼란의 순간"
+    },
+    {
+      "id": "어깨 너머 다가가기",
+      "en": "over-the-shoulder push-in",
+      "anim": "ots",
+      "complex": true,
+      "fallback": "천천히 다가가기",
+      "hint": "마주 선 두 사람의 긴장"
+    },
+    {
+      "id": "초점 이동",
+      "en": "rack focus shifting from foreground to background",
+      "anim": "focus",
+      "complex": true,
+      "fallback": "고정",
+      "hint": "숨은 인물·단서가 드러날 때"
+    },
+    {
+      "id": "충격 흔들림",
+      "en": "sudden violent camera shake on impact",
+      "anim": "shake",
+      "hint": "사고·폭로·따귀"
+    },
+    {
+      "id": "하늘에서 내려다보기",
+      "en": "aerial drone shot slowly descending",
+      "anim": "drone",
+      "complex": true,
+      "fallback": "천천히 멀어지기",
+      "hint": "장소 소개·도시 전경"
+    }
+  ],
+  "presets": [
+    {
+      "id": "confess",
+      "name": "고백 장면",
+      "hint": "얼굴 가까이, 배경은 흐리게 천천히 다가가요",
+      "camera": "클로즈업",
+      "angle": "눈높이",
+      "lens": "배경 흐림",
+      "move": "천천히 다가가기",
+      "strength": "약하게"
+    },
+    {
+      "id": "entrance",
+      "name": "첫 등장",
+      "hint": "아래에서 올려다보며 다가가 존재감을 줘요",
+      "camera": "풀샷",
+      "angle": "올려다봄",
+      "lens": "넓게",
+      "move": "올려다보며 다가가기",
+      "strength": ""
+    },
+    {
+      "id": "reveal",
+      "name": "반전 공개",
+      "hint": "표정으로 빠르게 다가가 충격을 줘요",
+      "camera": "클로즈업",
+      "angle": "눈높이",
+      "lens": "",
+      "move": "빠르게 다가가기",
+      "strength": "강하게"
+    },
+    {
+      "id": "standoff",
+      "name": "긴장 대치",
+      "hint": "어깨 너머로 두 사람을 압축해서 돌아요",
+      "camera": "투샷",
+      "angle": "어깨 너머",
+      "lens": "망원 압축",
+      "move": "인물 주위 돌기",
+      "strength": "약하게"
+    },
+    {
+      "id": "chase",
+      "name": "추격",
+      "hint": "흔들리는 카메라로 뒤를 바짝 따라가요",
+      "camera": "미디엄",
+      "angle": "눈높이",
+      "lens": "넓게",
+      "move": "따라가기",
+      "strength": "강하게"
+    },
+    {
+      "id": "shock",
+      "name": "충격의 순간",
+      "hint": "배경이 늘어나는 현기증 효과",
+      "camera": "클로즈업",
+      "angle": "기울임",
+      "lens": "",
+      "move": "현기증 효과",
+      "strength": "강하게"
+    },
+    {
+      "id": "flashback",
+      "name": "회상",
+      "hint": "부드럽게 흐린 화면에서 천천히 멀어져요",
+      "camera": "미디엄",
+      "angle": "눈높이",
+      "lens": "배경 흐림",
+      "move": "천천히 멀어지기",
+      "strength": "약하게"
+    },
+    {
+      "id": "farewell",
+      "name": "이별 · 엔딩",
+      "hint": "위로 올라가며 남겨진 인물을 작게",
+      "camera": "와이드",
+      "angle": "내려다봄",
+      "lens": "넓게",
+      "move": "위로 올라가기",
+      "strength": "약하게"
+    },
+    {
+      "id": "place",
+      "name": "장소 소개",
+      "hint": "하늘에서 천천히 내려다보는 전경",
+      "camera": "와이드",
+      "angle": "머리 위",
+      "lens": "넓게",
+      "move": "하늘에서 내려다보기",
+      "strength": ""
+    },
+    {
+      "id": "talk",
+      "name": "평범한 대화",
+      "hint": "대사에 집중하는 안정적인 화면",
+      "camera": "바스트",
+      "angle": "눈높이",
+      "lens": "배경 흐림",
+      "move": "고정",
+      "strength": ""
+    },
+    {
+      "id": "emotional_talk",
+      "name": "감정 대화",
+      "hint": "부드러운 조명 속 어깨 너머로 마주 보는 대화",
+      "camera": "바스트",
+      "angle": "어깨 너머",
+      "lens": "배경 흐림",
+      "move": "천천히 다가가기",
+      "strength": "약하게",
+      "light": "부드러운 조명",
+      "tone": "따뜻한 색감",
+      "genre": "로맨스"
+    },
+    {
+      "id": "tense_chase",
+      "name": "긴장 추적",
+      "hint": "어두운 밤, 강한 그림자 속을 흔들리며 따라가요",
+      "camera": "미디엄",
+      "angle": "눈높이",
+      "lens": "넓게",
+      "move": "핸드헬드",
+      "strength": "강하게",
+      "light": "강한 그림자",
+      "tone": "밤",
+      "genre": "스릴러"
+    },
+    {
+      "id": "romantic_close",
+      "name": "로맨틱 클로즈업",
+      "hint": "노을 역광으로 얼굴 가까이 천천히",
+      "camera": "클로즈업",
+      "angle": "눈높이",
+      "lens": "배경 흐림",
+      "move": "천천히 다가가기",
+      "strength": "약하게",
+      "light": "역광",
+      "tone": "노을",
+      "genre": "로맨스"
+    }
+  ],
+  "lights": [
+    {
+      "id": "자연광",
+      "en": "soft natural daylight through a window",
+      "hint": "편안하고 현실적인 빛"
+    },
+    {
+      "id": "역광",
+      "en": "backlit with a glowing rim light around the hair",
+      "hint": "인물 뒤에서 빛 — 설렘·신비"
+    },
+    {
+      "id": "측광",
+      "en": "dramatic side lighting, Rembrandt lighting",
+      "hint": "얼굴 반쪽에 그림자 — 갈등·고민"
+    },
+    {
+      "id": "부드러운 조명",
+      "en": "soft diffused lighting, gentle shadows",
+      "hint": "화사하고 부드럽게"
+    },
+    {
+      "id": "강한 그림자",
+      "en": "hard light with deep high-contrast shadows, film noir",
+      "hint": "느와르·위협"
+    },
+    {
+      "id": "네온",
+      "en": "neon lighting with pink and blue glow",
+      "hint": "밤거리·클럽·도시"
+    },
+    {
+      "id": "촛불",
+      "en": "warm flickering candlelight",
+      "hint": "비밀 이야기·로맨스"
+    },
+    {
+      "id": "실루엣",
+      "en": "silhouette against a bright background",
+      "hint": "얼굴을 감추고 윤곽만"
+    }
+  ],
+  "tones": [
+    {
+      "id": "아침",
+      "en": "early morning light, fresh and clean",
+      "hint": "새 출발"
+    },
+    {
+      "id": "한낮",
+      "en": "bright midday light",
+      "hint": "밝고 선명하게"
+    },
+    {
+      "id": "노을",
+      "en": "golden hour sunset, warm orange glow",
+      "hint": "고백·이별"
+    },
+    {
+      "id": "푸른 새벽",
+      "en": "blue hour twilight, cool quiet tones",
+      "hint": "쓸쓸함·기다림"
+    },
+    {
+      "id": "밤",
+      "en": "night scene, moody low light",
+      "hint": "비밀·긴장"
+    },
+    {
+      "id": "비 오는 밤",
+      "en": "rainy night with wet reflections on the street",
+      "hint": "슬픔·결심"
+    },
+    {
+      "id": "따뜻한 색감",
+      "en": "warm color grading",
+      "hint": "합성할 때 따뜻하게 보정",
+      "grade": "colorbalance=rs=0.08:gs=0.02:bs=-0.08:rm=0.05:bm=-0.05,eq=saturation=1.08"
+    },
+    {
+      "id": "차가운 색감",
+      "en": "cool teal color grading",
+      "hint": "합성할 때 차갑게 보정",
+      "grade": "colorbalance=rs=-0.07:bs=0.09:rm=-0.04:bm=0.06,eq=saturation=0.95"
+    },
+    {
+      "id": "빛바랜 필름",
+      "en": "faded vintage film look, muted colors, soft grain",
+      "hint": "회상·옛 추억",
+      "grade": "eq=saturation=0.72:contrast=0.92:brightness=0.03,noise=alls=6:allf=t"
+    }
+  ],
+  "heights": [
+    {
+      "id": "바닥 높이",
+      "en": "camera placed at ground level",
+      "hint": "발걸음·쓰러진 인물"
+    },
+    {
+      "id": "허리 높이",
+      "en": "camera at waist height",
+      "hint": "대화를 편하게"
+    },
+    {
+      "id": "머리 높이",
+      "en": "camera at head height",
+      "hint": "인물과 같은 시선"
+    },
+    {
+      "id": "높은 곳",
+      "en": "camera placed high above the subjects",
+      "hint": "상황을 한눈에"
+    },
+    {
+      "id": "공중",
+      "en": "aerial camera height, drone perspective",
+      "hint": "도시·장소 전경"
+    }
+  ],
+  "focals": [
+    14,
+    24,
+    35,
+    50,
+    85,
+    135,
+    200
+  ],
+  "apertures": [
+    "1.4",
+    "2",
+    "2.8",
+    "4",
+    "5.6",
+    "8",
+    "11",
+    "16"
+  ]
+}

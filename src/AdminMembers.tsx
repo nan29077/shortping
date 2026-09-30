@@ -31,6 +31,7 @@ import { Empty, Modal, navigate } from './App';
 import { Avatar } from './AccountSettings';
 import { downloadCsv } from './StudioPanels';
 import { payoutStatus } from './Settlement';
+import { SubscriptionOverrideEditor } from './AdminOps';
 
 const roleLabel: Record<string, string> = {
   admin: '슈퍼관리자',
@@ -352,7 +353,7 @@ export default function AdminMembers({
               </strong>
             </div>
             <div>
-              <span>구독</span>
+              <span>숏핑 패스</span>
               <strong>
                 {detail.member.subscription_expires &&
                 new Date(detail.member.subscription_expires) > new Date()
@@ -370,7 +371,7 @@ export default function AdminMembers({
                 <div>
                   <strong>{detail.channel.name}</strong>
                   <small>
-                    /{detail.channel.slug} · 작품 {detail.channel.drama_count}편 · 구독{' '}
+                    /{detail.channel.slug} · 작품 {detail.channel.drama_count}편 · 팔로워{' '}
                     {count(detail.channel.followers)}
                   </small>
                 </div>
@@ -470,6 +471,13 @@ export default function AdminMembers({
                   ))}
                 </ul>
               )}
+              {/* 구독 배분 개별 설정(최고 관리자): 가중치 · 배분 제외 · 풀 대비 상한 */}
+              <SubscriptionOverrideEditor
+                key={detail.member.id}
+                memberId={detail.member.id}
+                initial={(detail as typeof detail & { subscriptionOverride?: Parameters<typeof SubscriptionOverrideEditor>[0]['initial'] }).subscriptionOverride ?? null}
+                notify={notify}
+              />
             </div>
           )}
           {detail.dramas.length > 0 && (

@@ -1,14 +1,16 @@
 import { useState } from 'react';
-import { BookOpen, ImageIcon, Layers, MapPin, Mic, Plus, ScrollText, Trash2, UserRound, Wand2 } from 'lucide-react';
+import { BookOpen, ImageIcon, Layers, Lock, MapPin, Mic, Plus, ScrollText, Trash2, UserRound, Wand2 } from 'lucide-react';
 import { api, parseJson, studioMedia, type StudioCharacter, type StudioEpisode, type StudioLocation } from '../../api';
 import AutopilotPanel from '../Autopilot';
-import { useAutosave, useSyncedForm, hasHangul } from '../hooks';
+import { changedFields, useAutosave, useSyncedForm, hasHangul } from '../hooks';
 import { JobBadge, Versions, isBusy } from '../parts';
 import { STYLES } from '../presets';
 import { ModelSettings, NotReady, SaveBadge, Section, hasModel, runningCount, type WS } from './shared';
 import VoicePicker from './VoicePicker';
 import { LibraryButton, PropSection, RelationsSection, SaveToLibrary, ScriptImportSection, StyleLockSection } from './DramaParts';
 import { asset } from '../../platform';
+import { CastCardStatus } from './CastCard';
+import NumberInput from '../../NumberInput';
 
 type Bible = {
   world: string;
@@ -120,6 +122,7 @@ function StoryForm({ ws, genres }: { ws: WS; genres: string[] }) {
   };
   return (
     <Section title="이야기" desc="한 줄 아이디어만 적어도 AI가 제목 · 줄거리 · 인물 · 회차 구성을 만들어요. 입력하면 자동으로 저장돼요." badge={<SaveBadge state={save.state} error={save.error} dirty={save.dirty} hint={!valid ? '제목과 한 줄 아이디어(5자 이상)를 채우면 저장돼요' : undefined} />}>
+      <fieldset className="ro-fieldset" disabled={!ws.can('script')}>
       <div className="form-columns">
         <label>
           제목
@@ -155,7 +158,7 @@ function StoryForm({ ws, genres }: { ws: WS; genres: string[] }) {
         </label>
         <label>
           회당 길이(초)
-          <input type="number" min={20} max={180} value={f.episode_seconds} onChange={(e) => setF({ ...f, episode_seconds: Number(e.target.value) })} />
+          <NumberInput min={20} max={180} value={f.episode_seconds} onChange={(e) => setF({ ...f, episode_seconds: Number(e.target.value) })} />
         </label>
       </div>
       <label>
@@ -183,6 +186,7 @@ function StoryForm({ ws, genres }: { ws: WS; genres: string[] }) {
         </button>
         <JobBadge jobs={ws.data.jobs} targetId={p.id} kind="plan" onRetry={() => void plan()} />
       </div>
+    </fieldset>
     </Section>
   );
 }
@@ -206,6 +210,7 @@ function AdaptSection({ ws }: { ws: WS }) {
       defaultOpen={!!p.source_text}
       badge={<SaveBadge state={save.state} error={save.error} dirty={save.dirty} />}
     >
+      <fieldset className="ro-fieldset" disabled={!ws.can('script')}>
       <label>
         원작 <small className="muted">{f.source_text.length.toLocaleString('ko-KR')} / 30,000자</small>
         <textarea value={f.source_text} rows={8} maxLength={30000} placeholder="시놉시스나 원고를 붙여 넣으세요 (50자 이상)" onChange={(e) => setF({ source_text: e.target.value })} />
@@ -216,6 +221,7 @@ function AdaptSection({ ws }: { ws: WS }) {
         </button>
         <JobBadge jobs={ws.data.jobs} targetId={p.id} kind="adapt" onRetry={() => void go()} />
       </div>
+    </fieldset>
     </Section>
   );
 }
@@ -247,6 +253,7 @@ function BibleSection({ ws }: { ws: WS }) {
         </>
       }
     >
+      <fieldset className="ro-fieldset" disabled={!ws.can('script')}>
       {!ws.data.characters.length && <p className="muted">기획안(인물)을 먼저 만들면 AI로 설정집을 만들 수 있어요.</p>}
       <label>
         세계관 · 배경
@@ -306,6 +313,7 @@ function BibleSection({ ws }: { ws: WS }) {
           </button>
         )}
       </div>
+    </fieldset>
     </Section>
   );
 }
@@ -341,7 +349,7 @@ function SeasonSection({ ws }: { ws: WS }) {
           유료 시작 회차 <small className="muted">작품으로 내보낼 때 무료 회차 수로 써요</small>
           <select
             value={season.paywall_from || ''}
-            onChange={(e) => e.target.value && void ws.act(() => api(`/studio/ai/projects/${p.id}/settings`, 'PATCH', { paywall_from: Number(e.target.value) }), '유료 시작 회차를 정했어요.')}
+            onChange={(e) => void ws.act(() => api(`/studio/ai/projects/${p.id}/settings`, 'PATCH', { paywall_from: Number(e.target.value) || 0 }), e.target.value ? '유료 시작 회차를 정했어요.' : '유료 시작 회차를 정하지 않음으로 바꿨어요.')}
           >
             <option value="">정하지 않음</option>
             {ws.data.episodes.map((e) => (
@@ -364,11 +372,11 @@ function SeasonSection({ ws }: { ws: WS }) {
 export function EpisodeOutline({ ws, e, full = true }: { ws: WS; e: StudioEpisode; full?: boolean }) {
   const server = { title: e.title, summary: e.summary, hook: e.hook || '', cliffhanger: e.cliffhanger || '' };
   const [f, setF] = useSyncedForm(server);
-  const save = useAutosave(f, server, (v) => api(`/studio/ai/projects/${ws.data.project.id}/episodes/${e.id}`, 'PATCH', v), { enabled: !!f.title.trim() });
+  const save = useAutosave(f, server, (v, base) => api(`/studio/ai/projects/${ws.data.project.id}/episodes/${e.id}`, 'PATCH', changedFields(v, base)), { enabled: !!f.title.trim() });
   return (
     <div className="ws-episode-outline">
       <b>{e.number}화</b>
-      <div>
+      <fieldset className="ro-fieldset" disabled={!ws.can(['script', 'scene'])}>
         <div className="ws-row">
           <input aria-label={`${e.number}화 제목`} value={f.title} maxLength={100} onChange={(ev) => setF({ ...f, title: ev.target.value })} />
           <SaveBadge state={save.state} error={save.error} />
@@ -386,7 +394,7 @@ export function EpisodeOutline({ ws, e, full = true }: { ws: WS; e: StudioEpisod
             </label>
           </div>
         )}
-      </div>
+      </fieldset>
     </div>
   );
 }
@@ -403,9 +411,14 @@ function CharacterCard({ ws, c }: { ws: WS; c: StudioCharacter }) {
     voice_model: c.voice_model || 'auto',
     voice: c.voice || '',
     voice_style: c.voice_style || '',
+    hair: c.hair || '',
+    body: c.body || '',
+    forbid: c.forbid || '',
+    locked: !!Number(c.locked || 0),
   };
   const [f, setF] = useSyncedForm(server);
-  const save = useAutosave(f, server, (v) => api(`/studio/ai/projects/${pid}/characters/${c.id}`, 'PATCH', v), { enabled: !!f.name.trim() });
+  const save = useAutosave(f, server, (v, base) => api(`/studio/ai/projects/${pid}/characters/${c.id}`, 'PATCH', changedFields(v, base)), { enabled: !!f.name.trim() });
+  const [lockOpen, setLockOpen] = useState(() => !!(c.hair || c.body || c.forbid || Number(c.locked)));
   const [voiceOpen, setVoiceOpen] = useState(false);
   const refs = parseJson<{ pose: string; url: string }[]>(c.refs, []);
   const jobs = ws.data.jobs;
@@ -446,7 +459,7 @@ function CharacterCard({ ws, c }: { ws: WS; c: StudioCharacter }) {
           <Layers size={13} /> {sheetRunning ? `참고 이미지 만드는 중 (${sheetRunning})` : refs.length ? '참고 이미지 다시 만들기' : '참고 이미지 세트 만들기'}
         </button>
       </div>
-      <div className="ws-cast-fields">
+      <fieldset className="ws-cast-fields ro-fieldset" disabled={!ws.can(['script', 'scene'])}>
         <div className="ws-row">
           <SaveBadge state={save.state} error={save.error} />
           <SaveToLibrary ws={ws} kind="character" sourceId={c.id} />
@@ -476,6 +489,32 @@ function CharacterCard({ ws, c }: { ws: WS; c: StudioCharacter }) {
           기본 의상
           <input value={f.outfit} maxLength={200} placeholder="예: 베이지 트렌치코트, 흰 셔츠" onChange={(e) => setF({ ...f, outfit: e.target.value })} />
         </label>
+        {/* 3단계(2026-09-30) 일관성 고정: 모든 컷에서 지킬 외형 */}
+        <div className="lock-box">
+          <label className="inline-check lock-check" title="컷마다 기준 이미지와 같은 얼굴 · 헤어 · 체형 · 의상으로 그리고, AI 검수에서도 확인해요">
+            <input type="checkbox" checked={f.locked} onChange={(e) => setF({ ...f, locked: e.target.checked })} />
+            <Lock size={12} /> 외형 고정(모든 컷에서 똑같이)
+          </label>
+          <button type="button" className="text-link" aria-expanded={lockOpen} onClick={() => setLockOpen(!lockOpen)}>
+            {lockOpen ? '고정 항목 접기' : '헤어 · 체형 · 금지 요소 정하기'}
+          </button>
+          {lockOpen && (
+            <div className="form-columns">
+              <label>
+                헤어
+                <input value={f.hair} maxLength={120} placeholder="예: 어깨 길이 흑발 단발, 앞머리 없음" onChange={(e) => setF({ ...f, hair: e.target.value })} />
+              </label>
+              <label>
+                체형
+                <input value={f.body} maxLength={120} placeholder="예: 키 170cm, 마른 체형" onChange={(e) => setF({ ...f, body: e.target.value })} />
+              </label>
+              <label className="span-2">
+                나오면 안 되는 것
+                <input value={f.forbid} maxLength={200} placeholder="예: 안경, 문신, 귀걸이" onChange={(e) => setF({ ...f, forbid: e.target.value })} />
+              </label>
+            </div>
+          )}
+        </div>
         <div className="ws-voice-summary">
           <span>
             <Mic size={13} /> 목소리 {f.voice ? <b>{f.voice}</b> : <i>자동</i>}
@@ -507,7 +546,8 @@ function CharacterCard({ ws, c }: { ws: WS; c: StudioCharacter }) {
           <JobBadge jobs={jobs} targetId={c.id} kind="voice_sample" />
           {c.voice_sample && <audio controls preload="none" src={studioMedia(c.voice_sample)} />}
         </div>
-      </div>
+      </fieldset>
+      <CastCardStatus ws={ws} c={c} beforeRun={(fn) => void runAfterSave(fn)} />
     </article>
   );
 }
@@ -542,19 +582,24 @@ function LocationSection({ ws }: { ws: WS }) {
 }
 function LocationCard({ ws, l }: { ws: WS; l: StudioLocation }) {
   const pid = ws.data.project.id;
-  const server = { name: l.name, look: l.look };
+  const server = { name: l.name, look: l.look, locked: !!Number(l.locked || 0), forbid: l.forbid || '' };
   const [f, setF] = useSyncedForm(server);
-  const save = useAutosave(f, server, (v) => api(`/studio/ai/projects/${pid}/locations/${l.id}`, 'PATCH', v), { enabled: !!f.name.trim() });
+  const save = useAutosave(f, server, (v, base) => api(`/studio/ai/projects/${pid}/locations/${l.id}`, 'PATCH', changedFields(v, base)), { enabled: !!f.name.trim() });
   const used = ws.data.episodes.flatMap((e) => e.shots).filter((s) => s.location_id === l.id).length;
   return (
     <article className="ws-location">
       <div className="ws-location-media">{l.image ? <img src={asset(l.image)} alt={l.name} /> : <MapPin size={28} />}</div>
-      <div>
+      <fieldset className="ro-fieldset" disabled={!ws.can(['script', 'scene'])}>
         <div className="ws-row">
           <input aria-label="장소 이름" value={f.name} maxLength={40} onChange={(e) => setF({ ...f, name: e.target.value })} />
           <SaveBadge state={save.state} error={save.error} />
         </div>
         <textarea aria-label="장소 모습" rows={2} maxLength={500} value={f.look} placeholder="예: 창밖으로 한강이 보이는 좁은 원룸, 따뜻한 스탠드 조명" onChange={(e) => setF({ ...f, look: e.target.value })} />
+        <label className="inline-check lock-check" title="이 장소가 나오는 컷마다 장소 이미지와 같은 배치 · 색으로 그리고, AI 검수에서도 확인해요">
+          <input type="checkbox" checked={f.locked} onChange={(e) => setF({ ...f, locked: e.target.checked })} />
+          <Lock size={12} /> 장소 고정(배치 · 색 그대로)
+        </label>
+        {f.locked && <input aria-label="이 장소에 나오면 안 되는 것" value={f.forbid} maxLength={200} placeholder="나오면 안 되는 것 · 예: 창문 밖 바다, 다른 사람" onChange={(e) => setF({ ...f, forbid: e.target.value })} />}
         <div className="ws-row">
           <button
             className="secondary compact"
@@ -580,7 +625,7 @@ function LocationCard({ ws, l }: { ws: WS; l: StudioLocation }) {
             <Trash2 size={13} />
           </button>
         </div>
-      </div>
+      </fieldset>
     </article>
   );
 }
@@ -594,8 +639,10 @@ function NarratorSection({ ws }: { ws: WS }) {
   const narrated = ws.data.episodes.flatMap((e) => e.shots).filter((s) => Number(s.narration)).length;
   return (
     <Section title="내레이션 목소리" desc="장면 편집에서 ‘내레이션’으로 표시한 컷은 이 목소리로 읽어요." defaultOpen={narrated > 0} badge={<SaveBadge state={save.state} error={save.error} />}>
+      <fieldset className="ro-fieldset" disabled={!ws.can('script')}>
       {!hasModel(ws.models, 'tts') ? <NotReady what="음성" /> : <VoicePicker label="내레이터" model={f.narrator_model} voice={f.narrator_voice} notify={ws.notify} onChange={(v) => setF({ narrator_model: v.model, narrator_voice: v.voice })} />}
       <small className="muted">내레이션 컷 {narrated}개</small>
+    </fieldset>
     </Section>
   );
 }

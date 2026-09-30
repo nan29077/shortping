@@ -51,7 +51,15 @@ export function rhythmOf(e, shots, p) {
   return out;
 }
 
-export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf, episodesOf, shotsOf }) {
+// 화질을 올린 파일인지(지금 파일 기준)
+const upscaled = (s) => {
+  try {
+    return JSON.parse(s.upscaled || '{}') || {};
+  } catch {
+    return {};
+  }
+};
+export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf, episodesOf, shotsOf, hasModel = async () => false }) {
   async function check(p) {
     const settings = await loadSettings(db);
     const cast = await charactersOf(p.id);
@@ -59,6 +67,15 @@ export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf
     const issues = [];
     const add = (level, code, text, where, extra = {}) => issues.push({ level, code, text, where, ...extra });
     const usedCast = new Set();
+    const faceStats = [];
+    const canUpscaleVideo = await hasModel('upscale_video');
+    const canUpscale = await hasModel('upscale');
+    const canLipsync = await hasModel('lipsync');
+    // 5단계(2026-09-30): 파일 크기(가로 · 세로) 정보를 한 번에 읽어 둡니다.
+    const metaOf = new Map(
+      (await db.all('SELECT m.url,m.width,m.height FROM media_metadata m JOIN studio_shots s ON (s.image=m.url OR s.video=m.url OR s.lipsync=m.url) JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=?', [p.id])).map((r) => [r.url, r]),
+    );
+    const needShort = (p.resolution === '1080p' ? 1080 : 720) * 0.75;
     for (const e of eps) {
       const shots = await shotsOf(e.id);
       const ep = `${e.number}화`;
@@ -76,6 +93,9 @@ export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf
       let total = 0;
       const silent = [];
       const unverified = [];
+      const faceScores = [];
+      const videoUnverified = [];
+      const noSync = [];
       for (let i = 0; i < shots.length; i++) {
         const s = shots[i];
         const where = `${ep} ${i + 1}번 컷`;
@@ -112,7 +132,87 @@ export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf
             fix: { kind: 'ai', action: 'shot_image', cap: 'image', targetId: s.id, label: '이미지 다시 만들기' },
           });
         else if (s.image && !v) unverified.push(s);
+        for (const f of (v && v.faces) || []) faceScores.push(Number(f.match));
+        // ── 5단계: 영상 검수 · 입 모양 · 이어짐 · 비율 · 해상도 ──
+        const clip = s.lipsync || s.video;
+        if (clip) {
+          let vv = null;
+          try {
+            vv = s.video_verify ? JSON.parse(s.video_verify) : null;
+          } catch {}
+          if (vv && vv.video !== clip) vv = null;
+          if (!vv) videoUnverified.push(s);
+          else {
+            for (const f of vv.faces || []) faceScores.push(Number(f.match));
+            if (!vv.ok) {
+              const lip = (vv.issues || []).some((x) => x.code === 'lipsync');
+              add('warn', 'video_verify_fail', `영상 AI 검수에서 문제가 보였어요: ${(vv.issues || []).map((x) => `${x.frame ? `${['처음', '가운데', '끝'][x.frame - 1]} 장면 ` : ''}${x.text}`).join(' · ') || vv.summary || '다시 만드는 것이 좋아요'}`, where, {
+                episodeId: e.id,
+                shotId: s.id,
+                fix: lip && canLipsync && s.audio
+                  ? { kind: 'ai', action: 'shot_lipsync', cap: 'lipsync', targetId: s.id, label: '입 모양 맞추기' }
+                  : (vv.issues || []).some((x) => ['drift', 'outfit', 'face'].includes(x.code))
+                    ? { kind: 'ai', action: 'shot_video', cap: 'video', targetId: s.id, options: { motionOnly: true }, label: '움직임만 입혀 다시(얼굴 · 옷 그대로)' }
+                    : { kind: 'ai', action: 'shot_video', cap: 'video', targetId: s.id, label: '영상 다시 만들기' },
+              });
+            }
+          }
+          if (line && s.audio && !s.lipsync) noSync.push(s);
+        }
+        // 비율 · 해상도(파일 정보로 무료 확인)
+        const m = metaOf.get(clip || s.image);
+        if (m && Number(m.width) > 0 && Number(m.height) > 0) {
+          const ratio = Number(m.width) / Number(m.height);
+          if (Math.abs(ratio - 9 / 16) > 0.08)
+            add('warn', 'aspect', `세로 9:16이 아니에요(${m.width}×${m.height}). 합성할 때 가장자리가 잘려요.`, where, { episodeId: e.id, shotId: s.id });
+          else if (Math.min(Number(m.width), Number(m.height)) < needShort) {
+            const fixUp = clip ? (canUpscaleVideo ? { kind: 'ai', action: 'shot_upscale_video', cap: 'upscale_video', targetId: s.id, label: '영상 화질 올리기' } : null) : canUpscale ? { kind: 'ai', action: 'shot_upscale', cap: 'upscale', targetId: s.id, label: '이미지 화질 올리기' } : null;
+            add('info', 'low_res', `${clip ? '영상' : '이미지'} 해상도가 낮아요(${m.width}×${m.height}). ${p.resolution === '1080p' ? '1080p' : '720p'} 합성에서 흐려 보일 수 있어요.`, where, { episodeId: e.id, shotId: s.id, ...(fixUp ? { fix: fixUp } : {}) });
+          }
+        }
+        // 컷 이어짐(무료 규칙): 같은 장소 · 같은 장면인데 시간 · 색감이 갑자기 바뀌면 알려 줘요.
+        const prev = i > 0 ? shots[i - 1] : null;
+        if (prev && prev.location_id && prev.location_id === s.location_id && String(prev.scene || '').trim() === String(s.scene || '').trim() && prev.tone && s.tone && prev.tone !== s.tone)
+          add('info', 'continuity_tone', `앞 컷과 같은 장면인데 시간 · 색감이 바뀌어요(${prev.tone} → ${s.tone}). 의도한 게 아니면 맞춰 주세요.`, where, { episodeId: e.id, shotId: s.id });
+        // 인물 닮음(2026-09-29): 검수는 통과했어도 기준 얼굴과 달라 보이는 인물이 있으면 알려 줘요.
+        const lowFaces = v && v.ok ? (v.faces || []).filter((f) => Number(f.match) < 70) : [];
+        if (lowFaces.length)
+          add('warn', 'face_mismatch', `인물이 기준 얼굴과 달라 보여요(${lowFaces.map((f) => `${f.name} ${Math.round(Number(f.match))}점`).join(', ')}).`, where, {
+            episodeId: e.id,
+            shotId: s.id,
+            fix: { kind: 'ai', action: 'shot_image', cap: 'image', targetId: s.id, label: '이미지 다시 만들기' },
+          });
       }
+      // 화질 올리기(2026-09-29): 영상 컷 중 아직 올리지 않은 컷을 회차 단위로 한 번에
+      if (canUpscaleVideo) {
+        const clips = shots.filter((s) => (s.lipsync || s.video) && upscaled(s).video !== (s.lipsync || s.video));
+        if (clips.length)
+          add('info', 'not_upscaled', `화질을 올리지 않은 영상 컷이 ${clips.length}개 있어요.${p.resolution === '1080p' ? ' 1080p로 합성하니 올리면 더 선명해져요.' : ' 1080p로 합성할 때 올리면 효과가 커요.'}`, ep, {
+            episodeId: e.id,
+            fix: { kind: 'ai', action: 'batch_shot_upscale_video', cap: 'upscale_video', targetId: e.id, label: `영상 ${clips.length}컷 화질 올리기` },
+          });
+      }
+      // 3단계(2026-09-30) 회차별 인물 닮음: 검수한 얼굴이 2개 이상이면 평균을 남기고, 평균이 낮으면 회차 전체를 알려 줘요.
+      if (faceScores.length) {
+        const avg = Math.round(faceScores.reduce((n, x) => n + x, 0) / faceScores.length);
+        faceStats.push({ episodeId: e.id, number: e.number, avg, checked: faceScores.length, low: faceScores.filter((x) => x < 70).length });
+        if (faceScores.length >= 2 && avg < 75)
+          add('warn', 'face_drift_episode', `이 회차의 인물 닮음 평균이 ${avg}점이에요. 인물 카드에서 외형 고정 · 참고 자세를 채우고 낮은 컷을 다시 만들어 보세요.`, ep, {
+            episodeId: e.id,
+            fix: { kind: 'tab', tab: 'plan', label: '인물 카드 보기' },
+          });
+      }
+      if (videoUnverified.length)
+        add('info', 'video_not_verified', `AI 검수를 하지 않은 영상 컷이 ${videoUnverified.length}개 있어요. 영상 중에 얼굴 · 옷이 바뀌는지 미리 찾을 수 있어요(라마 소액).`, ep, {
+          episodeId: e.id,
+          fix: { kind: 'ai', action: 'batch_verify_video', cap: 'text', targetId: e.id, label: `영상 ${videoUnverified.length}컷 AI 검수` },
+        });
+      if (noSync.length && canLipsync)
+        add('info', 'lipsync_missing', `대사가 있는데 입 모양을 맞추지 않은 영상 컷이 ${noSync.length}개 있어요. 입이 대사와 따로 움직일 수 있어요.`, ep, {
+          episodeId: e.id,
+          shotId: noSync[0].id,
+          fix: { kind: 'ai', action: 'batch_shot_lipsync', cap: 'lipsync', targetId: e.id, label: `입 모양 ${noSync.length}컷 맞추기` },
+        });
       if (unverified.length)
         add('info', 'not_verified', `AI 검수를 하지 않은 컷이 ${unverified.length}개 있어요. 얼굴 · 글자 · 손 모양 같은 실수를 미리 찾을 수 있어요(라마 소액).`, ep, {
           episodeId: e.id,
@@ -147,6 +247,7 @@ export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf
       checked_at: now(),
       summary: { error: issues.filter((x) => x.level === 'error').length, warn: issues.filter((x) => x.level === 'warn').length, info: issues.filter((x) => x.level === 'info').length },
       issues: issues.slice(0, 200),
+      faces: faceStats,
     };
   }
   // 회차 리듬 진단(대본 탭에서 무료로 바로 보기)
@@ -172,7 +273,7 @@ export function qualityRoutes({ app, db, fail, now, roles, project, charactersOf
     if (!s || s.project_id !== p.id) fail(404, '컷을 찾을 수 없어요.');
     const seconds = Math.min(10, Math.max(Number(s.seconds), Math.ceil(Number(s.audio_seconds || 0))));
     await db.run('UPDATE studio_shots SET seconds=? WHERE id=?', [seconds, s.id]);
-    await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+    await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
     res.json({ ok: true, seconds });
   });
   return { check };

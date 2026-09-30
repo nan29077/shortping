@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Clock3, FileX2, HardDrive, ShieldCheck, Trash2 } from 'lucide-react';
 import { api, moment } from './api';
 import { Empty, Modal } from './App';
+import NumberInput from './NumberInput';
 
 // 최고 관리자 · 저장 공간 정리
 // 어디에서도 쓰지 않는 업로드 파일(고르지 않은 포스터 후보, 저장하지 않은 배너 등)을
@@ -149,8 +150,7 @@ export default function AdminStorage({ notify }: { notify: (s: string) => void }
           <div className="form-columns">
             <label>
               보관 기간 (일)
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={3650}
                 step={1}

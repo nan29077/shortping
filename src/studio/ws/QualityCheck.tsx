@@ -4,9 +4,9 @@ import { api } from '../../api';
 import { Section, type TabId, type WS } from './shared';
 
 // 공개 전 품질 점검: 합성·검수 신청 전에 고칠 거리를 모아 보여 주고, 버튼 하나로 고쳐요.
-type Fix = { kind: 'ai' | 'edit' | 'compose' | 'tab'; action?: string; cap?: 'text' | 'image' | 'tts' | 'video'; targetId?: string; instruction?: string; code?: string; tab?: TabId; label: string };
+type Fix = { kind: 'ai' | 'edit' | 'compose' | 'tab'; action?: string; cap?: 'text' | 'image' | 'tts' | 'video' | 'lipsync' | 'upscale' | 'upscale_video'; targetId?: string; instruction?: string; options?: Record<string, unknown>; code?: string; tab?: TabId; label: string };
 type Issue = { level: 'error' | 'warn' | 'info'; code: string; text: string; where: string; episodeId?: string; shotId?: string; fix?: Fix };
-type Report = { checked_at: string; summary: { error: number; warn: number; info: number }; issues: Issue[] };
+type Report = { checked_at: string; summary: { error: number; warn: number; info: number }; issues: Issue[]; faces?: { episodeId: string; number: number; avg: number; checked: number; low: number }[] };
 const icon = { error: XCircle, warn: AlertTriangle, info: Info };
 
 export default function QualityCheck({ ws }: { ws: WS }) {
@@ -36,7 +36,7 @@ export default function QualityCheck({ ws }: { ws: WS }) {
   const fix = async (i: Issue) => {
     const f = i.fix;
     if (!f) return;
-    if (f.kind === 'ai' && f.action && f.cap) ws.run(`${i.where} · ${f.label}`, f.action, f.cap, { targetId: f.targetId, instruction: f.instruction });
+    if (f.kind === 'ai' && f.action && f.cap) ws.run(`${i.where} · ${f.label}`, f.action, f.cap, { targetId: f.targetId, instruction: f.instruction, ...(f.options ? { options: f.options } : {}) });
     else if (f.kind === 'edit' && f.code) {
       if (await ws.act(() => api(`/studio/ai/projects/${pid}/check/fix`, 'POST', { code: f.code, targetId: f.targetId }), `${i.where}: ${f.label}`)) void load();
     } else if (f.kind === 'compose' && f.targetId) void ws.act(() => api(`/studio/ai/projects/${pid}/episodes/${f.targetId}/compose`, 'POST'), `${i.where} 합성을 시작했어요.`);
@@ -78,6 +78,16 @@ export default function QualityCheck({ ws }: { ws: WS }) {
               참고 {s!.info}
             </button>
           </div>
+          {(report.faces || []).length > 0 && (
+            <div className="cc-eps" aria-label="회차별 인물 닮음">
+              <small className="muted">회차별 인물 닮음</small>
+              {report.faces!.map((x) => (
+                <span key={x.episodeId} className={x.avg < 75 ? 'warn' : ''} title={`검수한 얼굴 ${x.checked}개 · 낮은 것 ${x.low}개`}>
+                  {x.number}화 <b>{x.avg}</b>
+                </span>
+              ))}
+            </div>
+          )}
           {!list.length && (
             <p className="qc-ok">
               <CheckCircle2 size={16} /> 꼭 고칠 것과 살펴볼 것이 없어요.

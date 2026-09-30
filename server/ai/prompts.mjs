@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { DIRECTION, CAMERA_MOVES, ANGLE_IDS, LENS_IDS, LIGHT_IDS, TONE_IDS, framingText, motionText, lightText } from './direction.mjs';
+
+export { CAMERA_MOVES };
 
 // 숏폼 드라마 제작용 프롬프트와 결과 검증. 모델이 달라도 같은 JSON 형태를 받도록 합니다.
 // 시각 묘사(visual·look)는 영상·이미지 모델이 잘 알아듣는 영어로, 대사와 장면 설명은 한국어로 받습니다.
@@ -38,6 +41,13 @@ const shotItem = z.object({
   cast: z.array(z.string().max(30)).max(6).default([]),
   camera: z.string().max(80).default(''),
   camera_move: z.string().max(30).default(''),
+  // 힉스필드 벤치마킹(2026-09-29): 앵글·렌즈 느낌(사전에 없는 값은 저장할 때 비웁니다)
+  // AI가 null이나 긴 영어 문장을 돌려줘도 대본 전체가 실패하지 않게 비웁니다(저장할 때 사전 값만 남김).
+  angle: z.string().nullish().transform((v) => String(v ?? '').slice(0, 20)).catch(''),
+  lens: z.string().nullish().transform((v) => String(v ?? '').slice(0, 20)).catch(''),
+  // 2단계(2026-09-30): 조명 · 시간과 색감(사전에 없는 값은 저장할 때 비웁니다)
+  light: z.string().nullish().transform((v) => String(v ?? '').slice(0, 20)).catch(''),
+  tone: z.string().nullish().transform((v) => String(v ?? '').slice(0, 20)).catch(''),
   emotion: z.string().max(20).default(''),
   sfx: z.string().max(120).default(''),
   seconds: z.coerce.number().min(2).max(15).default(5),
@@ -90,7 +100,6 @@ function safe(raw) {
     return null;
   }
 }
-export const CAMERA_MOVES = ['고정', '천천히 다가가기', '천천히 멀어지기', '왼쪽으로 패닝', '오른쪽으로 패닝', '위로 틸트', '핸드헬드', '따라가기'];
 export const EMOTIONS = ['담담', '기쁨', '설렘', '슬픔', '분노', '두려움', '놀람', '속삭임', '비꼼'];
 export function scriptPrompt({ project, characters, episode, previous, maxShotSeconds, locations = [], props = [], instruction = '', history = [] }) {
   const cast = characters.map((c) => `- ${c.name} (${c.role}): ${c.description} / look: ${c.look_en || c.look}`).join('\n');
@@ -118,11 +127,12 @@ ${episode.hook ? `첫 3초 훅: ${episode.hook}\n` : ''}${episode.cliffhanger ? 
 - visual: 이 컷의 화면을 한국어로 구체적으로(인물 동작, 표정, 조명, 구도). visual_en: 같은 내용을 영상 모델용 영어 프롬프트로(인물 외모는 look을 반복해 일관성 유지, 세로 구도).
 - dialogue: 한국어 대사 한 줄(없으면 빈 문자열). speaker: 말하는 인물 이름(대사 없으면 빈 문자열, 내레이션이면 "내레이션").
 - cast: 화면에 나오는 인물 이름 목록. camera: 샷 크기(클로즈업, 미디엄, 와이드 등). camera_move: ${CAMERA_MOVES.join('/')} 중 하나.
+- angle: ${ANGLE_IDS.join('/')} 중 하나(평범하면 빈 문자열). lens: ${LENS_IDS.join('/')} 중 하나(평범하면 빈 문자열). light: ${LIGHT_IDS.join('/')} 중 하나(평범하면 빈 문자열). tone: ${TONE_IDS.join('/')} 중 하나(장면의 시간·분위기, 평범하면 빈 문자열 — 같은 장소·시간의 컷은 같은 값으로 이어 주세요). 감정이 큰 컷은 가까운 샷과 강한 움직임, 대화는 안정적인 샷으로 리듬을 만드세요.
 - emotion: 대사 감정(${EMOTIONS.join('/')}). sfx: 필요한 효과음을 짧은 한국어로(없으면 빈 문자열).
 - location: 위 장소 목록 중 이 컷의 장소 이름(없으면 빈 문자열). props: 화면에 꼭 보여야 하는 소품 이름 목록(위 소품 목록 우선).
 - states: 이 컷부터 인물 외형이 바뀌면 {"이름":"젖은 머리, 찢어진 소매"}처럼 적고, 원래대로 돌아가면 "기본". 바뀌지 않으면 빈 객체.
 
-JSON 형식: {"shots":[{"scene":"장소와 상황","visual":"한국어 화면 묘사","visual_en":"English visual prompt","dialogue":"대사","speaker":"이름","cast":["이름"],"camera":"클로즈업","camera_move":"천천히 다가가기","emotion":"설렘","sfx":"문 닫히는 소리","seconds":5,"location":"카페","props":["편지"],"states":{}}]}`,
+JSON 형식: {"shots":[{"scene":"장소와 상황","visual":"한국어 화면 묘사","visual_en":"English visual prompt","dialogue":"대사","speaker":"이름","cast":["이름"],"camera":"클로즈업","camera_move":"천천히 다가가기","angle":"눈높이","lens":"배경 흐림","light":"자연광","tone":"노을","emotion":"설렘","sfx":"문 닫히는 소리","seconds":5,"location":"카페","props":["편지"],"states":{}}]}`,
   };
 }
 // 여러 컷(구간)만 PD 요청대로 다시 씁니다.
@@ -152,9 +162,9 @@ export function rewriteShotPrompt({ project, characters, shot, speaker, instruct
     context: { shot, speaker, instruction },
     prompt: `작품 "${project.title}" (${project.genre})의 컷 하나를 고쳐 주세요.
 등장인물: ${characters.map((c) => `${c.name}(${c.role}) look: ${c.look}`).join(' / ')}
-현재 컷: ${JSON.stringify({ scene: shot.scene, visual: shot.visual, dialogue: shot.dialogue, speaker: speaker || '', camera: shot.camera, seconds: shot.seconds })}
+현재 컷: ${JSON.stringify({ scene: shot.scene, visual: shot.visual, dialogue: shot.dialogue, speaker: speaker || '', camera: shot.camera, camera_move: shot.camera_move || '', emotion: shot.emotion || '', seconds: shot.seconds })}
 요청: ${instruction}
-규칙: visual은 한국어 화면 묘사, visual_en은 같은 내용의 영어 프롬프트, 대사는 한국어 한 줄, 화자는 등장인물 이름 중 하나(대사가 없으면 빈 문자열), 길이 2~10초.
+규칙: visual은 한국어 화면 묘사, visual_en은 같은 내용의 영어 프롬프트, 대사는 한국어 한 줄, 화자는 등장인물 이름 중 하나(대사가 없으면 빈 문자열), 길이 2~10초. 요청과 관계없는 카메라 움직임(camera_move: ${CAMERA_MOVES.join('/')} 중 하나)·감정은 현재 값을 그대로 둡니다.
 JSON 형식: {"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","camera":"","camera_move":"","emotion":"","seconds":5}`,
   };
 }
@@ -164,22 +174,20 @@ export const characterImagePrompt = (project, c) =>
 // 컷 스토리보드 이미지(영상 첫 장면으로도 씀)
 // 화면 묘사: 영어 번역이 최신이면 그것을, 아니면 PD가 쓴 묘사를 그대로 씁니다.
 export const visualOf = (shot) => (shot.visual_en && shot.visual_en_src === shot.visual ? shot.visual_en : shot.visual);
-const lookOf = (c) => (c.look_en && c.look_en_src === c.look ? c.look_en : c.look);
-const CAMERA_EN = {
-  고정: 'static camera',
-  '천천히 다가가기': 'slow push-in',
-  '천천히 멀어지기': 'slow pull-out',
-  '왼쪽으로 패닝': 'pan left',
-  '오른쪽으로 패닝': 'pan right',
-  '위로 틸트': 'tilt up',
-  핸드헬드: 'handheld camera',
-  따라가기: 'tracking shot following the subject',
-};
+export const lookOf = (c) => (c.look_en && c.look_en_src === c.look ? c.look_en : c.look);
 // states: {인물ID: '젖은 머리'}(앞 컷에서 이어진 상태 포함), props: 이 컷의 소품, styleLock: 스타일 참고 이미지가 있으면 true
+// 3단계(2026-09-30) 일관성 고정: 인물 헤어 · 체형 · 금지 요소, 외형 고정이면 기준 이미지와 똑같이
+export const castLockText = (c, state = '') =>
+  `${c.name}: ${lookOf(c)}${c.hair ? `, hair: ${c.hair}` : ''}${c.body ? `, body: ${c.body}` : ''}${c.outfit ? `, wearing ${c.outfit}` : ''}${state ? `, currently ${state}` : ''}${
+    Number(c.locked) ? ' (LOCKED: identical face, hairstyle, body shape and outfit to the reference image)' : ''
+  }${c.forbid ? ` (never show on ${c.name}: ${c.forbid})` : ''}`;
+export const placeLockText = (place) =>
+  place ? `. Location: ${lookOf(place)}${Number(place.locked) ? ' (LOCKED: same exact layout, colors and furniture as the location reference image)' : ''}${place.forbid ? ` (never show here: ${place.forbid})` : ''}` : '';
+export const propLockText = (x) => `${x.name} (${lookOf(x)}${Number(x.locked) ? ', LOCKED: same exact design as its reference image' : ''})`;
 export const shotImagePrompt = (project, shot, cast, place, { states = {}, props = [], styleLock = false } = {}) =>
-  `${visualOf(shot)}. ${cast.map((c) => `${c.name}: ${lookOf(c)}${c.outfit ? `, wearing ${c.outfit}` : ''}${states[c.id] ? `, currently ${states[c.id]}` : ''}`).join('; ')}${place ? `. Location: ${lookOf(place)}` : ''}${
-    props.length ? `. Props in frame: ${props.map((x) => `${x.name} (${lookOf(x)})`).join(', ')}` : ''
-  }. ${project.style}. Vertical 9:16 frame, cinematic still, keep the same faces and outfits as the reference images${styleLock ? ', match the color grading and art style of the style reference image' : ''}, no text, no watermark.`;
+  `${visualOf(shot)}. ${cast.map((c) => castLockText(c, states[c.id])).join('; ')}${placeLockText(place)}${
+    props.length ? `. Props in frame: ${props.map(propLockText).join(', ')}` : ''
+  }${framingText(shot) ? `. Framing: ${framingText(shot)}` : ''}${lightText(shot) ? `. Lighting and mood: ${lightText(shot)}` : ''}. ${project.style}. Vertical 9:16 frame, cinematic still, keep the same faces and outfits as the reference images${styleLock ? ', match the color grading and art style of the style reference image' : ''}, no text, no watermark.`;
 export const propPrompt = (project, x) => `Prop reference, a single object on a plain neutral background, no people. ${lookOf(x)}. ${project.style}. Vertical 9:16, sharp detail, no text, no watermark.`;
 // 인물 관계(JSON 배열 [{a,b,kind,note}]) → 프롬프트 한 줄
 export function relationsText(raw, characters = []) {
@@ -193,10 +201,12 @@ export function relationsText(raw, characters = []) {
   const lines = list.map((r) => (name(r.a) && name(r.b) ? `${name(r.a)} ↔ ${name(r.b)}: ${r.kind}${r.note ? ` (${r.note})` : ''}` : '')).filter(Boolean);
   return lines.length ? '인물 관계:\n' + lines.map((l) => '- ' + l).join('\n') + '\n' : '';
 }
-export const shotVideoPrompt = (project, shot, speaker) =>
-  `${visualOf(shot)}. Camera: ${shot.camera || 'medium shot'}${shot.camera_move ? `, ${CAMERA_EN[shot.camera_move] || shot.camera_move}` : ''}. ${project.style}. Vertical 9:16, natural motion, no text overlay.${
-    shot.dialogue && speaker ? ` ${speaker.name} speaks in Korean${shot.emotion ? ` (${shot.emotion})` : ''}: "${shot.dialogue}"` : ''
-  }`;
+// basic: 카메라 제어가 약한 모델용(궤도·크레인 같은 복잡한 움직임을 비슷한 쉬운 움직임으로 바꿈)
+// locked: 외형을 고정한 인물(영상 중에 헤어 · 옷이 바뀌지 않게 한 줄로 알려요)
+export const shotVideoPrompt = (project, shot, speaker, { basic = false, locked = [] } = {}) =>
+  `${visualOf(shot)}. Camera: ${framingText(shot) || 'medium shot'}${motionText(shot, { basic }) ? `, ${motionText(shot, { basic })}` : ''}${lightText(shot) ? `. Lighting and mood: ${lightText(shot)}` : ''}. ${project.style}. Vertical 9:16, natural motion, no text overlay.${
+    locked.length ? ` Keep ${locked.map((c) => `${c.name}'s ${[c.hair && `hair (${c.hair})`, c.outfit && `outfit (${c.outfit})`].filter(Boolean).join(' and ') || 'appearance'}`).join('; ')} unchanged throughout the clip.` : ''
+  }${shot.dialogue && speaker ? ` ${speaker.name} speaks in Korean${shot.emotion ? ` (${shot.emotion})` : ''}: "${shot.dialogue}"` : ''}`;
 export const characterRefPrompt = (project, c, pose) =>
   `Character reference, same person as the reference image. ${lookOf(c)}${c.outfit ? `, wearing ${c.outfit}` : ''}. ${
     { front: 'front-facing portrait, neutral expression', side: 'side profile view', full: 'full body standing pose', smile: 'smiling expression close-up', angry: 'angry expression close-up', sad: 'teary sad expression close-up' }[pose] || pose
@@ -205,7 +215,7 @@ export const locationPrompt = (project, l) => `Establishing shot of a location, 
 export const posterPrompt = (project, cast) =>
   `Korean short drama poster, vertical 9:16, dramatic key art for "${project.title}" (${project.genre}). ${project.logline}. ${cast
     .slice(0, 2)
-    .map((c) => c.look)
+    .map((c) => lookOf(c))
     .join(' and ')}. ${project.style}. Leave empty space at top for the title, no text.`;
 
 // ── 작품 설정집 · 시즌 설계 · 진단 · 각색 · 메타데이터 · 번역 ─────────────
@@ -396,9 +406,15 @@ export const ASSISTANT_ACTIONS = {
   metadata: '작품 제목·소개·해시태그 추천',
   verify_shot: 'AI가 만든 컷 이미지 검수(얼굴·손·글자·소품 이상 찾기) (target: 이미지가 있는 컷)',
   batch_verify_shot: '회차의 컷 이미지 모두 검수 (target: 회차)',
+  verify_video: 'AI가 만든 컷 영상 검수(얼굴·옷 바뀜·뭉개짐·입 모양·앞 컷과 이어짐) (target: 영상이 있는 컷)',
+  batch_verify_video: '회차의 컷 영상 모두 검수 (target: 회차)',
   bridge_shot: '컷 뒤에 2~3초 연결 컷 넣기 (target: 컷, instruction: 원하는 연결 장면·비워도 됨)',
+  shot_upscale: '컷 이미지 화질 올리기 (target: 이미지가 있는 컷)',
+  shot_upscale_video: '컷 영상 화질 올리기 (target: 영상이 있는 컷)',
+  batch_shot_upscale_video: '회차의 컷 영상 모두 화질 올리기 (target: 회차)',
   // 라마가 들지 않는 직접 수정
-  edit_shot: '컷 내용 직접 고치기 (target: 컷, fields: dialogue·visual·emotion·seconds·camera·camera_move·speed 중 필요한 것만)',
+  edit_shot: '컷 내용 직접 고치기 (target: 컷, fields: dialogue·visual·emotion·seconds·camera·camera_move·angle·lens·move_strength·speed 중 필요한 것만. camera_move·angle·lens는 연출 사전 값)',
+  edit_direction: `여러 컷 연출(카메라·조명) 한 번에 바꾸기 (targets: 컷 목록, preset: 연출 세트 이름(${DIRECTION.presets.map((x) => x.name).join('·')}) 또는 fields: camera·camera_move·angle·lens·move_strength·effect·light(${LIGHT_IDS.join('/')})·tone(${TONE_IDS.join('/')})·height)`,
   edit_character: '인물 설정 고치기 (target: 인물, fields: description·look·voice_style)',
   edit_episode: '회차 제목·줄거리 고치기 (target: 회차, fields: title·summary)',
   edit_project: '작품 톤·스타일 고치기 (fields: tone·style)',
@@ -410,6 +426,7 @@ const assistantAction = z.object({
   instruction: z.string().max(300).optional().default(''),
   prompt: z.string().max(200).optional().default(''),
   mood: z.string().max(200).optional().default(''),
+  preset: z.string().max(30).optional().default(''),
   fields: z.record(z.string(), z.union([z.string(), z.number()])).optional().default({}),
   reason: z.string().max(200).optional().default(''),
 });
@@ -426,7 +443,7 @@ export function assistantPrompt({ project, characters, episodes, episode, shots,
     ? shots
         .map(
           (s, i) =>
-            `E${episode.number}S${i + 1} [${s.seconds}초] ${String(s.scene || '').slice(0, 30)} / 화면: ${String(s.visual || '').slice(0, 90)} / 대사(${s.speaker || '-'}): ${String(s.dialogue || '').slice(0, 60)} / 감정: ${s.emotion || '-'} / 이미지 ${s.image ? 'O' : 'X'} 음성 ${s.audio ? 'O' : 'X'} 영상 ${s.video ? 'O' : 'X'}`,
+            `E${episode.number}S${i + 1} [${s.seconds}초] ${String(s.scene || '').slice(0, 30)} / 화면: ${String(s.visual || '').slice(0, 90)} / 대사(${s.speaker || '-'}): ${String(s.dialogue || '').slice(0, 60)} / 감정: ${s.emotion || '-'} / 연출: ${[s.camera, s.angle, s.camera_move].filter(Boolean).join('·') || '-'} / 이미지 ${s.image ? 'O' : 'X'} 음성 ${s.audio ? 'O' : 'X'} 영상 ${s.video ? 'O' : 'X'}`,
         )
         .join('\n')
     : '(회차 없음)';
@@ -501,6 +518,7 @@ ${characters.length ? '이미 등록된 인물(이름을 그대로 쓰세요): '
 - 대사는 원문 그대로(맞춤법만 고침). speaker는 인물 이름, 내레이션·독백(N/NA)은 "내레이션".
 - visual은 한국어 화면 묘사(인물 동작·표정·조명·구도), visual_en은 같은 내용의 영어 영상 프롬프트(인물 외모 반복, 세로 구도).
 - location은 장소 이름, props는 화면에 꼭 나와야 하는 소품, states는 이 컷부터 바뀌는 인물 외형({"이름":"비에 젖은 머리"}, 원래대로는 "기본").
+- camera는 샷 크기, camera_move는 ${CAMERA_MOVES.join('/')} 중 하나, angle은 ${ANGLE_IDS.join('/')} 중 하나, lens는 ${LENS_IDS.join('/')} 중 하나(평범하면 빈 문자열). 지문의 연출 단서를 따르고 없으면 장면 감정에 맞게 고르세요.
 - characters·locations·props는 대본에 나오는 것 모두(외모·모습은 대본 단서로 추정, look_en은 영어). relations는 인물 사이 관계(연인·가족·친구·라이벌·적·비밀·상하·기타).
 
 대본:
@@ -508,7 +526,7 @@ ${characters.length ? '이미 등록된 인물(이름을 그대로 쓰세요): '
 ${String(text).slice(0, 30000)}
 """
 
-JSON 형식: {"title":"제목(대본에 있으면)","synopsis":"줄거리 3~5문장","characters":[{"name":"","role":"","description":"","look":"","look_en":""}],"locations":[{"name":"","look":""}],"props":[{"name":"","look":""}],"relations":[{"a":"이름","b":"이름","kind":"연인","note":""}],"episodes":[{"number":1,"title":"","summary":"","shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":4,"location":"","props":[],"states":{}}]}]}`,
+JSON 형식: {"title":"제목(대본에 있으면)","synopsis":"줄거리 3~5문장","characters":[{"name":"","role":"","description":"","look":"","look_en":""}],"locations":[{"name":"","look":""}],"props":[{"name":"","look":""}],"relations":[{"a":"이름","b":"이름","kind":"연인","note":""}],"episodes":[{"number":1,"title":"","summary":"","shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","angle":"","lens":"","emotion":"","sfx":"","seconds":4,"location":"","props":[],"states":{}}]}]}`,
   };
 }
 
@@ -518,20 +536,37 @@ export const verifySchema = z.object({
   score: z.coerce.number().min(0).max(100).default(0),
   people: z.coerce.number().int().min(0).max(20).optional(),
   issues: z
-    .array(z.object({ code: z.enum(['face', 'count', 'text', 'anatomy', 'style', 'composition', 'prop', 'state', 'mismatch', 'other']).catch('other'), text: z.string().max(200) }))
+    .array(
+      z.object({
+        code: z.enum(['face', 'count', 'text', 'anatomy', 'style', 'composition', 'prop', 'state', 'mismatch', 'lock', 'other']).catch('other'),
+        text: z.string().max(200),
+        // 문제 위치(가로·세로 %: [x, y, 너비, 높이]) — 부분 수정 붓을 미리 칠해 주는 데 써요(없어도 됨).
+        box: z.array(z.coerce.number().min(0).max(100)).length(4).optional().catch(undefined),
+      }),
+    )
     .max(8)
     .default([]),
+  // 인물 닮음 점수(2026-09-29): 인물마다 기준 얼굴과 같은 사람으로 보이는 정도(0~100)
+  faces: z.array(z.object({ name: z.string().max(30), match: z.coerce.number().min(0).max(100) })).max(8).optional().default([]).catch([]),
   summary: z.string().max(300).default(''),
 });
-export function verifyPrompt({ shot, people, props = [], states = {}, styleLock = false }) {
+export function verifyPrompt({ shot, people, props = [], states = {}, styleLock = false, place = null }) {
   const names = people.map((c) => c.name);
+  // 기준 얼굴 이미지가 실제로 붙는 인물(이미지가 있는 인물)만 얼굴 비교를 시켜요.
+  const faceNames = people.filter((c) => c.image).map((c) => c.name);
+  // 3단계 고정 요소: 헤어 · 체형 · 의상 · 금지 요소, 장소 · 소품 고정
+  const locks = [
+    ...people.filter((c) => Number(c.locked) || c.hair || c.body || c.forbid).map((c) => `${c.name} — ${[c.hair && `헤어: ${c.hair}`, c.body && `체형: ${c.body}`, c.outfit && `의상: ${c.outfit}`, c.forbid && `금지: ${c.forbid}`].filter(Boolean).join(', ') || '기준 이미지와 같은 외형'}`),
+    ...(place && (Number(place.locked) || place.forbid) ? [`장소 ${place.name} — ${Number(place.locked) ? '기준 이미지와 같은 배치·색' : ''}${place.forbid ? ` 금지: ${place.forbid}` : ''}`] : []),
+    ...props.filter((x) => Number(x.locked)).map((x) => `소품 ${x.name} — 기준 이미지와 같은 모양`),
+  ];
   return {
     system: '당신은 한국 세로형 숏폼 드라마의 화면 품질 검수자입니다. 이미지를 꼼꼼히 보고 사실대로만 판단하며, 반드시 JSON 하나만 출력합니다.',
     json: true,
     maxTokens: 900,
     purpose: 'verify',
-    context: { visual: shot.visual, people: names.length },
-    prompt: `첫 번째 이미지는 AI가 만든 컷 장면입니다.${names.length ? ` 그 뒤 이미지들은 등장인물의 기준 얼굴입니다(순서대로: ${names.join(', ')}).` : ''}
+    context: { visual: shot.visual, people: names.length, names, locks },
+    prompt: `첫 번째 이미지는 AI가 만든 컷 장면입니다.${faceNames.length ? ` 그 뒤 이미지들은 등장인물의 기준 얼굴입니다(순서대로: ${faceNames.join(', ')}).` : ''}
 이 컷의 설명: ${shot.visual}
 화면에 나와야 하는 인물 수: ${names.length || '제한 없음'}${names.length ? ` (${names.join(', ')})` : ''}
 ${props.length ? `꼭 보여야 하는 소품: ${props.map((x) => x.name).join(', ')}\n` : ''}${Object.keys(states).length ? `인물 상태: ${people.filter((c) => states[c.id]).map((c) => `${c.name}=${states[c.id]}`).join(', ')}\n` : ''}검사 항목:
@@ -541,9 +576,51 @@ ${props.length ? `꼭 보여야 하는 소품: ${props.map((x) => x.name).join('
 4) anatomy: 손가락·팔다리·얼굴이 어색하게 뭉개지거나 기형인가
 5) composition: 세로 화면에서 주인공이 잘리지 않고 구도가 자연스러운가
 6) prop / state: 소품·인물 상태가 설명대로 보이는가
-7) mismatch: 설명과 크게 다른 장면인가${styleLock ? '\n8) style: 작품 스타일(색감·화풍)에서 크게 벗어났는가' : ''}
-문제가 없으면 ok=true, 있으면 ok=false와 issues에 한국어로 짧게(무엇이 어떻게 이상한지). score는 전체 품질 0~100.
-JSON 형식: {"ok":true,"score":85,"people":2,"issues":[{"code":"face","text":"오른쪽 인물 얼굴이 기준과 달라요"}],"summary":"한 줄 평가"}`,
+7) mismatch: 설명과 크게 다른 장면인가${styleLock ? '\n8) style: 작품 스타일(색감·화풍)에서 크게 벗어났는가' : ''}${locks.length ? `\n9) lock: 고정 요소를 지켰는가 — ${locks.join(' / ')}` : ''}
+문제가 없으면 ok=true, 있으면 ok=false와 issues에 한국어로 짧게(무엇이 어떻게 이상한지). 문제 위치를 알면 box에 첫 번째 이미지 기준 [x, y, 너비, 높이]를 %로 적으세요.
+score는 전체 품질 0~100.${faceNames.length ? ' faces에는 인물마다 기준 얼굴과 같은 사람으로 보이는 정도(match 0~100)를 적으세요. 화면에 안 보이면 빼세요.' : ''}
+JSON 형식: {"ok":true,"score":85,"people":2,"issues":[{"code":"face","text":"오른쪽 인물 얼굴이 기준과 달라요","box":[55,10,35,30]}],"faces":[{"name":"이름","match":90}],"summary":"한 줄 평가"}`,
+  };
+}
+
+// ── 컷 영상 AI 검수(5단계, 2026-09-30): 영상에서 뽑은 장면 3장(처음 · 가운데 · 끝)을 봐요 ─────────────
+export const videoVerifySchema = z.object({
+  ok: z.boolean(),
+  score: z.coerce.number().min(0).max(100).default(0),
+  issues: z
+    .array(
+      z.object({
+        code: z.enum(['face', 'outfit', 'drift', 'lipsync', 'continuity', 'artifact', 'text', 'mismatch', 'other']).catch('other'),
+        text: z.string().max(200),
+        frame: z.coerce.number().int().min(1).max(3).optional().catch(undefined),
+      }),
+    )
+    .max(8)
+    .default([]),
+  faces: z.array(z.object({ name: z.string().max(30), match: z.coerce.number().min(0).max(100) })).max(8).optional().default([]).catch([]),
+  summary: z.string().max(300).default(''),
+});
+export function videoVerifyPrompt({ shot, people, prevShot = null, hasPrevFrame = false }) {
+  const names = people.map((c) => c.name);
+  const locks = people.filter((c) => c.hair || c.outfit || Number(c.locked)).map((c) => `${c.name} — ${[c.hair && `헤어: ${c.hair}`, c.outfit && `의상: ${c.outfit}`].filter(Boolean).join(', ') || '기준 이미지와 같은 외형'}`);
+  return {
+    system: '당신은 한국 세로형 숏폼 드라마의 영상 품질 검수자입니다. 영상에서 뽑은 장면을 꼼꼼히 보고 사실대로만 판단하며, 반드시 JSON 하나만 출력합니다.',
+    json: true,
+    maxTokens: 900,
+    purpose: 'verify_video',
+    context: { visual: shot.visual, names, dialogue: shot.dialogue || '', locks },
+    prompt: `처음 세 이미지는 AI가 만든 컷 영상의 처음 · 가운데 · 끝 장면입니다(순서대로 1, 2, 3).${names.length ? ` 그 뒤 이미지들은 등장인물의 기준 얼굴입니다(순서대로: ${names.join(', ')}).` : ''}${hasPrevFrame ? ' 마지막 이미지는 바로 앞 컷 영상의 마지막 장면입니다.' : ''}
+이 컷의 설명: ${shot.visual}
+${shot.dialogue ? `대사(입이 움직여야 함): "${shot.dialogue}"
+` : ''}${locks.length ? `고정 요소: ${locks.join(' / ')}
+` : ''}검사 항목:
+1) face: 장면마다 인물 얼굴이 기준 얼굴과 같은 사람인가
+2) drift · outfit: 영상이 흐르는 동안(1→3) 얼굴 · 헤어 · 옷이 바뀌거나 녹아내리지 않는가
+3) artifact: 손 · 팔다리 · 얼굴이 뭉개지거나 물체가 이상하게 변하는가
+4) text: 글자 · 워터마크 · 로고가 보이는가
+5) mismatch: 설명과 크게 다른 장면인가${shot.dialogue ? '\n6) lipsync: 말하는 인물의 입이 대사처럼 움직이는 것으로 보이는가(입이 계속 닫혀 있으면 문제)' : ''}${hasPrevFrame ? '\n7) continuity: 앞 컷 마지막 장면과 인물 옷 · 머리 · 장소 · 조명이 자연스럽게 이어지는가' : ''}
+문제가 없으면 ok=true, 있으면 ok=false와 issues에 한국어로 짧게, 어느 장면(frame 1~3)인지 적으세요. score는 전체 품질 0~100.${names.length ? ' faces에는 인물마다 기준 얼굴과 같은 사람으로 보이는 정도(match 0~100, 세 장면 중 가장 낮은 값)를 적으세요.' : ''}
+JSON 형식: {"ok":true,"score":85,"issues":[{"code":"drift","text":"끝 장면에서 코트 색이 바뀌어요","frame":3}],"faces":[{"name":"이름","match":90}],"summary":"한 줄 평가"}`,
   };
 }
 
@@ -562,7 +639,7 @@ export function bridgePrompt({ project, characters, prev, next, instruction = ''
 앞 컷: ${brief(prev)}
 뒤 컷: ${brief(next)}
 ${instruction ? `요청: ${instruction}\n` : ''}규칙: 2~3초짜리 인서트(소품 클로즈업) · 장소 전경 · 인물 표정 리액션 중 흐름에 가장 맞는 것. 대사는 없거나 아주 짧게. visual은 한국어, visual_en은 영어.
-JSON 형식: {"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":2,"location":"","props":[],"states":{}}`,
+JSON 형식: {"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","angle":"","lens":"","emotion":"","sfx":"","seconds":2,"location":"","props":[],"states":{}}`,
   };
 }
 export const variantsSchema = z.object({
@@ -581,7 +658,7 @@ ${bibleText(project.bible)}등장인물: ${characters.map((c) => `${c.name}(${c.
 ${relationsText(project.relations, characters)}지금 대본(컷): ${JSON.stringify(shots.map((s) => ({ scene: s.scene, visual: s.visual, dialogue: s.dialogue, seconds: s.seconds })))}
 변형 방향: ${angles.map((a, i) => `${i + 1}) ${a}`).join(' / ')}
 규칙: 각 변형은 전체 길이 약 ${project.episode_seconds}초, 컷 형식은 대본과 같음(visual 한국어, visual_en 영어), label은 변형 방향을 짧게.
-JSON 형식: {"variants":[{"label":"결말 반전","note":"무엇이 달라졌는지 한 줄","shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","emotion":"","sfx":"","seconds":4,"location":"","props":[],"states":{}}]}]}`,
+JSON 형식: {"variants":[{"label":"결말 반전","note":"무엇이 달라졌는지 한 줄","shots":[{"scene":"","visual":"","visual_en":"","dialogue":"","speaker":"","cast":[],"camera":"","camera_move":"","angle":"","lens":"","emotion":"","sfx":"","seconds":4,"location":"","props":[],"states":{}}]}]}`,
   };
 }
 

@@ -17,6 +17,7 @@ import {
 import { Modal, navigate } from '../../App';
 import { API_ORIGIN, asset } from '../../platform';
 import type { WS } from './shared';
+import NumberInput from '../../NumberInput';
 
 // 협업(팀 제작, 2026-09-25): 공유(초대·링크) · 팀원 역할·결제 · 승인 · 댓글 · 지금 편집 중 · 활동 기록
 
@@ -125,7 +126,9 @@ export function ShareModal({ ws, close }: { ws: WS; close: () => void }) {
     } catch (e) {
       ws.notify((e as Error).message);
     }
-  }, [pid, ws]);
+    // ws는 화면을 그릴 때마다 새로 만들어져요. 알림 함수(변하지 않음)만 기준으로 삼아 2초마다 다시 불러오지 않게 해요.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, ws.notify]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -282,8 +285,7 @@ function MemberRow({ ws, m, owner, used, busy, act }: { ws: WS; m: TeamMember; o
             <option value="sponsor">내가 지원</option>
           </select>
           {m.pay_mode === 'sponsor' && (
-            <input
-              type="number"
+            <NumberInput
               min={0}
               inputMode="numeric"
               aria-label={`${m.name} 지원 한도(라마)`}
@@ -351,7 +353,7 @@ function InviteForm({ ws, team, busy, act }: { ws: WS; team: TeamData; busy: str
         {pay === 'sponsor' && (
           <label>
             지원 한도(라마 · 비우면 무제한)
-            <input type="number" min={0} inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value.replace(/\D/g, ''))} placeholder="예: 3000" />
+            <NumberInput min={0} inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value.replace(/\D/g, ''))} placeholder="예: 3000" />
           </label>
         )}
       </div>
@@ -387,7 +389,7 @@ function InviteForm({ ws, team, busy, act }: { ws: WS; team: TeamData; busy: str
       <div className="team-link-new">
         <label>
           링크 인원
-          <input type="number" min={1} max={50} value={seats} onChange={(e) => setSeats(e.target.value.replace(/\D/g, ''))} />
+          <NumberInput min={1} max={50} value={seats} onChange={(e) => setSeats(e.target.value.replace(/\D/g, ''))} />
         </label>
         <button
           type="button"
@@ -503,7 +505,8 @@ export function CommentsPanel({ ws, target, close }: { ws: WS; target: CommentTa
       ws.notify((e as Error).message);
       setRows([]);
     }
-  }, [pid, scope, here.type, here.id, ws]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, scope, here.type, here.id, ws.notify]);
   useEffect(() => {
     void load();
   }, [load]);

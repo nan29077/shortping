@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, BookmarkPlus, Check, ClipboardPaste, Film, ImageIcon, Library, Lock, Package, Plus, ShieldAlert, ShieldCheck, Shuffle, Trash2, Upload } from 'lucide-react';
 import { api, parseJson, type LibraryItem, type LibraryKind, type ShotVerify, type StudioCharacter, type StudioEpisode, type StudioProp, type StudioRelation, type StudioShot } from '../../api';
 import { Modal } from '../../App';
-import { useAutosave, useSyncedForm } from '../hooks';
+import { changedFields, useAutosave, useSyncedForm } from '../hooks';
 import { JobBadge, isBusy } from '../parts';
 import { SaveBadge, Section, type WS } from './shared';
 import { asset } from '../../platform';
@@ -114,9 +114,9 @@ export function PropSection({ ws }: { ws: WS }) {
 }
 function PropCard({ ws, x }: { ws: WS; x: StudioProp }) {
   const pid = ws.data.project.id;
-  const server = { name: x.name, look: x.look };
+  const server = { name: x.name, look: x.look, locked: !!Number(x.locked || 0) };
   const [f, setF] = useSyncedForm(server);
-  const save = useAutosave(f, server, (v) => api(`/studio/ai/projects/${pid}/props/${x.id}`, 'PATCH', v), { enabled: !!f.name.trim() });
+  const save = useAutosave(f, server, (v, base) => api(`/studio/ai/projects/${pid}/props/${x.id}`, 'PATCH', changedFields(v, base)), { enabled: !!f.name.trim() });
   const used = ws.data.episodes.flatMap((e) => e.shots).filter((s) => String(s.prop_ids || '').split(',').includes(x.id)).length;
   return (
     <article className="ws-location">
@@ -127,6 +127,10 @@ function PropCard({ ws, x }: { ws: WS; x: StudioProp }) {
           <SaveBadge state={save.state} error={save.error} />
         </div>
         <textarea aria-label="소품 모습" rows={2} maxLength={500} value={f.look} placeholder="예: 누렇게 바랜 편지 봉투, 빨간 밀랍 봉인" onChange={(e) => setF({ ...f, look: e.target.value })} />
+        <label className="inline-check lock-check" title="컷마다 소품 이미지와 똑같은 모양으로 그리고, AI 검수에서도 확인해요">
+          <input type="checkbox" checked={f.locked} onChange={(e) => setF({ ...f, locked: e.target.checked })} />
+          <Lock size={12} /> 모양 고정(모든 컷에서 똑같이)
+        </label>
         <div className="ws-row">
           <button
             className="secondary compact"
@@ -174,7 +178,9 @@ export function StyleLockSection({ ws }: { ws: WS }) {
     (data.locations || []).forEach((l) => add(l.image, l.name));
     data.assets.filter((a) => a.kind === 'image' || a.kind === 'style').forEach((a) => add(a.url, a.model_label || '이미지'));
     return list.slice(0, 30);
-  }, [data, p.poster, chosen]);
+    // chosen은 매번 새 배열이라 원본 문자열(style_refs)을 기준으로 다시 계산해요.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, p.poster, p.style_refs]);
   const save = async (next: string[], message: string) => {
     setBusy(true);
     try {
@@ -298,26 +304,37 @@ export function verifyOf(s: StudioShot): ShotVerify | null {
   const v = parseJson<ShotVerify | null>(s.verify, null);
   return v && v.image === s.image ? v : null;
 }
-export function VerifyBadge({ s, onRedo }: { s: StudioShot; onRedo?: () => void }) {
+// onFix: 문제를 부분 수정으로 고치기(문제 설명과 위치를 넘겨 붓을 미리 칠해요)
+export function VerifyBadge({ s, onRedo, onFix }: { s: StudioShot; onRedo?: () => void; onFix?: (issues: ShotVerify['issues']) => void }) {
   const [open, setOpen] = useState(false);
   const v = verifyOf(s);
   if (!v) return null;
-  if (v.ok)
+  const faces = v.faces || [];
+  const lowFace = faces.filter((f) => Number(f.match) < 70);
+  const faceText = faces.length ? ` · 인물 닮음 ${faces.map((f) => `${f.name} ${Math.round(Number(f.match))}`).join(', ')}` : '';
+  if (v.ok && !lowFace.length)
     return (
-      <span className="verify-badge ok" title={`AI 검수 ${v.score}점`}>
+      <span className="verify-badge ok" title={`AI 검수 ${v.score}점${faceText}`}>
         <ShieldCheck size={12} /> 검수 통과 {v.score}
       </span>
     );
+  const issues = v.issues.length ? v.issues : lowFace.length ? lowFace.map((f) => ({ code: 'face', text: `${f.name} 얼굴이 기준과 달라 보여요(${Math.round(Number(f.match))}점)` })) : [{ code: 'other', text: '다시 만드는 것이 좋아요' }];
   return (
     <span className="verify-wrap">
       <button type="button" className="verify-badge bad" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <ShieldAlert size={12} /> 검수 문제 {v.issues.length || 1}
+        <ShieldAlert size={12} /> {lowFace.length && v.ok ? '인물이 달라 보여요' : `검수 문제 ${issues.length}`}
       </button>
       {open && (
         <span className="verify-pop" role="note">
-          {(v.issues.length ? v.issues : [{ code: 'other', text: '다시 만드는 것이 좋아요' }]).map((x, i) => (
+          {issues.map((x, i) => (
             <span key={i}>· {x.text}</span>
           ))}
+          {faces.length > 0 && <span className="muted">인물 닮음: {faces.map((f) => `${f.name} ${Math.round(Number(f.match))}점`).join(' · ')}</span>}
+          {onFix && (
+            <button type="button" className="text-link" onClick={() => (setOpen(false), onFix(issues))}>
+              문제 부분만 고치기
+            </button>
+          )}
           {onRedo && (
             <button type="button" className="text-link" onClick={onRedo}>
               이미지 다시 만들기
@@ -334,6 +351,8 @@ const KIND_NAME: Record<LibraryKind, string> = { character: '인물', location: 
 // 라이브러리에 저장 버튼(카드마다)
 export function SaveToLibrary({ ws, kind, sourceId, label }: { ws: WS; kind: LibraryKind; sourceId?: string; label?: string }) {
   const [busy, setBusy] = useState(false);
+  // 라이브러리 저장은 프로젝트 주인만(팀원에게는 버튼을 보이지 않아요. 서버도 한 번 더 확인해요).
+  if (ws.data.team && ws.data.team.role !== 'owner') return null;
   return (
     <button
       type="button"
@@ -387,9 +406,9 @@ function LibraryModal({ ws, kind, close }: { ws: WS; kind: LibraryKind; close: (
     if (x.kind === 'style' && !(await ws.ask({ title: '스타일 가져오기', text: '이 프로젝트의 스타일 문구와 스타일 참고 그림이 라이브러리 것으로 바뀌어요.', ok: '가져오기' }))) return;
     setBusy(x.id);
     try {
-      await api(`/studio/ai/projects/${ws.data.project.id}/library/import`, 'POST', { libraryId: x.id });
+      const r = await api<{ dropped?: number }>(`/studio/ai/projects/${ws.data.project.id}/library/import`, 'POST', { libraryId: x.id });
       await ws.load();
-      ws.notify(`${KIND_NAME[x.kind]} ‘${x.name}’을(를) 가져왔어요.`);
+      ws.notify(`${KIND_NAME[x.kind]} ‘${x.name}’을(를) 가져왔어요.${r.dropped ? ` 이 프로젝트 주인의 파일이 아닌 그림 ${r.dropped}장은 빼고 가져왔어요.` : ''}`);
     } catch (e) {
       ws.notify((e as Error).message);
     } finally {

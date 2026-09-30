@@ -1,17 +1,20 @@
 import { ReviewBar } from './TeamParts';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, History, ListChecks, Plus, RotateCcw, Sparkles, Stethoscope, Trash2, Wand2, X } from 'lucide-react';
-import { api, parseJson, type StudioEpisode, type StudioShot, type StudioVersion } from '../../api';
+import { api, ApiError, parseJson, type StudioEpisode, type StudioShot, type StudioVersion } from '../../api';
 import { Empty, Modal } from '../../App';
-import { useAutosave, useSyncedForm } from '../hooks';
+import { changedFields, useAutosave, useSyncedForm } from '../hooks';
 import { JobBadge, isBusy } from '../parts';
 import { REWRITE_CHIPS } from '../presets';
 import { EpisodeOutline } from './PlanTab';
 import { EpisodeSwitcher, ModelSettings, SaveBadge, Section, type WS } from './shared';
 import { RhythmPanel, VariantsButton } from './DramaParts';
+import { MOVE_IDS } from './Direction';
+import NumberInput from '../../NumberInput';
 
 export const EMOTIONS = ['', '담담', '기쁨', '설렘', '슬픔', '분노', '두려움', '놀람', '속삭임', '비꼼'];
-export const CAMERA_MOVES = ['', '고정', '천천히 다가가기', '천천히 멀어지기', '왼쪽으로 패닝', '오른쪽으로 패닝', '위로 틸트', '핸드헬드', '따라가기'];
+// 카메라 움직임 목록은 연출 사전(server/ai/direction.json)과 같아요(2026-09-29 확장: 20가지).
+export const CAMERA_MOVES = ['', ...MOVE_IDS];
 export const CAMERAS = ['익스트림 클로즈업', '클로즈업', '바스트', '미디엄', '풀샷', '와이드', '투샷', '오버숄더', '하이앵글', '로우앵글', '시점샷'];
 const SCRIPT_CHIPS = ['첫 3초를 더 강렬하게', '대사를 더 짧고 강렬하게', '설렘을 더', '긴장감을 더', '반전을 넣어서', '코믹하게'];
 type Diagnosis = {
@@ -252,17 +255,27 @@ function ShotLine({
   clearRewrite: () => void;
 }) {
   const { data } = ws;
+  // 역할별 읽기 전용: 장면 · 대사 · 화자는 대본 권한, 묘사 · 길이 · 카메라는 대본이나 장면 권한이 있어야 고칠 수 있어요.
+  const canScript = ws.can('script');
+  const canEdit = ws.can(['script', 'scene']);
   const server = shotBase(s);
   const [f, setF] = useSyncedForm(server);
   const save = useAutosave(
     f,
     server,
-    async (v) => {
-      const r = await api<{ audioReset: boolean }>(`/studio/ai/shots/${s.id}`, 'PATCH', v);
-      if (r.audioReset && (s.audio || s.lipsync)) {
-        ws.notify(`${index + 1}번 컷 대사가 바뀌어 음성을 다시 만들어야 해요.`);
-        void ws.load();
-      }
+    async (v, base) => {
+      // 협업: 다른 사람이 먼저 고친 컷이면 서버가 409로 알려 줘요. 최신 내용을 불러와 다시 고치게 해요.
+      const r = await api<{ audioReset: boolean }>(`/studio/ai/shots/${s.id}`, 'PATCH', { ...changedFields(v, base), base_updated_at: s.updated_at ?? null }).catch((e) => {
+        if (e instanceof ApiError && e.code === 'edit_conflict') {
+          ws.notify(`${index + 1}번 컷: ${e.message}`);
+          setF(server);
+          void ws.load();
+        }
+        throw e;
+      });
+      if (r.audioReset && (s.audio || s.lipsync)) ws.notify(`${index + 1}번 컷 대사가 바뀌어 음성을 다시 만들어야 해요.`);
+      // 저장한 내용을 다시 불러와 다른 탭(장면)에서도 최신 값으로 보여요.
+      void ws.load();
     },
     { delay: 1200, enabled: f.seconds >= 2 && f.seconds <= 10 },
   );
@@ -304,8 +317,8 @@ function ShotLine({
       </div>
       <div className="ws-line-body">
         <div className="ws-line-top">
-          <input className="ws-scene" aria-label="장면(장소 · 시간)" value={f.scene} maxLength={200} placeholder="장면 · 예: 카페 - 밤" onChange={(e) => setF({ ...f, scene: e.target.value })} />
-          <select aria-label="카메라" className="ws-mini" value={CAMERAS.includes(f.camera) ? f.camera : f.camera ? '__custom' : ''} onChange={(e) => setF({ ...f, camera: e.target.value === '__custom' ? f.camera : e.target.value })}>
+          <input className="ws-scene" aria-label="장면(장소 · 시간)" disabled={!canScript} value={f.scene} maxLength={200} placeholder="장면 · 예: 카페 - 밤" onChange={(e) => setF({ ...f, scene: e.target.value })} />
+          <select aria-label="카메라" className="ws-mini" disabled={!canEdit} value={CAMERAS.includes(f.camera) ? f.camera : f.camera ? '__custom' : ''} onChange={(e) => setF({ ...f, camera: e.target.value === '__custom' ? f.camera : e.target.value })}>
             <option value="">카메라</option>
             {CAMERAS.map((c) => (
               <option key={c}>{c}</option>
@@ -313,13 +326,22 @@ function ShotLine({
             {f.camera && !CAMERAS.includes(f.camera) && <option value="__custom">{f.camera}</option>}
           </select>
           <label className="ws-seconds">
-            <input type="number" min={2} max={10} value={f.seconds} aria-label="길이(초)" onChange={(e) => setF({ ...f, seconds: Math.round(Number(e.target.value)) })} />초
+            <NumberInput
+              min={2}
+              max={10}
+              value={f.seconds || ''}
+              disabled={!canEdit}
+              aria-label="길이(초)"
+              onChange={(e) => setF({ ...f, seconds: Math.round(Number(e.target.value)) })}
+              onBlur={() => f.seconds && setF({ ...f, seconds: Math.min(10, Math.max(2, f.seconds)) })}
+            />
+            초
           </label>
-          <SaveBadge state={save.state} error={save.error} />
+          <SaveBadge state={save.state} error={save.error} hint={save.blocked ? '길이를 2~10초로 적으면 저장돼요' : undefined} />
         </div>
-        <textarea className="ws-visual" aria-label="화면 묘사" rows={2} maxLength={800} value={f.visual} placeholder="화면에 보이는 것 · 인물의 행동 (한국어로 써도 돼요)" onChange={(e) => setF({ ...f, visual: e.target.value })} />
+        <textarea className="ws-visual" aria-label="화면 묘사" disabled={!canEdit} rows={2} maxLength={800} value={f.visual} placeholder="화면에 보이는 것 · 인물의 행동 (한국어로 써도 돼요)" onChange={(e) => setF({ ...f, visual: e.target.value })} />
         <div className="ws-dialogue">
-          <select aria-label="말하는 인물" value={f.narration ? '__narr' : f.speaker_id || ''} onChange={(e) => setF({ ...f, narration: e.target.value === '__narr', speaker_id: e.target.value && e.target.value !== '__narr' ? e.target.value : null })}>
+          <select aria-label="말하는 인물" disabled={!canScript} value={f.narration ? '__narr' : f.speaker_id || ''} onChange={(e) => setF({ ...f, narration: e.target.value === '__narr', speaker_id: e.target.value && e.target.value !== '__narr' ? e.target.value : null })}>
             <option value="">(대사 없음)</option>
             {data.characters.map((c) => (
               <option key={c.id} value={c.id}>
@@ -328,8 +350,8 @@ function ShotLine({
             ))}
             <option value="__narr">내레이션</option>
           </select>
-          <input aria-label="대사" value={f.dialogue} maxLength={300} placeholder={f.speaker_id || f.narration ? '대사' : '대사가 있으면 먼저 인물을 고르세요'} onChange={(e) => setF({ ...f, dialogue: e.target.value })} />
-          <select aria-label="감정" className="ws-mini" value={f.emotion} onChange={(e) => setF({ ...f, emotion: e.target.value })}>
+          <input aria-label="대사" disabled={!canScript} value={f.dialogue} maxLength={300} placeholder={f.speaker_id || f.narration ? '대사' : '대사가 있으면 먼저 인물을 고르세요'} onChange={(e) => setF({ ...f, dialogue: e.target.value })} />
+          <select aria-label="감정" className="ws-mini" disabled={!canEdit} value={f.emotion} onChange={(e) => setF({ ...f, emotion: e.target.value })}>
             {[...EMOTIONS, ...(f.emotion && !EMOTIONS.includes(f.emotion) ? [f.emotion] : [])].map((x) => (
               <option key={x} value={x}>
                 {x || '감정'}
@@ -338,7 +360,7 @@ function ShotLine({
           </select>
         </div>
         <div className="ws-line-tools">
-          <button className="text-link" disabled={busyRewrite} onClick={() => setAsk(ask === null ? '' : null)}>
+          <button className="text-link" disabled={busyRewrite || !canScript} onClick={() => setAsk(ask === null ? '' : null)}>
             <Sparkles size={12} /> AI로 고치기
           </button>
           <JobBadge jobs={data.jobs} targetId={s.id} kind="rewrite_shot" />
@@ -347,7 +369,7 @@ function ShotLine({
             <i className={s.audio ? 'on' : ''} title="음성">음성</i>
             <i className={s.video ? 'on' : ''} title="영상">영상</i>
           </span>
-          <button className="icon-button" aria-label={`${index + 1}번 컷 지우기`} disabled={ws.busy} onClick={() => void remove()}>
+          <button className="icon-button" aria-label={`${index + 1}번 컷 지우기`} disabled={ws.busy || !canScript} onClick={() => void remove()}>
             <Trash2 size={13} />
           </button>
         </div>

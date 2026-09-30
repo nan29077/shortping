@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, Loader2, Settings2 } from 'lucide-react';
 import type { AiFamily, AiModelOption, StudioEpisode, StudioFeatures, StudioJob, StudioProjectDetail, TeamPerm } from '../../api';
 import { type Choice, type ChoiceKey, type Choices, type ModelMode } from '../parts';
@@ -174,4 +174,34 @@ export function Section({
 // 준비 중(모델 없음 · 가격 미설정) 안내
 export function NotReady({ what }: { what: string }) {
   return <small className="ws-not-ready">{what}은(는) 준비 중이에요. 관리자가 AI 모델과 라마 가격을 정하면 쓸 수 있어요.</small>;
+}
+
+// 전체 화면 창(붓 · 끝 장면 고르기 등)에서 Tab 초점이 창 밖으로 나가지 않게 하고, 닫으면 원래 자리로 돌려줘요.
+export function useFocusTrap<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const box = ref.current;
+    if (!box) return;
+    const before = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      const items = [...box.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter((el) => el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    box.addEventListener('keydown', onKey);
+    return () => {
+      box.removeEventListener('keydown', onKey);
+      before?.focus?.();
+    };
+  }, []);
+  return ref;
 }

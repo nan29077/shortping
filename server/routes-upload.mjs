@@ -10,6 +10,9 @@ import { loadSettings } from './settings.mjs';
 // 외부 제작 영상 업로드 고도화: 분할(이어) 업로드, 썸네일 후보, 자막, 권리·AI 자가 신고.
 export const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 export const CHUNK_BYTES = 8 * 1024 * 1024;
+// 분할 업로드 한도: 한 사람이 동시에 열어 둘 수 있는 업로드 수, 이만큼 조각이 오지 않으면 만료
+export const MAX_OPEN_UPLOADS = 5;
+const STALE_UPLOAD_MS = 6 * 3600 * 1000;
 
 // SRT·VTT를 검증해 WebVTT로 바꿉니다. 태그는 모두 제거해 안전한 텍스트만 남깁니다.
 export function toVtt(text) {
@@ -78,6 +81,12 @@ export function uploadRoutes({
       })
       .parse(req.body);
     if (b.size > MAX_VIDEO_BYTES) fail(400, '영상은 회차당 최대 500MB까지 올릴 수 있어요.');
+    // 한 사람이 동시에 열어 둘 수 있는 분할 업로드는 최대 MAX_OPEN_UPLOADS개입니다.
+    // 먼저 이 사람의 멈춘(STALE_UPLOAD_MS 동안 조각이 오지 않은) 업로드를 정리하고 개수를 셉니다.
+    await expireStale(req.user.id);
+    const open = await db.get("SELECT COUNT(*) AS n FROM upload_sessions WHERE owner_id=? AND status='open'", [req.user.id]);
+    if (Number(open?.n || 0) >= MAX_OPEN_UPLOADS)
+      fail(429, `동시에 올릴 수 있는 영상은 ${MAX_OPEN_UPLOADS}개까지예요. 진행 중인 업로드를 마치거나 취소한 뒤 다시 시도해 주세요.`);
     const id = randomUUID();
     await writeFile(partPath(id), '');
     await db.run(
@@ -167,14 +176,25 @@ export function uploadRoutes({
     }
     res.json({ ok: true });
   });
-  // 하루 넘게 멈춘 업로드 조각은 정리합니다.
-  const sweep = async () => {
-    const stale = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const rows = await db.all("SELECT id FROM upload_sessions WHERE status='open' AND updated_at<?", [stale]);
+  // 멈춘 업로드(STALE_UPLOAD_MS 동안 조각이 오지 않음)는 조각 파일을 지우고 '만료'로 바꿉니다.
+  async function expireStale(ownerId = null) {
+    const stale = new Date(Date.now() - STALE_UPLOAD_MS).toISOString();
+    const rows = await db.all(
+      "SELECT id FROM upload_sessions WHERE status='open' AND updated_at<?" + (ownerId ? ' AND owner_id=?' : ''),
+      ownerId ? [stale, ownerId] : [stale],
+    );
     for (const r of rows) {
+      if (writing.has(r.id)) continue;
       await rm(partPath(r.id), { force: true });
-      await db.run("UPDATE upload_sessions SET status='expired' WHERE id=?", [r.id]);
+      await db.run("UPDATE upload_sessions SET status='expired',updated_at=? WHERE id=? AND status='open'", [now(), r.id]);
     }
+  }
+  const sweep = async () => {
+    await expireStale();
+    // 끝난 업로드 기록은 30일 뒤 지웁니다(완료된 기록은 결과 파일 주소 참조용으로 남겨 둠).
+    await db.run("DELETE FROM upload_sessions WHERE status IN ('expired','canceled','failed') AND updated_at<?", [
+      new Date(Date.now() - 30 * 86400000).toISOString(),
+    ]);
     for (const f of existsSync(partsDir) ? readdirSync(partsDir) : []) {
       const full = path.join(partsDir, f);
       if (Date.now() - statSync(full).mtimeMs > 48 * 3600 * 1000) await rm(full, { force: true });
@@ -214,6 +234,10 @@ export function uploadRoutes({
     'SELECT 1 FROM studio_props WHERE image=m.url',
     "SELECT 1 FROM studio_projects WHERE style_refs LIKE '%' || m.url || '%'",
     "SELECT 1 FROM studio_library WHERE image=m.url OR data LIKE '%' || m.url || '%'",
+    // 힉스필드 벤치마킹 고도화(2026-09-29): 컷 끝 장면 이미지
+    'SELECT 1 FROM studio_shots WHERE end_image=m.url',
+    // 대본 버전 기록(되돌리기용): 예전 컷 목록(JSON)에 남은 이미지·영상·음성도 지우지 않습니다.
+    "SELECT 1 FROM studio_script_versions WHERE shots LIKE '%' || m.url || '%'",
   ];
   const orphanWhere = `m.created_at<? AND ${referenced.map((q) => `NOT EXISTS (${q})`).join(' AND ')}`;
   const cutoffFor = (days) => new Date(Date.now() - days * 86400000).toISOString();

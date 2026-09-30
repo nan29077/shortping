@@ -199,6 +199,10 @@ test('subscription pool follows server-recorded plays by subscribers, not client
   assert.equal((await fetch(`${base}/api/play/midnight/4`, { headers: { cookie: v.cookie } })).status, 200);
   assert.equal((await fetch(`${base}/api/play/midnight/4`, { headers: { cookie: v.cookie, range: 'bytes=100-' } })).status, 206);
   assert.equal((await fetch(`${base}/api/play/midnight/1`, { headers: { cookie: v.cookie } })).status, 200);
+  // 재생 시작만으로는 배분에 들어가지 않고, 회차 길이의 30% 이상을 본 시청 위치 보고가 와야 인정된다(12초 중 4초).
+  // 실제로 흐른 시간도 기준 시간의 절반(1.8초) 이상이어야 한다.
+  await sleep(2000);
+  assert.equal((await request('/history', { method: 'POST', cookie: v.cookie, body: { dramaId: 'midnight', episode: 4, progress: 4 } })).status, 200);
   // 작품 소유자(PD)가 자기 작품을 재생해도, 화면이 보낸 시청 기록(60화)을 넣어도 가중치가 되지 않는다.
   await fetch(`${base}/api/play/midnight/8`, { headers: { cookie: pd } });
   await request('/history', { method: 'POST', cookie: pd, body: { dramaId: 'midnight', episode: 12, progress: 1 } });

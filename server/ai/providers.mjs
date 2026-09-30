@@ -60,6 +60,8 @@ async function openaiImage(base, key, model, input) {
             form.set('prompt', input.prompt);
             form.set('size', aspectSize[input.aspect] || '1024x1536');
             refs.slice(0, 4).forEach((r, i) => form.append('image[]', new Blob([r.buffer], { type: r.mime }), `ref${i}.${r.ext || 'png'}`));
+            // 부분 수정 붓(흑백 마스크: 흰색 = 고칠 곳)은 마지막 참고 이미지로 함께 보냅니다(프롬프트에 설명이 있음).
+            if (input.maskImage?.buffer) form.append('image[]', new Blob([input.maskImage.buffer], { type: 'image/png' }), 'mask.png');
             return form;
           })(),
         })
@@ -213,6 +215,7 @@ const gemini = {
     const spoken = capability === 'tts' && ttsStyle(input) ? `${ttsStyle(input)} 말해 주세요: ${input.text}` : input.prompt || input.text;
     const parts = [{ text: spoken }];
     if (capability === 'image' || capability === 'text') for (const r of refList(input).slice(0, capability === 'text' ? 4 : 3)) parts.push({ inlineData: { mimeType: r.mime, data: r.buffer.toString('base64') } });
+    if (capability === 'image' && input.maskImage?.buffer) parts.push({ inlineData: { mimeType: 'image/png', data: input.maskImage.buffer.toString('base64') } });
     const generationConfig =
       capability === 'image'
         ? { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: input.aspect || '9:16' } }
@@ -294,9 +297,14 @@ function genericInput(capability, input, modelId = '', numeric = false) {
       aspect_ratio: input.aspect || '9:16',
       image_size: input.aspect === '16:9' ? 'landscape_16_9' : input.aspect === '1:1' ? 'square_hd' : 'portrait_16_9',
       ...(refs.length ? { image_url: dataUri(refs[0].buffer, refs[0].mime), image_urls: refs.slice(0, 4).map((r) => dataUri(r.buffer, r.mime)) } : {}),
+      // 부분 수정(인페인팅 모델): 흰색 = 고칠 곳
+      ...(input.maskImage?.buffer ? { mask_url: dataUri(input.maskImage.buffer, 'image/png') } : {}),
       ...seed,
     };
   }
+  // 화질 올리기(2026-09-29): 이미지 · 영상
+  if (capability === 'upscale') return { image_url: dataUri(input.image.buffer, input.image.mime), upscale_factor: Number(input.factor) || 2 };
+  if (capability === 'upscale_video') return { video_url: dataUri(input.video.buffer, input.video.mime), upscale_factor: Number(input.factor) || 2, H264_output: true };
   // 배경음악: 모델마다 길이 칸 이름이 달라 알려진 형식으로 맞춥니다.
   if (capability === 'music') {
     const s = Math.max(5, Math.min(180, Math.round(Number(input.seconds) || 30)));
@@ -341,7 +349,7 @@ function pickOutput(capability, out) {
 }
 const fal = {
   label: 'fal.ai (여러 영상·이미지·음악·효과음 모델 중계)',
-  capabilities: ['image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'],
+  capabilities: ['image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video'],
   base: 'https://queue.fal.run',
   headers: (key) => ({ Authorization: `Key ${key}` }),
   async run({ provider, model, capability, input, key }) {
@@ -371,14 +379,14 @@ const fal = {
     try {
       await call(`${trimBase(provider.base_url, this.base)}/fal-ai/flux/requests/00000000-0000-0000-0000-000000000000/status`, { method: 'GET', headers: this.headers(key), timeout: 20000 });
     } catch (e) {
-      if (e.status === 401) throw e;
+      if (e.status === 401 || e.status === 403) throw e;
     }
     return '키 확인 완료';
   },
 };
 const replicate = {
   label: 'Replicate (여러 모델 중계)',
-  capabilities: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'],
+  capabilities: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video'],
   base: 'https://api.replicate.com/v1',
   async run({ provider, model, capability, input, key }) {
     const base = trimBase(provider.base_url, this.base);
@@ -502,6 +510,8 @@ const kling = {
         prompt: input.prompt,
         duration: String(videoSeconds('kling', input.seconds)),
         ...(input.image ? { image: input.image.buffer.toString('base64') } : { aspect_ratio: input.aspect || '9:16' }),
+        // 끝 장면(마지막 프레임): 시작 이미지가 있을 때만 함께 보낼 수 있어요.
+        ...(input.image && input.endImage ? { image_tail: input.endImage.buffer.toString('base64') } : {}),
       };
     } else if (capability === 'image') {
       path = '/v1/images/generations';
@@ -632,7 +642,7 @@ const dashscope = {
     try {
       await call(`${trimBase(provider.base_url, this.base)}/tasks/00000000-0000-0000-0000-000000000000`, { method: 'GET', headers: bearer(key), timeout: 20000 });
     } catch (e) {
-      if (e.status === 401) throw e;
+      if (e.status === 401 || e.status === 403) throw e;
     }
     return '키 확인 완료';
   },
@@ -704,10 +714,13 @@ export const adapters = {
   dashscope,
   volcengine,
 };
-export const capabilityLabel = { text: '기획·대본', image: '이미지', video: '영상', tts: '음성(TTS)', stt: '자막(음성 인식)', music: '배경음악', sfx: '효과음', lipsync: '입 모양 맞추기' };
-export const unitOf = { text: 'per_1k_tokens', image: 'per_image', video: 'per_second', tts: 'per_1k_chars', stt: 'per_minute', music: 'per_second', sfx: 'per_second', lipsync: 'per_second' };
+export const capabilityLabel = { text: '기획·대본', image: '이미지', video: '영상', tts: '음성(TTS)', stt: '자막(음성 인식)', music: '배경음악', sfx: '효과음', lipsync: '입 모양 맞추기', upscale: '이미지 화질 올리기', upscale_video: '영상 화질 올리기' };
+export const unitOf = { text: 'per_1k_tokens', image: 'per_image', video: 'per_second', tts: 'per_1k_chars', stt: 'per_minute', music: 'per_second', sfx: 'per_second', lipsync: 'per_second', upscale: 'per_image', upscale_video: 'per_second' };
+// 관리자 화면·검증에서 쓰는 전체 작업 목록
+export const CAPABILITIES = Object.keys(capabilityLabel);
 // 새 기능(배경음악·효과음·입 모양)은 최고관리자가 라마 가격을 정한 모델만 PD에게 열립니다(그 전에는 '준비 중').
-export const PRICE_REQUIRED = ['music', 'sfx', 'lipsync'];
+// 화질 올리기(2026-09-29)도 공급사 가격이 해상도·길이에 따라 달라 최고관리자가 라마 가격을 정해야 열립니다.
+export const PRICE_REQUIRED = ['music', 'sfx', 'lipsync', 'upscale', 'upscale_video'];
 
 // 관리자가 한 번에 추가할 수 있는 공급사·모델 프리셋. 가격(USD)은 2026년 7월 공개 가격을 참고한 기본값이며,
 // 모델 ID와 가격은 공급사 문서를 확인해 관리자 화면에서 바로 고칠 수 있습니다.
@@ -757,6 +770,10 @@ export const presets = [
       m('sfx', 'fal-ai/mmaudio-v2', 'MMAudio 영상 맞춤 효과음 (fal)', 'standard', 0.001, 'scene', { max_seconds: 30, image_input: 1 }),
       m('music', 'fal-ai/elevenlabs/music', 'Eleven Music (fal)', 'standard', 0.01, 'emotion', { max_seconds: 180 }),
       m('music', 'fal-ai/lyria2', 'Lyria 2 (fal)', 'draft', 0.003, 'cheap', { max_seconds: 30 }),
+      // 힉스필드 벤치마킹 고도화(2026-09-29): 부분 수정(인페인팅) · 화질 올리기
+      m('image', 'fal-ai/flux-pro/v1/fill', 'FLUX Fill 부분 수정 (fal)', 'standard', 0.05, 'inpaint', { image_input: 1 }),
+      m('upscale', 'fal-ai/topaz/upscale/image', 'Topaz 이미지 화질 올리기 (fal)', 'standard', 0.08, 'poster', { image_input: 1 }),
+      m('upscale_video', 'fal-ai/topaz/upscale/video', 'Topaz 영상 화질 올리기 (fal)', 'standard', 0.02, 'cinematic', { max_seconds: 30 }),
     ],
   },
   {

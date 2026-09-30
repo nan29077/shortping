@@ -840,7 +840,7 @@ test('storage cleanup: default 91 days, admin-set period, only unreferenced old 
   assert.equal(s.status, 200);
   assert.equal(s.data.retention_days, 91);
   assert.equal(s.data.default_days, 91);
-  assert.equal(s.data.checked_places, 25);
+  assert.equal(s.data.checked_places, 27); // 2026-09-29: 컷 끝 장면 이미지 · 대본 버전 기록 추가
   assert.equal((await request('/admin/storage', { cookie: pd })).status, 403);
   // 잘못된 기간은 거절(0=끔, 7~3650)
   assert.equal((await request('/admin/settings', { method: 'PUT', cookie: admin, body: { media_retention_days: 5 } })).status, 400);

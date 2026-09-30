@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { probeMedia, runFfmpeg } from '../media.mjs';
+import { moveFactor, toneGrade } from './direction.mjs';
 
 // 회차 합성: 컷 영상(입 모양 맞춘 영상 > 컷 영상 > 스토리보드 이미지를 카메라 움직임대로 움직인 화면)과
 // 대사 음성·영상 원래 소리·효과음을 컷 길이에 맞춰 섞고, 인트로·엔딩 카드와 배경음악(대사 나올 때 자동으로 줄임)을
@@ -37,27 +38,74 @@ export function subtitlesFor(shots, durations, nameOf, { offset = 0, position = 
   return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n' : '');
 }
 // 스토리보드 이미지를 컷 길이 동안 카메라 움직임대로 움직입니다(프레임 수 N 기준).
-function stillMotion(move, W, H, N) {
+// f: 움직임 강도(약하게 0.55 · 보통 1 · 강하게 1.8). 영상이 없는 컷도 연출 카드에서 고른 움직임을 흉내 내요.
+export function stillMotion(move, W, H, N, f = 1) {
   const zp = (z, x, y) => `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${W}x${H}:fps=30`;
   const cx = "iw/2-(iw/zoom/2)",
     cy = "ih/2-(ih/zoom/2)";
+  const k = (v) => (Math.round(v * f * 10000) / 10000).toString();
+  const edge = (1 + 0.18 * Math.min(1.5, f)).toFixed(3);
   switch (move) {
     case '고정':
+    case '초점 이동':
       return zp('1', cx, cy);
     case '천천히 멀어지기':
-      return zp(`max(1.2-0.2*on/${N},1)`, cx, cy);
+    case '하늘에서 내려다보기':
+      return zp(`max(${1 + 0.2 * f}-${k(0.2)}*on/${N},1)`, cx, cy);
+    case '빠르게 다가가기':
+      return zp(`min(1+${k(0.25)}*on/${Math.max(1, Math.round(N * 0.3))},${1 + 0.25 * f})`, cx, cy);
+    case '현기증 효과':
+      return zp(`min(1+${k(0.3)}*on/${N},${1 + 0.3 * f})`, cx, cy);
     case '왼쪽으로 패닝':
-      return zp('1.18', `(iw-iw/zoom)*(1-on/${N})`, cy);
+      return zp(edge, `(iw-iw/zoom)*(1-on/${N})`, cy);
     case '오른쪽으로 패닝':
-      return zp('1.18', `(iw-iw/zoom)*on/${N}`, cy);
+    case '옆으로 이동':
+      return zp(edge, `(iw-iw/zoom)*on/${N}`, cy);
     case '위로 틸트':
-      return zp('1.18', cx, `(ih-ih/zoom)*(1-on/${N})`);
+      return zp(edge, cx, `(ih-ih/zoom)*(1-on/${N})`);
+    case '아래로 틸트':
+      return zp(edge, cx, `(ih-ih/zoom)*on/${N}`);
     case '핸드헬드':
-      return zp('1.08', `${cx}+sin(on/7)*6`, `${cy}+cos(on/9)*5`);
+      return zp('1.08', `${cx}+sin(on/7)*${k(6)}`, `${cy}+cos(on/9)*${k(5)}`);
+    case '충격 흔들림':
+      return zp('1.1', `${cx}+sin(on*1.9)*${k(14)}*exp(-on/20)`, `${cy}+cos(on*2.3)*${k(12)}*exp(-on/20)`);
     case '따라가기':
-      return zp(`min(1+0.0009*on,1.2)`, `(iw-iw/zoom)*on/${N}`, cy);
+      return zp(`min(1+${k(0.0009)}*on,1.2)`, `(iw-iw/zoom)*on/${N}`, cy);
+    case '인물 주위 돌기':
+      return zp(`1.2+${k(0.04)}*sin(on/${N}*PI)`, `(iw-iw/zoom)*on/${N}`, cy);
+    case '올려다보며 다가가기':
+      return zp(`min(1+${k(0.2)}*on/${N},${1 + 0.2 * f})`, cx, `(ih-ih/zoom)*(1-0.5*on/${N})`);
+    case '위로 올라가기':
+      return zp(`max(${1 + 0.25 * f}-${k(0.25)}*on/${N},1)`, cx, `(ih-ih/zoom)*(1-on/${N})`);
+    case '내려오며 다가가기':
+      return zp(`min(1+${k(0.2)}*on/${N},${1 + 0.2 * f})`, cx, `(ih-ih/zoom)*0.5*on/${N}`);
+    case '어깨 너머 다가가기':
+      return zp(`min(1+${k(0.18)}*on/${N},${1 + 0.18 * f})`, `(iw-iw/zoom)*(0.35+0.15*on/${N})`, cy);
     default:
-      return zp('min(zoom+0.0012,1.2)', cx, cy);
+      return zp(`min(zoom+${k(0.0012)},${1 + 0.2 * f})`, cx, cy);
+  }
+}
+// 컷 효과(2026-09-29): 색·흐림은 필터로, 충격 줌·심장 박동·흔들림은 화면 확대로 만듭니다(라마 들지 않음).
+export const EFFECT_NAMES = { flashback: '회상', dream: '꿈결', tension: '긴장', shock_zoom: '충격 줌', heartbeat: '심장 박동', shake: '흔들림', mono: '흑백' };
+export function effectFilter(effect, W, H) {
+  const zp = (z, x = "iw/2-(iw/zoom/2)", y = "ih/2-(ih/zoom/2)") => `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${W}x${H}:fps=30`;
+  switch (effect) {
+    case 'flashback':
+      return 'hue=s=0.25,eq=brightness=0.05:contrast=0.95,gblur=sigma=0.8,vignette=PI/4';
+    case 'dream':
+      return 'gblur=sigma=1.6,eq=brightness=0.07:saturation=0.85,vignette=PI/5';
+    case 'tension':
+      return 'eq=saturation=0.55:contrast=1.18:brightness=-0.03,vignette=PI/3.5';
+    case 'mono':
+      return 'hue=s=0,eq=contrast=1.1';
+    case 'shock_zoom':
+      return zp('if(lt(on,6),1+0.12*on/6,1.12)');
+    case 'heartbeat':
+      return zp('1.03+0.03*abs(sin(on*PI/20))');
+    case 'shake':
+      return zp('1.08', 'iw/2-(iw/zoom/2)+sin(on*1.7)*10', 'ih/2-(ih/zoom/2)+cos(on*2.1)*8');
+    default:
+      return '';
   }
 }
 const exists = (file) => file && existsSync(file);
@@ -76,7 +124,7 @@ export async function composeEpisode({
 }) {
   if (!shots.length) throw Object.assign(new Error('대본(컷)이 없어요. 대본을 먼저 만들어 주세요.'), { status: 400 });
   const missing = shots.findIndex((s) => !s.video && !s.image && !s.lipsync);
-  if (missing >= 0) throw Object.assign(new Error(`${missing + 1}번째 컷에 영상이나 스토리보드 이미지가 없어요.`), { status: 400 });
+  if (missing >= 0) throw Object.assign(new Error(`${missing + 1}번째 컷에 영상이나 컷 이미지가 없어요.`), { status: 400 });
   const [W, H] = RESOLUTIONS[resolution] || RESOLUTIONS['720p'];
   const file = (url) => (url ? path.join(uploadDir, path.basename(url)) : '');
   const work = path.join(tmpdir(), 'shortping-compose', randomUUID());
@@ -138,9 +186,13 @@ export async function composeEpisode({
         .filter(Boolean)
         .join(',');
       const base = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}`;
+      const effect = effectFilter(shot.effect, W, H);
+      // 시간과 색감 중 '색감'(따뜻한 · 차가운 · 빛바랜 필름)은 합성할 때 색 보정으로 한 번 더 맞춰요(라마 들지 않음).
+      const grade = toneGrade(shot.tone);
+      const tail = `${grade ? ',' + grade : ''}${effect ? ',' + effect : ''}${fx ? ',' + fx : ''},format=yuv420p`;
       const vf = clip
-        ? `${base},fps=30,tpad=stop_mode=clone:stop_duration=${d},trim=duration=${d},setpts=PTS-STARTPTS${fx ? ',' + fx : ''},format=yuv420p`
-        : `${base},${stillMotion(shot.camera_move, W, H, Math.max(1, Math.round(d * 30)))},trim=duration=${d},setpts=PTS-STARTPTS${fx ? ',' + fx : ''},format=yuv420p`;
+        ? `${base},fps=30,tpad=stop_mode=clone:stop_duration=${d},trim=duration=${d},setpts=PTS-STARTPTS${tail}`
+        : `${base},${stillMotion(shot.camera_move, W, H, Math.max(1, Math.round(d * 30)), moveFactor(shot.move_strength))},trim=duration=${d},setpts=PTS-STARTPTS${tail}`;
       // 이미지는 30fps로 읽어야 움직임이 컷 길이와 정확히 맞습니다(기본 25fps면 약 17% 짧아짐).
       const inputs = clip ? ['-i', clip] : ['-framerate', '30', '-loop', '1', '-t', String(d), '-i', still];
       const extra = [];

@@ -47,7 +47,8 @@ export async function call(url, { method = 'POST', headers = {}, json, body, tim
       if (typeof message !== 'string') message = JSON.stringify(message);
     } catch {}
     throw new VendorError(`AI 공급사 오류(${res.status}): ${snippet(message)}`, {
-      status: res.status === 401 || res.status === 403 ? 401 : 502,
+      // 401은 키 오류(바로 차단), 403은 이 모델·지역·정책에 대한 거절이라 따로 다뤄요(키는 멀쩡할 수 있음).
+      status: res.status === 401 ? 401 : res.status === 403 ? 403 : 502,
       // 인증·요청 형식 오류는 다시 시도해도 같으므로 재시도하지 않습니다.
       retryable: res.status === 429 || res.status >= 500,
       transient: res.status === 429 || res.status >= 500,

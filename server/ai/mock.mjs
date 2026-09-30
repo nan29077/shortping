@@ -70,6 +70,11 @@ function mockText(input) {
         dialogue: speaker ? `${['이게 무슨 뜻이야?', '처음부터 알고 있었어.', '이제 와서 왜 그래?', '우리 다시 시작할 수 있을까?', '문 열어. 네가 누군지 알아.'][i % 5]}` : '',
         speaker,
         camera: ['클로즈업', '미디엄', '트래킹', '와이드', '오버 더 숄더'][i % 5],
+        // 연출(2026-09-29): 앵글·화면 느낌도 AI가 미리 채워요(사전에 없는 값은 저장할 때 비워짐)
+        angle: ['눈높이', '올려다봄', '', '내려다봄', '어깨 너머'][i % 5],
+        lens: ['배경 흐림', '', '넓게', '넓게', '망원 압축'][i % 5],
+        light: ['자연광', '', '역광', '측광', ''][i % 5],
+        tone: ['노을', '노을', '', '밤', '비 오는 밤'][i % 5],
         seconds,
       });
       used += seconds;
@@ -160,11 +165,25 @@ function mockText(input) {
         shots: (c.shots || []).slice(0, 8).map((x) => ({ scene: x.scene || '장면', visual: `${x.visual || '장면'} (${a})`, visual_en: `variant ${k + 1}`, dialogue: x.dialogue ? `${x.dialogue} (${a})`.slice(0, 300) : '', speaker: '', cast: [], camera: '미디엄', camera_move: '고정', emotion: '', sfx: '', seconds: Number(x.seconds || 4) })),
       })),
     };
+  if (input.purpose === 'verify_video') {
+    const faces = (c.names || []).map((name) => ({ name, match: /영상 얼굴/.test(String(c.visual || '')) ? 52 : 90 }));
+    if (/영상 문제/.test(String(c.visual || ''))) return { ok: false, score: 55, issues: [{ code: 'drift', text: '끝 장면에서 옷 색이 바뀌어요', frame: 3 }], faces, summary: '영상 중간에 외형이 바뀌어요' };
+    if (c.dialogue && /입 안 움직/.test(String(c.visual || ''))) return { ok: false, score: 66, issues: [{ code: 'lipsync', text: '대사가 있는데 입이 움직이지 않아요', frame: 2 }], faces, summary: '입 모양을 맞추는 것이 좋아요' };
+    return { ok: true, score: 86, issues: [], faces, summary: '영상이 자연스러워요' };
+  }
   if (input.purpose === 'verify') {
     const bad = /MOCK_BAD|이상한/.test(String(c.visual || ''));
+    const faceOff = /얼굴이 다른/.test(String(c.visual || ''));
+    const faceLow = /MOCK_FACE/.test(String(c.visual || ''));
+    const faces = (c.names || []).map((name, i) => ({ name, match: (faceOff || faceLow) && i === 0 ? 45 : 91 }));
+    // 고정 요소를 어긴 경우(테스트용: 묘사에 '고정 위반')
+    if ((c.locks || []).length && /고정 위반/.test(String(c.visual || ''))) return { ok: false, score: 64, people: c.people, issues: [{ code: 'lock', text: `고정한 외형과 달라요: ${c.locks[0]}` }], faces, summary: '고정 요소를 지키지 않았어요' };
+    // 전체 품질은 괜찮지만 인물 닮음만 낮은 경우
+    if (faceLow) return { ok: true, score: 82, people: c.people, issues: [], faces, summary: '구도는 좋지만 인물 얼굴이 조금 달라 보여요' };
+    if (faceOff) return { ok: false, score: 60, people: c.people, issues: [{ code: 'face', text: `${c.names?.[0] || '인물'} 얼굴이 기준과 달라 보여요`, box: [30, 8, 40, 26] }], faces, summary: '인물 얼굴을 다시 맞추는 것이 좋아요' };
     return bad
-      ? { ok: false, score: 42, people: c.people, issues: [{ code: 'anatomy', text: '손가락이 어색하게 뭉개졌어요' }, { code: 'text', text: '화면 구석에 글자가 보여요' }], summary: '다시 만드는 것이 좋아요' }
-      : { ok: true, score: 88, people: c.people, issues: [], summary: '인물 · 구도 모두 자연스러워요' };
+      ? { ok: false, score: 42, people: c.people, issues: [{ code: 'anatomy', text: '손가락이 어색하게 뭉개졌어요', box: [60, 55, 22, 18] }, { code: 'text', text: '화면 구석에 글자가 보여요', box: [0, 88, 30, 12] }], faces, summary: '다시 만드는 것이 좋아요' }
+      : { ok: true, score: 88, people: c.people, issues: [], faces, summary: '인물 · 구도 모두 자연스러워요' };
   }
   if (input.purpose === 'translate') return { items: (c.items || []).map((x) => ({ id: x.id, en: `EN: ${String(x.ko).slice(0, 200)}` })) };
   if (input.purpose === 'rewrite') {
@@ -276,6 +295,10 @@ function mockAssistant(c) {
   if (/음악|BGM|bgm/.test(msg)) actions.push({ type: 'music', target: `E${ep}`, mood: msg.slice(0, 60), reason: '분위기에 맞는 음악을 만들어요' });
   if (/검수/.test(msg)) actions.push(all ? { type: 'batch_verify_shot', target: `E${ep}`, reason: '컷 이미지를 모두 검수해요' } : { type: 'verify_shot', target, reason: '컷 이미지를 검수해요' });
   if (/사이 컷|연결 컷/.test(msg)) actions.push({ type: 'bridge_shot', target, instruction: quoted ? quoted[1] : '', reason: '장면 사이에 짧은 연결 컷을 넣어요' });
+  if (/연출|카메라/.test(msg)) {
+    const preset = ['로맨틱 클로즈업', '감정 대화', '긴장 추적', '고백 장면', '첫 등장', '반전 공개', '긴장 대치', '추격', '충격의 순간', '회상', '장소 소개'].find((x) => msg.includes(x.replace(' 장면', ''))) || (/극적|강하게/.test(msg) ? '반전 공개' : '평범한 대화');
+    actions.push({ type: 'edit_direction', targets: all ? (c.shots || []).map((x) => x.ref) : [target], preset, reason: '연출 세트를 적용해요' });
+  }
   if (/없는컷|엉뚱/.test(msg)) actions.push({ type: 'shot_image', target: 'E99S99' });
   return {
     reply: actions.length ? `요청하신 내용을 ${actions.length}가지 작업으로 정리했어요. 확인하고 실행을 눌러 주세요.` : '좋은 질문이에요. 지금 회차는 첫 컷의 긴장감이 좋아요. 구체적으로 바꾸고 싶은 컷 번호와 내용을 말씀해 주시면 계획을 만들어 드릴게요.',
@@ -296,7 +319,7 @@ async function temp(ext) {
 
 export const mockAdapter = {
   label: '개발용 가짜 AI (키 없이 전체 흐름 확인)',
-  capabilities: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync'],
+  capabilities: ['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video'],
   base: '',
   async run({ capability, input }) {
     const delay = Number(process.env.AI_MOCK_DELAY_MS || 0);
@@ -309,13 +332,34 @@ export const mockAdapter = {
     if (capability === 'video') return { status: 'pending', ref: JSON.stringify({ seconds: input.seconds || 5, seed: input.prompt || '', image: input.image ? input.image.buffer.toString('base64') : '' }) };
     if (capability === 'image') {
       const out = await temp('.jpg');
-      const source = input.refImage ? await temp('.jpg') : await posterFile(input.prompt);
-      if (input.refImage) await writeFile(source, input.refImage.buffer);
+      // 부분 수정은 원본(editImage)을, 참고 이미지 하나로 만들 때는 그 이미지를 바탕으로 색만 바꿉니다.
+      const from = input.editImage || input.refImage;
+      const source = from ? await temp('.jpg') : await posterFile(input.prompt);
+      if (from) await writeFile(source, from.buffer);
       await runFfmpeg(['-i', source, '-vf', `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,hue=h=${hash(input.prompt) % 360}:s=0.9`, '-frames:v', '1', '-q:v', '4', out]);
       const data = await readFile(out);
       await rm(out, { force: true });
-      if (input.refImage) await rm(source, { force: true });
+      if (from) await rm(source, { force: true });
       return { status: 'done', result: { data, mime: 'image/jpeg' } };
+    }
+    // 화질 올리기: 1080×1920으로 키워 돌려줍니다(가짜라 선명해지지는 않아요).
+    if (capability === 'upscale') {
+      const src = await temp('.' + (input.image.ext || 'jpg')),
+        out = await temp('.jpg');
+      await writeFile(src, input.image.buffer);
+      await runFfmpeg(['-i', src, '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920', '-frames:v', '1', '-q:v', '3', out]);
+      const data = await readFile(out);
+      await Promise.all([src, out].map((f) => rm(f, { force: true })));
+      return { status: 'done', result: { data, mime: 'image/jpeg' } };
+    }
+    if (capability === 'upscale_video') {
+      const src = await temp('.mp4'),
+        out = await temp('.mp4');
+      await writeFile(src, input.video.buffer);
+      await runFfmpeg(['-i', src, '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-c:a', 'copy', '-movflags', '+faststart', out], 180000);
+      const data = await readFile(out);
+      await Promise.all([src, out].map((f) => rm(f, { force: true })));
+      return { status: 'done', result: { data, mime: 'video/mp4' } };
     }
     if (capability === 'tts') {
       const seconds = Math.min(15, Math.max(1, String(input.text || '').length / 6));

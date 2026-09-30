@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Gift, History, Package, Plus, Settings2, Sparkles, Trash2, Wallet } from 'lucide-react';
 import { api, lama, lamaTypeLabel, moment, won, type AdminLama, type LamaProduct } from './api';
 import { Empty, Modal } from './App';
+import NumberInput from './NumberInput';
 
 // 슈퍼관리자 · 라마 관리: 현황, 충전 상품, 지급·회수, 지갑·내역, 전환·체험 정책
 type Tab = 'overview' | 'products' | 'adjust' | 'policy';
@@ -238,7 +239,7 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
                 </label>
                 <label>
                   라마
-                  <input type="number" min={1} value={adjust.lama} onChange={(e) => setAdjust({ ...adjust, lama: Number(e.target.value) })} />
+                  <NumberInput min={1} value={adjust.lama} onChange={(e) => setAdjust({ ...adjust, lama: Number(e.target.value) })} />
                 </label>
               </div>
               <label>
@@ -270,15 +271,15 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
             <div className="form-columns">
               <label>
                 체험 라마 (PD 첫 방문)
-                <input type="number" min={0} max={100000} required value={policy.lama_signup_bonus} onChange={(e) => setPolicy({ ...policy, lama_signup_bonus: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
+                <NumberInput min={0} max={100000} required value={policy.lama_signup_bonus} onChange={(e) => setPolicy({ ...policy, lama_signup_bonus: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
               </label>
               <label>
                 전환 최소 금액 (원)
-                <input type="number" min={0} required value={policy.lama_convert_min} onChange={(e) => setPolicy({ ...policy, lama_convert_min: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
+                <NumberInput min={0} required value={policy.lama_convert_min} onChange={(e) => setPolicy({ ...policy, lama_convert_min: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
               </label>
               <label>
                 전환 보너스 (%)
-                <input type="number" min={0} max={50} step={0.5} required value={policy.lama_convert_bonus_rate} onChange={(e) => setPolicy({ ...policy, lama_convert_bonus_rate: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
+                <NumberInput min={0} max={50} step={0.5} required value={policy.lama_convert_bonus_rate} onChange={(e) => setPolicy({ ...policy, lama_convert_bonus_rate: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })} />
               </label>
             </div>
             <div className="info-box">
@@ -308,15 +309,15 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
             <div className="form-columns">
               <label>
                 가격 (원)
-                <input type="number" min={1000} value={editing.price} onChange={(e) => setEditing({ ...editing, price: Number(e.target.value), lama: Math.floor(Number(e.target.value) / 10) })} />
+                <NumberInput min={1000} value={editing.price} onChange={(e) => setEditing({ ...editing, price: Number(e.target.value), lama: Math.floor(Number(e.target.value) / 10) })} />
               </label>
               <label>
                 라마
-                <input type="number" min={1} value={editing.lama} onChange={(e) => setEditing({ ...editing, lama: Number(e.target.value) })} />
+                <NumberInput min={1} value={editing.lama} onChange={(e) => setEditing({ ...editing, lama: Number(e.target.value) })} />
               </label>
               <label>
                 보너스 라마
-                <input type="number" min={0} value={editing.bonus_lama} onChange={(e) => setEditing({ ...editing, bonus_lama: Number(e.target.value) })} />
+                <NumberInput min={0} value={editing.bonus_lama} onChange={(e) => setEditing({ ...editing, bonus_lama: Number(e.target.value) })} />
               </label>
             </div>
             <div className="form-columns">
@@ -326,7 +327,7 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
               </label>
               <label>
                 순서
-                <input type="number" min={0} max={999} value={editing.sort_order} onChange={(e) => setEditing({ ...editing, sort_order: Number(e.target.value) })} />
+                <NumberInput min={0} max={999} value={editing.sort_order} onChange={(e) => setEditing({ ...editing, sort_order: Number(e.target.value) })} />
               </label>
               <label className="inline-check">
                 <input type="checkbox" checked={editing.active} onChange={(e) => setEditing({ ...editing, active: e.target.checked })} />

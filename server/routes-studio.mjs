@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { loadSettings } from './settings.mjs';
+import { publicChannel, publicDrama } from './public-fields.mjs';
+import { maskRows, openRow, sealAccount } from './bank-secret.mjs';
 import {
   balanceOf,
   breakdown,
@@ -41,7 +43,7 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
           [row.id],
         )
       ).map((d) => d.image);
-    res.json(rows);
+    res.json(rows.map(publicChannel));
   });
   app.get('/api/channels/:id', async (req, res) => {
     const channel = await db.get(channelSelect + ' WHERE c.id=? OR c.slug=?', [
@@ -52,13 +54,15 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     if (!channel || (channel.status !== 'active' && !owner))
       fail(404, '방송국을 찾을 수 없습니다.');
     res.json({
-      ...channel,
+      ...(owner ? channel : publicChannel(channel)),
       categories: await categoriesOf(channel.id),
-      dramas: await db.all(
-        catalogSql +
-          " WHERE d.channel_id=? AND d.status='published' ORDER BY d.created_at DESC, d.views DESC",
-        [channel.id],
-      ),
+      dramas: (
+        await db.all(
+          catalogSql +
+            " WHERE d.channel_id=? AND d.status='published' ORDER BY d.created_at DESC, d.views DESC",
+          [channel.id],
+        )
+      ).map(publicDrama),
       following: req.user
         ? !!(await db.get('SELECT user_id FROM channel_follows WHERE user_id=? AND channel_id=?', [
             req.user.id,
@@ -185,13 +189,15 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     });
     res.json({ ok: true });
   });
+  const MAX_CATEGORIES = 30;
   app.post('/api/studio/channel/categories', roles('pd', 'admin'), async (req, res) => {
     const b = z.object({ name: z.string().trim().min(1).max(20) }).parse(req.body);
     await db.transaction(async () => {
       const channel = await myChannel(req.user.id);
       if (!channel) fail(400, '방송국을 먼저 개설해 주세요.');
       const list = await categoriesOf(channel.id);
-      if (list.length >= 12) fail(400, '카테고리는 최대 12개까지 만들 수 있어요.');
+      if (list.length >= MAX_CATEGORIES)
+        fail(400, `카테고리는 최대 ${MAX_CATEGORIES}개까지 만들 수 있어요.`);
       if (list.some((c) => c.name === b.name)) fail(409, '이미 있는 카테고리입니다.');
       await db.run(
         'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?)',
@@ -217,11 +223,32 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     if (!drama) fail(404, '작품을 찾을 수 없습니다.');
     if (req.user.role !== 'admin' && drama.owner_id !== req.user.id)
       fail(403, '본인 작품만 수정할 수 있습니다.');
-    const b = z.object({ category_id: z.string().nullable() }).parse(req.body);
+    // category_name을 보내면 그 이름의 카테고리를 찾거나(없으면 만들어) 바로 진열해요.
+    const b = z
+      .object({
+        category_id: z.string().nullable().optional(),
+        category_name: z.string().trim().min(1).max(20).optional(),
+      })
+      .refine((x) => x.category_id !== undefined || x.category_name, '진열할 카테고리를 골라 주세요.')
+      .parse(req.body);
+    let createdId = null;
     await db.transaction(async () => {
       const channel = await myChannel(drama.owner_id);
       if (!channel) fail(400, '방송국을 먼저 개설해 주세요.');
-      if (b.category_id) {
+      if (b.category_name) {
+        const list = await categoriesOf(channel.id);
+        const found = list.find((c) => c.name === b.category_name);
+        if (found) b.category_id = found.id;
+        else {
+          if (list.length >= MAX_CATEGORIES)
+            fail(400, `카테고리는 최대 ${MAX_CATEGORIES}개까지 만들 수 있어요.`);
+          b.category_id = createdId = randomUUID();
+          await db.run(
+            'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?)',
+            [createdId, channel.id, b.category_name, list.length],
+          );
+        }
+      } else if (b.category_id) {
         const category = await db.get(
           'SELECT id FROM channel_categories WHERE id=? AND channel_id=?',
           [b.category_id, channel.id],
@@ -230,11 +257,11 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
       }
       await db.run('UPDATE dramas SET channel_id=?,category_id=? WHERE id=?', [
         channel.id,
-        b.category_id,
+        b.category_id || null,
         drama.id,
       ]);
     });
-    res.json({ ok: true });
+    res.json({ ok: true, category_id: b.category_id || null, created: !!createdId });
   });
 
   const taxProfile = async (id) => {
@@ -266,11 +293,11 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     res.json({
       balance: await balanceOf(db, pdId),
       entries,
-      payouts: await db.all(
-        'SELECT * FROM payouts WHERE pd_id=? ORDER BY requested_at DESC LIMIT 100',
-        [pdId],
+      // 출금 내역의 계좌는 가려서, 내 정산 정보(입력 양식)는 본인이므로 전체 번호로 보냅니다.
+      payouts: maskRows(
+        await db.all('SELECT * FROM payouts WHERE pd_id=? ORDER BY requested_at DESC LIMIT 100', [pdId]),
       ),
-      profile: await taxProfile(pdId),
+      profile: openRow(await taxProfile(pdId)),
       settings: {
         platform_fee_rate: await platformRateFor(db, pdId, settings),
         default_platform_fee_rate: settings.platform_fee_rate,
@@ -322,7 +349,8 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
         b.business_item,
         b.tax_email,
         b.bank_name,
-        b.account_number,
+        // 계좌번호는 암호화해 저장합니다(server/bank-secret.mjs).
+        sealAccount(b.account_number),
         b.account_holder,
         b.contact,
         b.address,
@@ -347,7 +375,8 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
     if (!payout || (payout.pd_id !== req.user.id && req.user.role !== 'admin'))
       fail(404, '출금 요청을 찾을 수 없습니다.');
     res.json({
-      ...payout,
+      // 목록·상세에서는 가린 번호만 보냅니다. 관리자는 '계좌 전체 보기'(기록 남김)로 확인합니다.
+      ...maskRows([payout])[0],
       entries: await db.all(
         'SELECT s.*, d.title AS drama_title FROM settlement_entries s LEFT JOIN dramas d ON d.id=s.drama_id WHERE s.payout_id=? ORDER BY s.created_at',
         [payout.id],

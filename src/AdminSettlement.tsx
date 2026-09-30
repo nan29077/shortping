@@ -30,6 +30,8 @@ import {
 import { Empty, Modal, navigate } from './App';
 import { downloadCsv } from './StudioPanels';
 import { entryStatus, payoutStatus } from './Settlement';
+import { RevealAccount } from './AdminOps';
+import NumberInput from './NumberInput';
 
 const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 // setMonth(-1)은 31일에 달을 건너뛰므로(5/31 → 4/31 → 5/1) 1일로 고정해 계산합니다.
@@ -133,7 +135,7 @@ export function AdminSettlementPanel({
               disabled={!payouts.length}
               onClick={() =>
                 downloadCsv('숏핑-출금요청.csv', [
-                  ['신청일', 'PD', '구분', '정산기준액', '부가세', '원천징수', '지급액', '은행', '계좌', '예금주', '상태'],
+                  ['신청일', 'PD', '구분', '정산기준액', '부가세', '원천징수', '지급액', '은행', '계좌(가림)', '예금주', '상태'],
                   ...payouts.filter((p) => p.method !== 'lama').map((p) => [
                     moment(p.requested_at),
                     p.pd_name || '',
@@ -247,7 +249,9 @@ export function AdminSettlementPanel({
             <div className="payout-account">
               <Landmark size={16} />
               <span>
-                {payout.bank_name} {payout.account_number}
+                {payout.bank_name}{' '}
+                {/* 목록에는 가린 번호만 옵니다. 이체할 때 '전체 보기'로 확인하면 운영 기록이 남아요. */}
+                <RevealAccount kind="payout" id={payout.id} masked={payout.account_number} notify={notify} />
               </span>
               <small>예금주 {payout.account_holder}</small>
             </div>
@@ -625,7 +629,7 @@ export function AdminTaxPanel({ notify }: { notify: (s: string) => void }) {
             disabled={!creators.length}
             onClick={() =>
               downloadCsv('숏핑-세무관리.csv', [
-                ['PD', '이메일', '구분', '사업자번호', '상호', '대표자', '업태', '종목', '계좌', '검증', `${data.year}년 지급액`, '부가세', '원천징수'],
+                ['PD', '이메일', '구분', '사업자번호', '상호', '대표자', '업태', '종목', '계좌(가림)', '검증', `${data.year}년 지급액`, '부가세', '원천징수'],
                 ...creators.map((c) => {
                   const paid = paidOf(c.id);
                   return [
@@ -703,7 +707,7 @@ export function AdminTaxPanel({ notify }: { notify: (s: string) => void }) {
                           <>
                             <strong>{c.bank_name}</strong>
                             <small>
-                              {c.account_number} · {c.account_holder}
+                              <RevealAccount kind="tax" id={c.id} masked={c.account_number} notify={notify} /> · {c.account_holder}
                             </small>
                           </>
                         ) : (
@@ -888,18 +892,18 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
         <div className="form-columns">
           <label>
             구독료 (원)
-            <input type="number" min={0} max={1000000} value={form.subscription_price} onChange={number('subscription_price')} required />
+            <NumberInput min={0} max={1000000} value={form.subscription_price} onChange={number('subscription_price')} required />
           </label>
           <label>
             이용 기간 (일)
-            <input type="number" min={1} max={365} value={form.subscription_days} onChange={number('subscription_days')} required />
+            <NumberInput min={1} max={365} value={form.subscription_days} onChange={number('subscription_days')} required />
           </label>
         </div>
         <h4 className="spaced-title">작품 기본값</h4>
         <div className="form-columns">
           <label>
             기본 무료 회차
-            <input type="number" min={1} max={50} value={form.default_free_episodes} onChange={number('default_free_episodes')} required />
+            <NumberInput min={1} max={50} value={form.default_free_episodes} onChange={number('default_free_episodes')} required />
           </label>
         </div>
         <p className="muted settings-note">
@@ -909,29 +913,29 @@ export function AdminSettingsPanel({ notify }: { notify: (s: string) => void }) 
         <div className="form-columns">
           <label>
             플랫폼 수수료 (%)
-            <input type="number" min={0} max={90} step={0.1} value={form.platform_fee_rate} onChange={number('platform_fee_rate')} required />
+            <NumberInput min={0} max={90} step={0.1} value={form.platform_fee_rate} onChange={number('platform_fee_rate')} required />
           </label>
           <label>
             웹 결제(PG) 수수료 (%)
-            <input type="number" min={0} max={20} step={0.1} value={form.pg_fee_rate} onChange={number('pg_fee_rate')} required />
+            <NumberInput min={0} max={20} step={0.1} value={form.pg_fee_rate} onChange={number('pg_fee_rate')} required />
           </label>
           <label>
             판매 확정 (일)
-            <input type="number" min={0} max={90} value={form.settle_hold_days} onChange={number('settle_hold_days')} required />
+            <NumberInput min={0} max={90} value={form.settle_hold_days} onChange={number('settle_hold_days')} required />
           </label>
         </div>
         <div className="form-columns">
           <label>
             최소 출금 금액 (원)
-            <input type="number" min={0} max={10000000} value={form.payout_min} onChange={number('payout_min')} required />
+            <NumberInput min={0} max={10000000} value={form.payout_min} onChange={number('payout_min')} required />
           </label>
           <label>
             원천징수율 (%)
-            <input type="number" min={0} max={30} step={0.1} value={form.withholding_rate} onChange={number('withholding_rate')} required />
+            <NumberInput min={0} max={30} step={0.1} value={form.withholding_rate} onChange={number('withholding_rate')} required />
           </label>
           <label>
             부가세율 (%)
-            <input type="number" min={0} max={30} step={0.1} value={form.vat_rate} onChange={number('vat_rate')} required />
+            <NumberInput min={0} max={30} step={0.1} value={form.vat_rate} onChange={number('vat_rate')} required />
           </label>
         </div>
         <label>
@@ -1069,8 +1073,7 @@ export function AdminPricingPanel({
           <div className="form-columns">
             <label>
               회차 가격 (핑 · 0이면 기본값)
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={1000}
                 disabled={form.free}
@@ -1088,8 +1091,7 @@ export function AdminPricingPanel({
             </label>
             <label>
               무료 회차
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={50}
                 value={form.free_episodes}
@@ -1191,7 +1193,7 @@ export function AdminChannelsPanel({
                   <th>방송국</th>
                   <th>운영 PD</th>
                   <th>작품</th>
-                  <th>구독자</th>
+                  <th>팔로워</th>
                   <th>상태</th>
                   <th>추천</th>
                   <th>관리</th>
@@ -1266,8 +1268,7 @@ export function AdminChannelsPanel({
           </label>
           <label>
             추천 순서 (작을수록 먼저)
-            <input
-              type="number"
+            <NumberInput
               min={0}
               max={99}
               value={editing.featured_order}

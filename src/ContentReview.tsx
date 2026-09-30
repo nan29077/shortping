@@ -16,7 +16,7 @@ import EpisodeReviewQueue from './serial/EpisodeReviewQueue';
 import { EpisodeStatusChip, useSerialToast } from './serial/EpisodeStatus';
 import { asset } from './platform';
 
-// 관리자 · 회차 검수 목록(연재형 공개). 콘텐츠 · 심사 화면에서 바로 쓸 수 있게 여기서도 내보냅니다.
+// 관리자 · 회차 심사 목록(연재형 공개). 콘텐츠 · 심사 화면에서 바로 쓸 수 있게 여기서도 내보냅니다.
 export { EpisodeReviewQueue };
 
 export type ManagedDrama = Drama & {
@@ -102,6 +102,20 @@ export default function ContentReview({
     setManage(true);
   };
   const episode = detail?.episodes.find((e) => e.number === number);
+  // 서버가 확인한 회차: 올릴 때 분석한 길이·가로세로가 있는 영상(개발용 샘플 영상은 예외)
+  const serverChecked = (detail?.episodes || [])
+    .filter((e) => e.video?.startsWith('/demo/') || (Number(e.duration) > 0 && Number(e.width) > 0 && Number(e.height) > 0))
+    .map((e) => e.number);
+  // 이 브라우저에서의 재생·이미지 표시 결과(참고용)
+  const browserWarning = !detail
+    ? ''
+    : mediaError
+      ? mediaError
+      : !posterReady
+        ? '이 브라우저에서 포스터 이미지를 불러오지 못했어요.'
+        : (detail.thumbnails || []).some((thumb) => !thumbnailReady.includes(thumb.id))
+          ? '이 브라우저에서 불러오지 못한 썸네일 후보가 있어요.'
+          : '';
   async function decide(status: 'published' | 'rejected') {
     setBusy(true);
     try {
@@ -201,7 +215,7 @@ export default function ContentReview({
             <div className="info-box serial-info">
               <FileVideo size={16} />
               <span>
-                <b>연재 중인 작품이에요.</b> 다음 회차를 올리고 회차마다 검수를 신청할 수 있어요.
+                <b>연재 중인 작품이에요.</b> 다음 회차를 올리고 회차마다 심사를 신청할 수 있어요.
                 공개 예약과 썸네일 비교도 회차 관리에서 할 수 있어요.
               </span>
               <button className="primary compact" onClick={() => void openManager()}>
@@ -304,9 +318,7 @@ export default function ContentReview({
                     setMediaError('');
                   }}
                   onError={() => {
-                    setMediaError(
-                      `${number}화 영상을 재생할 수 없습니다. 파일을 확인한 뒤 다시 검토해 주세요.`,
-                    );
+                    setMediaError(`이 브라우저에서 ${number}화 영상을 재생하지 못했어요.`);
                     setLoaded((prev) => prev.filter((n) => n !== number));
                   }}
                 >
@@ -324,8 +336,8 @@ export default function ContentReview({
                 <p className="muted">등록된 회차가 없습니다.</p>
               )}
               {mediaError && (
-                <p className="review-alert" role="alert">
-                  {mediaError}
+                <p className="info-box" role="status">
+                  <AlertTriangle size={16} /> {mediaError} 코덱에 따라 이 브라우저만 못 여는 경우가 있어요. 승인 여부는 서버가 확인한 영상 정보로 판단해요.
                 </p>
               )}
               {episode && (
@@ -395,10 +407,27 @@ export default function ContentReview({
                 />
                 포스터·작품 정보·회차 영상을 검토했으며 공개에 동의합니다.
               </label>
+              {/* 승인 가능 여부는 서버가 확인한 파일 정보(길이·가로세로)로 정하고, 이 브라우저에서 재생되는지는 참고용 안내로만 보여 줍니다.
+                  (예: 이 PC 브라우저가 못 여는 코덱이어도 서버 검사와 휴대폰 재생에는 문제가 없을 수 있어요) */}
               <p className="muted">
-                승인하려면 포스터와 모든 회차의 재생 준비 상태를 확인해 주세요. ({loaded.length}/
-                {detail.episodes.length}화)
+                서버 확인 {serverChecked.length}/{detail.episodes.length}화 · 이 브라우저 재생 확인 {loaded.length}/
+                {detail.episodes.length}화
               </p>
+              {serverChecked.length < detail.episodes.length && (
+                <p className="review-alert" role="alert">
+                  서버가 영상 정보(길이·해상도)를 확인하지 못한 회차가 있어요:{' '}
+                  {detail.episodes
+                    .filter((e) => !serverChecked.includes(e.number))
+                    .map((e) => e.number + '화')
+                    .join(', ')}
+                  . PD에게 다시 올려 달라고 요청해 주세요.
+                </p>
+              )}
+              {browserWarning && (
+                <p className="info-box">
+                  <AlertTriangle size={16} /> {browserWarning} 서버 확인은 끝났으니 승인할 수 있지만, 다른 기기에서도 한 번 재생해 보길 권해요.
+                </p>
+              )}
               <div className="form-actions">
                 <button
                   className="secondary"
@@ -413,11 +442,9 @@ export default function ContentReview({
                   disabled={
                     busy ||
                     !checked ||
-                    !posterReady ||
-                    (detail.thumbnails || []).some((thumb) => !thumbnailReady.includes(thumb.id)) ||
                     !!detail.issues.length ||
                     !detail.episodes.length ||
-                    detail.episodes.some((e) => !loaded.includes(e.number))
+                    serverChecked.length < detail.episodes.length
                   }
                   onClick={() => void decide('published')}
                 >

@@ -298,7 +298,7 @@
   text-overflow: ellipsis;
 }
 .home-picked small {
-  font-size: 9px;
+  font-size: 10px;
   color: #81938a;
 }
 .home-picked .icon-button {
@@ -362,7 +362,7 @@
   text-overflow: ellipsis;
 }
 .home-picker-results small {
-  font-size: 9px;
+  font-size: 10px;
   color: #81938a;
 }
 /* 휴대폰 순서 미리보기 */
@@ -644,7 +644,7 @@
   font-size: 11px;
 }
 .home-rotate-schedule small {
-  font-size: 9px;
+  font-size: 10px;
   color: #8fa197;
 }
 .home-rotate-schedule li.now small {

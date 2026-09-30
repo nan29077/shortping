@@ -548,7 +548,16 @@ export async function api<T = unknown>(url: string, method = 'GET', body?: unkno
   if (!res.ok) {
     if (res.status === 401 && url !== '/auth/me' && !url.startsWith('/auth/'))
       window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
-    throw new ApiError(data.error || '요청을 처리하지 못했습니다.', {
+    // 입력 검사 오류(400)는 서버가 첫 번째 문제를 한국어 문장으로 error에 담아 보냅니다.
+    // 예전 형식(일반 문구 + details['항목: 메시지'])으로 오면 첫 번째 상세 문구를 보여 줍니다.
+    const detail =
+      Array.isArray(data?.details) && typeof data.details[0] === 'string'
+        ? String(data.details[0]).replace(/^[\w.]+:\s*/, '')
+        : '';
+    const message =
+      (data?.error && data.error !== '입력 내용을 확인해 주세요.' ? data.error : detail || data?.error) ||
+      '요청을 처리하지 못했습니다.';
+    throw new ApiError(message, {
       code: res.status === 401 ? data.code || 'unauthorized' : data.code,
       need: data.need,
       balance: data.balance,
@@ -640,7 +649,7 @@ export const lamaTypeLabel: Record<string, string> = {
   spend: 'AI 작업 사용',
   release: '예약 반환',
 };
-export type Capability = 'text' | 'image' | 'video' | 'tts' | 'stt' | 'music' | 'sfx' | 'lipsync';
+export type Capability = 'text' | 'image' | 'video' | 'tts' | 'stt' | 'music' | 'sfx' | 'lipsync' | 'upscale' | 'upscale_video';
 export const capabilityLabel: Record<Capability, string> = {
   text: '기획·대본',
   image: '이미지',
@@ -650,6 +659,8 @@ export const capabilityLabel: Record<Capability, string> = {
   music: '배경음악',
   sfx: '효과음',
   lipsync: '입 모양 맞추기',
+  upscale: '이미지 화질 올리기',
+  upscale_video: '영상 화질 올리기',
 };
 export const unitLabel: Record<string, string> = {
   per_1k_tokens: '1천 토큰',
@@ -771,14 +782,19 @@ export type StudioCharacter = {
   outfit?: string;
   refs?: string;
   voice_style?: string;
+  // 3단계 일관성 고정(2026-09-30)
+  hair?: string;
+  body?: string;
+  forbid?: string;
+  locked?: number;
 };
-export type StudioLocation = { id: string; name: string; look: string; look_en: string; look_en_src: string; image: string; sort_order: number };
+export type StudioLocation = { id: string; name: string; look: string; look_en: string; look_en_src: string; image: string; sort_order: number; locked?: number; forbid?: string };
 export type StudioProp = StudioLocation;
 // 인물 관계(JSON) · AI 결과 검수
 export type StudioRelation = { a: string; b: string; kind: string; note: string };
 export type LibraryKind = 'character' | 'location' | 'prop' | 'style';
 export type LibraryItem = { id: string; kind: LibraryKind; name: string; image: string; data: Record<string, unknown>; created_at: string; updated_at: string };
-export type ShotVerify = { ok: boolean; score: number; issues: { code: string; text: string }[]; at: string; image?: string };
+export type ShotVerify = { ok: boolean; score: number; issues: { code: string; text: string; box?: number[] }[]; faces?: { name: string; match: number }[]; summary?: string; at: string; image?: string };
 export type StudioRender = { id: string; kind: 'episode' | 'trailer'; target_id: string; status: string; progress: number; error: string; created_at: string };
 export type StudioShot = {
   id: string;
@@ -816,6 +832,20 @@ export type StudioShot = {
   verify?: string;
   updated_at?: string | null;
   updated_by?: string | null;
+  // 힉스필드 벤치마킹 고도화(2026-09-29)
+  angle?: string;
+  lens?: string;
+  move_strength?: string;
+  end_image?: string;
+  upscaled?: string;
+  effect?: string;
+  // 2단계 연출(2026-09-30)
+  light?: string;
+  tone?: string;
+  height?: string;
+  dof?: string;
+  focal?: number;
+  video_verify?: string; // 5단계 영상 AI 검수 결과(JSON)
 };
 export type StudioEpisode = {
   id: string;
@@ -847,6 +877,7 @@ export type StudioEpisode = {
 export type StudioJob = {
   id: string;
   kind: string;
+  flags?: string; // end_ignored: 고른 영상 모델이 끝 장면 지정을 따르지 않음
   target_type: string;
   target_id: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
@@ -872,6 +903,8 @@ export type StudioAsset = {
   url: string;
   model_label: string;
   created_at: string;
+  batch?: string; // 후보 묶음
+  verify?: string; // 후보 AI 검수(JSON)
 };
 export type StudioProjectDetail = {
   project: StudioProject;
@@ -1153,41 +1186,46 @@ export type AdminLama = {
   wallets: { id: string; name: string; email: string; role: string; paid: number; bonus: number; held: number }[];
   ledger: LamaLedgerRow[];
 };
+// 작업 종류 이름(작업 센터 · 공개 전 점검 · 관리자 화면이 모두 이 목록 하나를 써요)
 export const jobKindLabel: Record<string, string> = {
   plan: '기획안',
-  script: '대본',
-  character_image: '인물 이미지',
-  shot_image: '스토리보드',
-  shot_tts: '대사 음성',
-  shot_video: '컷 영상',
-  poster: '포스터',
-  tool_poster: 'AI 포스터(업로드 작품)',
-  tool_subtitles: '자동 자막',
-  rewrite_shot: '컷 AI 고치기',
-  voice_sample: '목소리 미리듣기',
-  playground: '관리자 시험',
   adapt: '원작 각색',
   bible: '작품 설정집',
   season: '회차별 훅·반전 설계',
-  diagnose: '대본 진단',
-  rewrite_range: '구간 다시 쓰기',
   metadata: '제목·소개 제안',
-  translate: '영어 묘사 준비(무료)',
+  poster: '포스터',
+  thumb_bg: '썸네일 배경',
+  music: '배경음악',
+  script: '대본',
+  diagnose: '대본 진단',
+  rewrite_range: '대본 구간 다시 쓰기',
+  variants: '대본 변형',
+  parse_script: '대본 컷 나누기',
+  reverse_script: '영상에서 대본 뽑기',
+  character_image: '인물 기준 이미지',
   character_ref: '인물 참고 이미지',
   location_image: '장소 이미지',
-  shot_image_edit: '이미지 부분 수정',
+  prop_image: '소품 이미지',
+  voice_sample: '목소리 미리 듣기',
+  voice_preview: '목소리 샘플(무료)',
+  shot_image: '컷 이미지',
+  shot_image_edit: '컷 이미지 부분 수정',
+  shot_upscale: '컷 이미지 화질 올리기',
+  shot_upscale_video: '컷 영상 화질 올리기',
+  shot_tts: '대사 음성',
+  shot_video: '컷 영상',
   shot_lipsync: '입 모양 맞추기',
   shot_sfx: '효과음',
-  music: '배경음악',
-  thumb_bg: '썸네일 배경',
-  voice_preview: '목소리 샘플(무료)',
-  assistant: 'AI 조수(무료)',
-  parse_script: '대본 컷 나누기',
-  prop_image: '소품 이미지',
-  verify_shot: 'AI 검수',
+  rewrite_shot: '컷 AI 고치기',
   bridge_shot: '사이 컷',
-  variants: '대본 변형',
-  reverse_script: '영상에서 대본 뽑기',
+  verify_shot: '컷 AI 검수',
+  verify_asset: '후보 AI 검수',
+  verify_video: '컷 영상 AI 검수',
+  translate: '영어 묘사 준비(무료)',
+  assistant: 'AI 조수(무료)',
+  tool_poster: 'AI 포스터(업로드 작품)',
+  tool_subtitles: '자동 자막',
+  playground: '관리자 시험',
 };
 export const jobStatusLabel: Record<string, string> = {
   queued: '대기 중',

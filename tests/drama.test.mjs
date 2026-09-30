@@ -259,7 +259,7 @@ test('my asset library: save, import into another project, style and limits', as
   assert.equal((await request(`/studio/ai/library/${list[0].id}`, { method: 'DELETE', cookie: pd })).status, 200);
   // 라이브러리 그림은 정리 대상이 아님
   const st = await request('/admin/storage', { cookie: admin });
-  assert.equal(st.data.checked_places, 25);
+  assert.equal(st.data.checked_places, 27); // 2026-09-29: 컷 끝 장면 이미지 · 대본 버전 기록 추가
 });
 
 test('relations: validated, deduplicated and used in script prompts', async () => {

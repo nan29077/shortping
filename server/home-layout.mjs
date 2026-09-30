@@ -38,7 +38,7 @@ export const HOME_SECTIONS = [
   { id: 'binge', name: '정주행 추천', title: '오늘부터 정주행 각', subtitle: '한 번 시작하면 멈출 수 없는 이야기' },
   { id: 'newest', name: '새로 올라온 작품', title: '새로 올라온 이야기', subtitle: '가장 최근 공개된 숏핑 오리지널' },
   { id: 'free', name: '무료 추천', title: '무료로 먼저 만나보세요', subtitle: '첫 화부터 부담 없이 시작하는 작품' },
-  { id: 'followed', name: '구독 방송국 소식', title: '구독 중인 방송국의 새 소식', subtitle: '내가 구독한 방송국의 작품' },
+  { id: 'followed', name: '팔로우 방송국 소식', title: '팔로우한 방송국의 새 소식', subtitle: '내가 팔로우한 방송국의 작품' },
   { id: 'editorial', name: '하단 안내 배너', title: '', subtitle: '' },
 ];
 const SECTION_IDS = HOME_SECTIONS.map((s) => s.id);

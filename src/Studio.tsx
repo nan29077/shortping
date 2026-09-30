@@ -40,6 +40,7 @@ import {
   HardDrive,
   Menu,
   X,
+  Mail,
 } from 'lucide-react';
 import {
   api,
@@ -87,6 +88,9 @@ import {
   AdminTaxPanel,
 } from './AdminSettlement';
 import { asset } from './platform';
+import { MessagingPanel, ReadinessWarnings, SubscriptionRulesPanel } from './AdminOps';
+import { GENRES } from './genres';
+import NumberInput from './NumberInput';
 
 export type StudioData = {
   dramas: Drama[];
@@ -221,6 +225,7 @@ export default function Studio({
           name: '설정 · 기록',
           items: [
             { id: 'policy', name: '요금 · 정산 정책', icon: SlidersHorizontal },
+            { id: 'messaging', name: '이메일 · 문자 발송', icon: Mail },
             { id: 'storage', name: '저장 공간 정리', icon: HardDrive },
             { id: 'audit', name: '운영 기록', icon: ScrollText },
             { id: 'guide', name: '운영 가이드', icon: BookOpen },
@@ -360,9 +365,13 @@ export default function Studio({
         <span className="spinner" />
       </div>
     );
+  // 심사 대기: 새 작품 심사(status=pending)와 연재 중 작품의 추가 회차 심사(pending_episodes)를 함께 봅니다.
+  // 옆 메뉴 숫자와 '심사 대기' 필터가 같은 기준(심사할 것이 있는 작품 수)을 쓰도록 맞춥니다.
+  const needsReview = (d: Drama) => d.status === 'pending' || Number(d.pending_episodes || 0) > 0;
+  const matchesFilter = (d: Drama) => filter === 'all' || (filter === 'pending' ? needsReview(d) : d.status === filter);
   const pending = data.dramas.filter((d) => d.status === 'pending'),
     pendingEpisodes = data.dramas.reduce((sum, d) => sum + Number(d.pending_episodes || 0), 0),
-    pendingCount = pending.length + pendingEpisodes,
+    pendingCount = data.dramas.filter(needsReview).length,
     revenue = data.orders.reduce((sum, o) => sum + orderRevenue(o, admin), 0);
   return (
     <>
@@ -478,6 +487,7 @@ export default function Studio({
         </div>
         {tab === 'overview' && (
           <>
+            {admin && <ReadinessWarnings compact />}
             <div className="stats-grid">
               <Stat
                 icon={<Film size={18} />}
@@ -500,8 +510,8 @@ export default function Studio({
               <Stat
                 icon={<Clock3 size={18} />}
                 label="심사 대기"
-                value={pendingCount + '건'}
-                detail={`작품 ${pending.length}편 · 추가 회차 ${pendingEpisodes}편`}
+                value={pendingCount + '편'}
+                detail={`새 작품 ${pending.length}편 · 추가 회차 ${pendingEpisodes}화`}
               />
             </div>
             <StudioInsights data={data} admin={admin} />
@@ -602,6 +612,7 @@ export default function Studio({
                   onClick={() => setFilter(v)}
                 >
                   {t}
+                  {v === 'pending' && pendingCount > 0 ? ` ${pendingCount}` : ''}
                 </button>
               ))}
             </div>
@@ -624,7 +635,7 @@ export default function Studio({
             {data.dramas
               .filter(
                 (d) =>
-                  (filter === 'all' || d.status === filter) &&
+                  matchesFilter(d) &&
                   (sourceFilter === 'all' || sourceOf(d) === sourceFilter) &&
                   `${d.title} ${d.genre}`.toLowerCase().includes(contentSearch.toLowerCase()),
               )
@@ -632,6 +643,16 @@ export default function Studio({
                 <div key={d.id} className="manage-content">
                   <ContentRow d={d} onClick={() => setReview(d)} />
                   {d.review_note && <div className="review-note">검토 의견: {d.review_note}</div>}
+                  {d.status === 'published' && Number(d.pending_episodes || 0) > 0 && (
+                    <div className="review-note">
+                      추가 회차 {d.pending_episodes}화 심사 대기
+                      {admin && (
+                        <button className="text-link" onClick={() => setReview(d)}>
+                          회차 심사하기
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className="content-tools">
                     {['draft', 'rejected'].includes(d.status) && (
                       <>
@@ -686,7 +707,7 @@ export default function Studio({
               ))}
             {!data.dramas.some(
               (d) =>
-                (filter === 'all' || d.status === filter) &&
+                matchesFilter(d) &&
                 (sourceFilter === 'all' || sourceOf(d) === sourceFilter) &&
                 `${d.title} ${d.genre}`.toLowerCase().includes(contentSearch.toLowerCase()),
             ) && <Empty title="해당 상태의 작품이 없어요" text="새로운 작품을 등록해 보세요." />}
@@ -727,7 +748,13 @@ export default function Studio({
             }}
           />
         )}
-        {tab === 'policy' && admin && <AdminSettingsPanel notify={notify} />}
+        {tab === 'policy' && admin && (
+          <>
+            <AdminSettingsPanel notify={notify} />
+            <SubscriptionRulesPanel notify={notify} />
+          </>
+        )}
+        {tab === 'messaging' && admin && <MessagingPanel notify={notify} />}
         {tab === 'points' && admin && <AdminPoints notify={notify} />}
         {tab === 'ai' && <AiStudio notify={notify} goLama={() => setTab('lama')} />}
         {tab === 'production-guide' && <ProductionGuide go={setTab} notify={notify} />}
@@ -743,7 +770,12 @@ export default function Studio({
         {tab === 'audit' && admin && (
           <StudioAudit logs={data.logs} dramas={data.dramas} users={data.users} />
         )}
-        {tab === 'operations' && admin && <StudioOperations operations={data.operations} />}
+        {tab === 'operations' && admin && (
+          <>
+            <ReadinessWarnings />
+            <StudioOperations operations={data.operations} />
+          </>
+        )}
         {tab === 'home' && admin && <HomeAppearance notify={notify} onAppearance={onAppearance} onHomeLayout={onHomeLayout} />}
         {tab === 'guide' && <StudioGuide admin={admin} onCreate={() => setChooser(true)} />}
         {tab === 'settings' && (
@@ -753,11 +785,12 @@ export default function Studio({
             onUser={onUser}
             notify={notify}
             onHistoryCleared={reloadLibrary}
+            onWithdrawn={() => void logout()}
           />
         )}
         {chooser && (
           <Modal title="새 작품 만들기" close={() => setChooser(false)}>
-            <p className="muted">어떤 방법으로 만들든 같은 검수 절차를 거쳐 공개돼요.</p>
+            <p className="muted">어떤 방법으로 만들든 같은 심사 절차를 거쳐 공개돼요.</p>
             <div className="create-choices">
               <button
                 onClick={() => {
@@ -767,7 +800,7 @@ export default function Studio({
               >
                 <Upload size={26} />
                 <strong>직접 업로드</strong>
-                <span>외부에서 만든 숏폼 드라마 영상을 여러 회차 한 번에 올리고 바로 검수를 신청해요.</span>
+                <span>외부에서 만든 숏폼 드라마 영상을 여러 회차 한 번에 올리고 바로 심사를 신청해요.</span>
               </button>
               <button
                 onClick={() => {
@@ -777,7 +810,7 @@ export default function Studio({
               >
                 <Sparkles size={26} />
                 <strong>숏핑 스튜디오로 AI 제작</strong>
-                <span>기획·대본·캐릭터·음성·영상·썸네일까지 AI로 만들고, 완성 회차를 바로 검수 신청해요. 라마를 사용해요.</span>
+                <span>기획·대본·캐릭터·음성·영상·썸네일까지 AI로 만들고, 완성 회차를 바로 심사 신청해요. 라마를 사용해요.</span>
               </button>
             </div>
           </Modal>
@@ -978,15 +1011,14 @@ function DramaEditor({
           <label>
             장르
             <select value={f.genre} onChange={(e) => setF({ ...f, genre: e.target.value })}>
-              {['로맨스', '스릴러', '판타지', '코미디', '청춘'].map((g) => (
+              {(GENRES.includes(f.genre) ? GENRES : [f.genre, ...GENRES]).map((g) => (
                 <option key={g}>{g}</option>
               ))}
             </select>
           </label>
           <label>
             회차 가격 (핑 · 0이면 기본값)
-            <input
-              type="number"
+            <NumberInput
               value={f.episode_pings}
               min={0}
               max={1000}
@@ -1005,8 +1037,7 @@ function DramaEditor({
           </label>
           <label>
             무료 회차 수
-            <input
-              type="number"
+            <NumberInput
               value={f.free_episodes}
               min={1}
               max={50}

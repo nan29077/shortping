@@ -1,0 +1,98 @@
+/* ── 모델 품질 시험(6단계) ─────────────────────────── */
+.aq {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.aq-table td b.good {
+  color: #c4f562;
+}
+.aq-table td b.bad {
+  color: #ff9b8a;
+}
+.aq-table tr.off td {
+  opacity: 0.55;
+}
+.aq-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.aq-benches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.aq-bench {
+  border: 1px solid #2c3832;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.aq-bench-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aq-bench-head .icon-button {
+  margin-left: auto;
+}
+.aq-prompt {
+  font-size: 12px;
+  color: #aebab2;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.aq-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 8px;
+}
+.aq-result {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.aq-result img,
+.aq-result video,
+.aq-empty {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #0b1012;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: #8a9a90;
+}
+.aq-result figcaption {
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.aq-result figcaption small {
+  color: #8a9a90;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aq-result.failed figcaption span {
+  color: #ff9b8a;
+}
+@media (max-width: 760px) {
+  .aq-benches {
+    grid-template-columns: 1fr;
+  }
+}

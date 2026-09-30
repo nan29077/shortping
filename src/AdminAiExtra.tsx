@@ -17,6 +17,7 @@ import {
 } from './api';
 import { Empty, Modal } from './App';
 import './serial/serial.css';
+import NumberInput from './NumberInput';
 
 type Run = (fn: () => Promise<unknown>, message?: string) => Promise<unknown>;
 const n = (v: unknown) => Number(v) || 0;
@@ -32,9 +33,11 @@ export const ADMIN_CAPS: AdminCap[] = [
   'music',
   'sfx',
   'lipsync',
+  'upscale',
+  'upscale_video',
 ];
-// 배경음악·효과음·입 모양 맞추기는 최고관리자가 라마 가격(고정 단가)을 정해야 PD에게 열립니다.
-export const PRICE_REQUIRED: AdminCap[] = ['music', 'sfx', 'lipsync'];
+// 배경음악·효과음·입 모양 맞추기·화질 올리기는 최고관리자가 라마 가격(고정 단가)을 정해야 PD에게 열립니다.
+export const PRICE_REQUIRED: AdminCap[] = ['music', 'sfx', 'lipsync', 'upscale', 'upscale_video'];
 const extraCapLabel: Record<string, string> = {
   music: '배경음악',
   sfx: '효과음',
@@ -51,6 +54,8 @@ export const capUnit: Record<AdminCap, string> = {
   music: 'per_second',
   sfx: 'per_second',
   lipsync: 'per_second',
+  upscale: 'per_image',
+  upscale_video: 'per_second',
 };
 export const needsPrice = (m: { capability: string; price_lama: number | string }) =>
   PRICE_REQUIRED.includes(m.capability as AdminCap) && !(Number(m.price_lama) > 0);
@@ -292,7 +297,7 @@ export function DiscoverModal({
           cost_usd: Number(cost),
           price_lama: 0,
           tags: [],
-          max_seconds: cap === 'music' ? 180 : cap === 'sfx' || cap === 'lipsync' ? 30 : 10,
+          max_seconds: cap === 'music' ? 180 : cap === 'sfx' || cap === 'lipsync' || cap === 'upscale_video' ? 30 : 10,
           image_input: cap === 'video',
           active: true,
           priority: 50,
@@ -339,8 +344,7 @@ export function DiscoverModal({
         </label>
         <label>
           원가 USD (단위당)
-          <input
-            type="number"
+          <NumberInput
             step="0.0001"
             min={0}
             value={cost}
@@ -387,7 +391,7 @@ export function DiscoverModal({
 
 // ── 라우팅 규칙: 작업 × 품질 등급별로 먼저 쓸 모델 순서 ───────────────
 export function RoutesTab({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run }) {
-  const caps: AdminCap[] = ['text', 'image', 'tts', 'video', 'music', 'sfx', 'lipsync'];
+  const caps: AdminCap[] = ['text', 'image', 'tts', 'video', 'music', 'sfx', 'lipsync', 'upscale', 'upscale_video'];
   const tiers = ['draft', 'standard', 'premium'];
   const [edit, setEdit] = useState<{
     capability: AdminCap;

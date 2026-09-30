@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Clapperboard, Eye, Film, ImageIcon, LayoutTemplate, Megaphone, Send, Sparkles, Tags, Trash2, Wand2 } from 'lucide-react';
 import { api, ApiError, jobKindLabel, lama, parseJson, studioMedia, won, type StudioEpisode } from '../../api';
 import { navigate } from '../../App';
-import { useSyncedForm } from '../hooks';
+import { changedFields, useSyncedForm } from '../hooks';
 import { JobBadge, Versions, isBusy } from '../parts';
 import ThumbStudio from '../ThumbStudio';
 import CardMaker from '../CardMaker';
@@ -10,6 +10,7 @@ import { ModelSettings, Section, episodeStatus, epLabel, runningCount, type WS }
 import { asset } from '../../platform';
 import QualityCheck from './QualityCheck';
 import { ReviewBar } from './TeamParts';
+import NumberInput from '../../NumberInput';
 
 type Meta = { titles: string[]; tagline: string; synopsis: string; hashtags: string[]; episode_titles: { number: number; title: string }[]; at?: string };
 const dramaStatus: Record<string, string> = { draft: '임시저장', pending: '심사 대기', published: '공개 중', rejected: '반려', hidden: '노출 중단' };
@@ -282,7 +283,11 @@ function TrailerSection({ ws }: { ws: WS }) {
   const status = p.trailer_status || '';
   const working = status === 'queued' || status === 'rendering';
   const render = ws.data.renders?.find((r) => r.kind === 'trailer');
-  const shots = ws.data.episodes.flatMap((e) => e.shots.map((s, i) => ({ s, label: `${e.number}화 ${i + 1}` }))).filter((x) => x.s.image || x.s.video || x.s.lipsync);
+  const shots = ws.data.episodes.flatMap((e) => e.shots.map((s, i) => ({ s, ep: e.id, label: `${e.number}화 ${i + 1}` }))).filter((x) => x.s.image || x.s.video || x.s.lipsync);
+  // 컷 고르기는 회차별로 나눠 보여 줘요(회차가 많아도 한 번에 수백 장을 그리지 않도록).
+  const eps = ws.data.episodes.filter((e) => shots.some((x) => x.ep === e.id));
+  const [epView, setEpView] = useState('');
+  const viewEp = eps.some((e) => e.id === epView) ? epView : eps[0]?.id || '';
   return (
     <Section
       title="예고편"
@@ -309,9 +314,18 @@ function TrailerSection({ ws }: { ws: WS }) {
       <button type="button" className="text-link" onClick={() => setChoosing(!choosing)}>
         {choosing ? '컷 고르기 닫기' : `넣을 컷 직접 고르기 ${pick.length ? `(${pick.length}/12)` : '(고르지 않으면 자동)'}`}
       </button>
+      {choosing && eps.length > 1 && (
+        <select aria-label="회차 고르기" value={viewEp} onChange={(e) => setEpView(e.target.value)}>
+          {eps.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.number}화{pick.some((id) => e.shots.some((x) => x.id === id)) ? ` · 고름 ${pick.filter((id) => e.shots.some((x) => x.id === id)).length}` : ''}
+            </option>
+          ))}
+        </select>
+      )}
       {choosing && (
         <div className="ws-pick-grid">
-          {shots.map(({ s, label }) => {
+          {shots.filter((x) => x.ep === viewEp).map(({ s, label }) => {
             const on = pick.includes(s.id);
             return (
               <button
@@ -506,10 +520,14 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
   const [busy, setBusy] = useState(false);
   // 입력한 공개 설정은 이 기기에 임시로 기억해요(화면을 옮겨도 유지).
   const key = `shortping.export.${p.id}`;
+  // 고친 칸만, 그때의 서버 값과 함께 기억해요. 그사이 서버 값이 바뀐 칸(예: AI 제목 적용)은 되살리지 않아요.
   useEffect(() => {
     try {
-      const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
-      if (saved) setF((cur) => ({ ...cur, ...saved }));
+      const saved = JSON.parse(sessionStorage.getItem(key) || 'null') as { base?: Record<string, unknown>; edits?: Record<string, unknown> } | null;
+      if (saved?.edits && saved.base) {
+        const keep = Object.fromEntries(Object.entries(saved.edits).filter(([k]) => JSON.stringify(saved.base?.[k]) === JSON.stringify((initial as Record<string, unknown>)[k])));
+        if (Object.keys(keep).length) setF((cur) => ({ ...cur, ...keep }));
+      }
     } catch {
       // 저장 공간을 쓸 수 없으면 기본값으로 시작해요.
     }
@@ -517,10 +535,13 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
   }, [key]);
   useEffect(() => {
     try {
-      sessionStorage.setItem(key, JSON.stringify(f));
+      const edits = changedFields(f, initial);
+      if (Object.keys(edits).length) sessionStorage.setItem(key, JSON.stringify({ base: initial, edits }));
+      else sessionStorage.removeItem(key);
     } catch {
       // 저장 공간을 쓸 수 없으면 이번 화면에서만 기억해요.
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, f]);
   const tags = f.hashtags
     .split(/[\s,]+/)
@@ -617,11 +638,11 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
         <div className="form-columns">
           <label>
             회차 가격 (핑 · 0이면 기본값)
-            <input type="number" min={0} max={1000} value={f.episode_pings} disabled={f.free} onChange={(e) => setF({ ...f, episode_pings: Math.max(0, Number(e.target.value) || 0) })} />
+            <NumberInput min={0} max={1000} value={f.episode_pings} disabled={f.free} onChange={(e) => setF({ ...f, episode_pings: Math.max(0, Number(e.target.value) || 0) })} />
           </label>
           <label>
             무료 회차 수 {season.paywall_from ? <small className="muted">(시즌 설계: {season.paywall_from}화부터 유료)</small> : null}
-            <input type="number" min={1} max={50} value={f.free_episodes} onChange={(e) => setF({ ...f, free_episodes: Math.min(50, Math.max(1, Number(e.target.value) || 1)) })} />
+            <NumberInput min={1} max={50} value={f.free_episodes} onChange={(e) => setF({ ...f, free_episodes: Math.min(50, Math.max(1, Number(e.target.value) || 1)) })} />
           </label>
           <label className="inline-check">
             <input type="checkbox" checked={f.free} onChange={(e) => setF({ ...f, free: e.target.checked })} />전 회차 무료

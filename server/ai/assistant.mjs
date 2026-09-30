@@ -2,6 +2,7 @@ import { actionNeed, can, ROLE_NAME, needText } from './team.mjs';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { assistantPrompt, assistantSchema, assistantActionSchema, parseJson, ASSISTANT_ACTIONS } from './prompts.mjs';
+import { DIRECTION, CAMERA_MOVES, ANGLE_IDS, LENS_IDS, STRENGTH_IDS, SHOT_EFFECTS, LIGHT_IDS, TONE_IDS, HEIGHT_IDS } from './direction.mjs';
 
 // AI 조수(작업 공간 채팅, 2026-09-24)
 // PD가 말로 요청 → 글쓰기 AI가 '실행 계획'(작업 목록 + 예상 라마)을 제안 → PD가 승인하면 실행 → 직접 고친 내용은 되돌리기 가능.
@@ -16,7 +17,8 @@ const CAP_OF = {
   shot_image: 'image', shot_image_edit: 'image', character_image: 'image', location_image: 'image', batch_shot_image: 'image', poster: 'image',
   shot_video: 'video', batch_shot_video: 'video', shot_tts: 'tts', batch_shot_tts: 'tts', shot_sfx: 'sfx', shot_lipsync: 'lipsync', music: 'music',
   rewrite_shot: 'text', rewrite_range: 'text', script: 'text', diagnose: 'text', metadata: 'text',
-  verify_shot: 'text', batch_verify_shot: 'text', bridge_shot: 'text',
+  verify_shot: 'text', batch_verify_shot: 'text', bridge_shot: 'text', verify_video: 'text', batch_verify_video: 'text',
+  shot_upscale: 'upscale', shot_upscale_video: 'upscale_video', batch_shot_upscale_video: 'upscale_video',
 };
 export const assistantCapOf = CAP_OF;
 const LABEL = {
@@ -24,8 +26,9 @@ const LABEL = {
   shot_lipsync: '입 모양 맞추기', rewrite_shot: '컷 다시 쓰기', rewrite_range: '여러 컷 다시 쓰기', script: '대본 새로 쓰기', diagnose: '대본 진단',
   character_image: '인물 기준 이미지', location_image: '장소 이미지', batch_shot_image: '빈 컷 이미지 모두', batch_shot_tts: '빈 대사 음성 모두',
   batch_shot_video: '빈 컷 영상 모두', music: '배경음악', poster: '포스터', metadata: '제목·소개 추천',
-  verify_shot: 'AI 검수', batch_verify_shot: '컷 이미지 모두 검수', bridge_shot: '사이 컷 넣기',
-  edit_shot: '컷 내용 고치기', edit_character: '인물 설정 고치기', edit_episode: '회차 제목·줄거리 고치기', edit_project: '작품 톤·스타일 고치기',
+  verify_shot: 'AI 검수', batch_verify_shot: '컷 이미지 모두 검수', bridge_shot: '사이 컷 넣기', verify_video: '컷 영상 AI 검수', batch_verify_video: '컷 영상 모두 검수',
+  shot_upscale: '컷 이미지 화질 올리기', shot_upscale_video: '컷 영상 화질 올리기', batch_shot_upscale_video: '회차 영상 모두 화질 올리기',
+  edit_shot: '컷 내용 고치기', edit_direction: '컷 연출 바꾸기', edit_character: '인물 설정 고치기', edit_episode: '회차 제목·줄거리 고치기', edit_project: '작품 톤·스타일 고치기',
 };
 // AI 작업 종류별로 되돌릴 때 원래대로 놓을 칸(작업이 덮어쓰는 칸만)
 const UNDO_COLS = {
@@ -35,6 +38,8 @@ const UNDO_COLS = {
   shot_tts: { table: 'studio_shots', cols: ['audio', 'audio_seconds', 'lipsync'] },
   shot_sfx: { table: 'studio_shots', cols: ['sfx'] },
   shot_lipsync: { table: 'studio_shots', cols: ['lipsync'] },
+  shot_upscale: { table: 'studio_shots', cols: ['image', 'upscaled'] },
+  shot_upscale_video: { table: 'studio_shots', cols: ['video', 'lipsync', 'upscaled'] },
   rewrite_shot: { table: 'studio_shots', cols: ['scene', 'visual', 'dialogue', 'camera', 'seconds', 'emotion', 'camera_move', 'audio', 'audio_seconds', 'lipsync'] },
   character_image: { table: 'studio_characters', cols: ['image'] },
   location_image: { table: 'studio_locations', cols: ['image'] },
@@ -50,6 +55,21 @@ const SHOT_FIELDS = {
   seconds: (v) => Math.min(10, Math.max(2, Math.round(Number(v) || 5))),
   speed: (v) => Math.min(2, Math.max(0.5, Number(v) || 1)),
 };
+// 연출 바꾸기(라마 없음, 장면 권한): 여러 컷에 연출 세트나 값을 한 번에
+const oneOf = (list) => (v) => (list.includes(String(v)) ? String(v) : undefined);
+const DIRECTION_FIELDS = {
+  camera: (v) => String(v).slice(0, 40),
+  camera_move: oneOf(CAMERA_MOVES),
+  angle: oneOf(['', ...ANGLE_IDS]),
+  lens: oneOf(['', ...LENS_IDS]),
+  move_strength: oneOf(STRENGTH_IDS),
+  effect: oneOf(SHOT_EFFECTS),
+  // 2단계(2026-09-30): 조명 · 시간과 색감 · 카메라 높이
+  light: oneOf(['', ...LIGHT_IDS]),
+  tone: oneOf(['', ...TONE_IDS]),
+  height: oneOf(['', ...HEIGHT_IDS]),
+};
+const presetOf = (id) => DIRECTION.presets.find((x) => x.id === id || x.name === String(id || '').trim());
 const CHAR_FIELDS = { description: (v) => String(v).slice(0, 500), look: (v) => String(v).slice(0, 500), voice_style: (v) => String(v).slice(0, 60) };
 const EP_FIELDS = { title: (v) => String(v).slice(0, 70), summary: (v) => String(v).slice(0, 1000) };
 const PROJECT_FIELDS = { tone: (v) => String(v).slice(0, 200), style: (v) => String(v).slice(0, 500) };
@@ -109,6 +129,20 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       if (!Object.keys(fields).length) return bad('바꿀 내용이 없어요.');
       return { ...out, target: s.ref, targetId: s.id, fields, before: Object.fromEntries(Object.keys(fields).map((k) => [k, s[k]])), what: `${s.episode_number}화 ${s.ref.split('S')[1]}번 컷` };
     }
+    if (a.type === 'edit_direction') {
+      const list = (a.targets.length ? a.targets : [a.target]).map((t) => r.shot(t)).filter(Boolean);
+      if (!list.length) return bad('연출을 바꿀 컷을 찾을 수 없어요.');
+      const preset = a.preset ? presetOf(a.preset) : null;
+      if (a.preset && !preset) return bad('모르는 연출 세트예요.');
+      const raw = {
+        ...(preset ? { camera: preset.camera, camera_move: preset.move, angle: preset.angle, lens: preset.lens, move_strength: preset.strength, ...(preset.light !== undefined ? { light: preset.light } : {}), ...(preset.tone !== undefined ? { tone: preset.tone } : {}) } : {}),
+        ...(a.fields || {}),
+      };
+      const fields = {};
+      for (const [k, v] of Object.entries(raw)) if (DIRECTION_FIELDS[k] && DIRECTION_FIELDS[k](v) !== undefined) fields[k] = DIRECTION_FIELDS[k](v);
+      if (!Object.keys(fields).length) return bad('바꿀 연출이 없어요.');
+      return { ...out, targets: list.map((x) => x.ref), targetIds: list.map((x) => x.id), fields, what: `${list[0].episode_number}화 컷 ${list.length}개${preset ? ` · ${preset.name}` : ''}` };
+    }
     if (a.type === 'edit_character') {
       const c = r.character(a.target);
       if (!c) return bad('인물을 찾을 수 없어요.');
@@ -134,12 +168,12 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
     // AI 작업: 대상 → run 본문
     const body = { action: a.type, options: {} };
     let what = '작품 전체';
-    if (a.type.startsWith('shot_') || ['rewrite_shot', 'verify_shot', 'bridge_shot'].includes(a.type)) {
+    if (a.type.startsWith('shot_') || ['rewrite_shot', 'verify_shot', 'verify_video', 'bridge_shot'].includes(a.type)) {
       const s = r.shot(a.target);
       if (!s) return bad(`컷(${a.target || '미지정'})을 찾을 수 없어요.`);
       body.targetId = s.id;
       what = `${s.episode_number}화 ${s.ref.split('S')[1]}번 컷`;
-    } else if (['script', 'diagnose', 'batch_shot_image', 'batch_shot_tts', 'batch_shot_video', 'batch_verify_shot'].includes(a.type)) {
+    } else if (['script', 'diagnose', 'batch_shot_image', 'batch_shot_tts', 'batch_shot_video', 'batch_verify_shot', 'batch_shot_upscale_video'].includes(a.type)) {
       const e = r.episode(a.target);
       if (!e) return bad('회차를 찾을 수 없어요.');
       body.targetId = e.id;
@@ -341,21 +375,39 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
           continue;
         }
         try {
-          const editNeed = { edit_shot: 'script', edit_character: 'script', edit_episode: 'script', edit_project: 'script' }[a.type];
+          const editNeed = { edit_shot: 'script', edit_direction: 'scene', edit_character: 'script', edit_episode: 'script', edit_project: 'script' }[a.type];
           if (editNeed && req.teamRole && req.teamRole !== 'owner' && !can(req.teamRole, editNeed)) throw new Error(`${ROLE_NAME[req.teamRole]} 역할은 이 수정(${needText(editNeed)})을 할 수 없어요.`);
           if (a.type === 'edit_shot') {
             const s = await db.get('SELECT s.*, e.project_id FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE s.id=?', [a.targetId]);
             if (!s || s.project_id !== p.id) throw new Error('컷이 지워졌어요.');
             const before = { ...Object.fromEntries(Object.keys(a.fields).map((k) => [k, s[k]])), audio: s.audio, audio_seconds: s.audio_seconds, lipsync: s.lipsync };
-            const audioReset = ['dialogue', 'emotion', 'speed'].some((k) => k in a.fields && String(a.fields[k]) !== String(s[k]));
+            const audioReset = ['dialogue', 'emotion', 'speed', 'speaker_id', 'narration'].some((k) => k in a.fields && String(a.fields[k] ?? '') !== String(s[k] ?? ''));
             const sets = Object.keys(a.fields).map((k) => `${k}=?`);
             if (audioReset) sets.push("audio=''", 'audio_seconds=0', "lipsync=''");
-            await db.run(`UPDATE studio_shots SET ${sets.join(',')} WHERE id=?`, [...Object.values(a.fields), s.id]);
-            await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=?", [s.episode_id]);
+            // 수정 시각·수정한 사람을 남겨, 같은 컷을 열어 둔 팀원이 덮어쓰기 전에 알 수 있게 해요.
+            sets.push('updated_at=?', 'updated_by=?');
+            await db.run(`UPDATE studio_shots SET ${sets.join(',')} WHERE id=?`, [...Object.values(a.fields), now(), req.user.id, s.id]);
+            await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
+            if (['scene', 'visual', 'dialogue', 'speaker_id', 'seconds', 'narration'].some((k) => k in a.fields && String(a.fields[k] ?? '') !== String(s[k] ?? '')))
+              await db.run("UPDATE studio_episodes SET script_review=CASE WHEN script_review IN ('approved','requested') THEN '' ELSE script_review END WHERE id=?", [s.episode_id]);
             if (a.fields.visual && a.fields.visual !== s.visual) await queueTranslate(p.id, p.owner_id, [{ id: 'shot:' + s.id, ko: a.fields.visual }]).catch(() => {});
             const after = await db.get(`SELECT ${Object.keys(before).join(',')} FROM studio_shots WHERE id=?`, [s.id]);
             undo.push({ table: 'studio_shots', id: s.id, values: before, after, need: 'script', actor: req.user.id, episode: s.episode_id });
             results.push({ i, ok: true, message: audioReset ? '고쳤어요. 대사가 바뀌어 음성은 다시 만들어야 해요.' : '고쳤어요.' });
+          } else if (a.type === 'edit_direction') {
+            let n = 0;
+            for (const id of a.targetIds || []) {
+              const s = await db.get('SELECT s.*, e.project_id FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE s.id=?', [id]);
+              if (!s || s.project_id !== p.id) continue;
+              const before = Object.fromEntries(Object.keys(a.fields).map((k) => [k, s[k]]));
+              await db.run(`UPDATE studio_shots SET ${Object.keys(a.fields).map((k) => `${k}=?`).join(',')} WHERE id=?`, [...Object.values(a.fields), s.id]);
+              await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
+              const after = await db.get(`SELECT ${Object.keys(before).join(',')} FROM studio_shots WHERE id=?`, [s.id]);
+              undo.push({ table: 'studio_shots', id: s.id, values: before, after, need: 'scene', actor: req.user.id, episode: s.episode_id });
+              n++;
+            }
+            if (!n) throw new Error('컷이 지워졌어요.');
+            results.push({ i, ok: true, message: `${n}컷의 연출을 바꿨어요. 새 연출은 이미지·영상을 다시 만들 때 반영돼요.` });
           } else if (a.type === 'edit_character' || a.type === 'edit_episode' || a.type === 'edit_project') {
             const table = { edit_character: 'studio_characters', edit_episode: 'studio_episodes', edit_project: 'studio_projects' }[a.type];
             const where = a.type === 'edit_project' ? 'id=?' : 'id=? AND project_id=?';
@@ -407,7 +459,7 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       if (j?.status === 'running') fail(409, '아직 AI가 만드는 중인 작업이 있어요. 끝난 뒤에 되돌려 주세요.');
     }
     const allowed = {
-      studio_shots: Object.keys(SHOT_FIELDS).concat(['audio', 'audio_seconds', 'lipsync', 'image', 'video', 'sfx', 'scene']),
+      studio_shots: [...new Set(Object.keys(SHOT_FIELDS).concat(Object.keys(DIRECTION_FIELDS), ['audio', 'audio_seconds', 'lipsync', 'image', 'video', 'sfx', 'scene', 'upscaled']))],
       studio_characters: Object.keys(CHAR_FIELDS).concat(['image']),
       studio_locations: ['image'],
       studio_episodes: Object.keys(EP_FIELDS),
@@ -425,12 +477,16 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       if (job.kind === 'shot_tts') return { audio: url, audio_seconds: out.duration || 0, lipsync: '' };
       if (job.kind === 'shot_sfx') return { sfx: url };
       if (job.kind === 'shot_lipsync') return { lipsync: url };
+      if (job.kind === 'shot_upscale') return out.applied ? { image: url } : null;
+      if (job.kind === 'shot_upscale_video') return out.applied ? { [out.column === 'lipsync' ? 'lipsync' : 'video']: url } : null;
       if (job.kind === 'character_image') return { image: url };
       if (job.kind === 'location_image') return { image: url };
       if (job.kind === 'poster') return { poster: url };
       return null;
     };
     // 권한과 충돌을 먼저 전부 확인한 뒤에만 취소·복원을 시작합니다. 일부만 되돌아가는 상태를 만들지 않습니다.
+    // 결과를 컷에 넣지 않고 버전 기록에만 남긴 작업(예: 올리는 동안 이미지가 바뀐 화질 올리기)은 되돌릴 것이 없어요.
+    const nothingToUndo = new Set();
     for (const u of r.undo || []) {
       const cols = Object.keys(u.values || {}).filter((k) => allowed[u.table]?.includes(k));
       if (!cols.length) continue;
@@ -443,8 +499,12 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       let expected = u.after || null;
       if (u.ai && u.jobId) expected = expectedFor(await db.get('SELECT kind,status,output FROM ai_jobs WHERE id=?', [u.jobId]));
       if (u.ai && u.jobId && !expected) {
-        const state = await db.get('SELECT status FROM ai_jobs WHERE id=?', [u.jobId]);
+        const state = await db.get('SELECT status,output FROM ai_jobs WHERE id=?', [u.jobId]);
         if (!state || ['queued', 'failed', 'canceled'].includes(state.status)) continue;
+        if (state.status === 'succeeded' && parse(state.output, {}).applied === false) {
+          nothingToUndo.add(u.jobId);
+          continue;
+        }
         fail(409, '이 AI 결과의 현재 버전을 안전하게 확인할 수 없어 되돌리지 않았어요. 버전 기록에서 직접 선택해 주세요.');
       }
       if (expected && Object.keys(expected).some((k) => k in current && !same(current[k], expected[k])))
@@ -457,7 +517,7 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
     await db.transaction(async () => {
       for (const u of [...(r.undo || [])].reverse()) {
         const cols = Object.keys(u.values || {}).filter((k) => allowed[u.table]?.includes(k));
-        if (!cols.length) continue;
+        if (!cols.length || (u.jobId && nothingToUndo.has(u.jobId))) continue;
         const own =
           u.table === 'studio_projects'
             ? u.id === p.id
@@ -466,7 +526,7 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
               : !!(await db.get(`SELECT id FROM ${u.table} WHERE id=? AND project_id=?`, [u.id, p.id]));
         if (!own) continue;
         await db.run(`UPDATE ${u.table} SET ${cols.map((k) => `${k}=?`).join(',')} WHERE id=?`, [...cols.map((k) => u.values[k] ?? ''), u.id]);
-        if (u.table === 'studio_shots') await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END WHERE id=(SELECT episode_id FROM studio_shots WHERE id=?)", [u.id]);
+        if (u.table === 'studio_shots') await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=(SELECT episode_id FROM studio_shots WHERE id=?)", [u.id]);
       }
       await db.run("UPDATE studio_chat SET status='undone' WHERE id=?", [m.id]);
     });

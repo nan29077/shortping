@@ -16,6 +16,7 @@ import { api, count, type Channel, type ChannelCategory, type Drama, type User }
 import { Empty, navigate } from './App';
 import { ChannelBanner, ChannelLogo, channelStyle, channelThemes } from './Channels';
 import { asset } from './platform';
+import { GENRES, SHELVES } from './genres';
 
 type StudioChannel = { channel: Channel | null; categories: ChannelCategory[]; dramas: Drama[] };
 const channelBannerPresets = [
@@ -231,10 +232,10 @@ export default function ChannelStudio({
           <div className="stat-card">
             <div>
               <Users size={18} />
-              <span>구독자</span>
+              <span>팔로워</span>
             </div>
             <strong>{count(data.channel.followers)}</strong>
-            <small>방송국을 구독한 시청자</small>
+            <small>방송국을 팔로우한 시청자</small>
           </div>
         </div>
       )}
@@ -275,7 +276,7 @@ export default function ChannelStudio({
               </div>
               <div>
                 <strong>{count(preview.followers)}</strong>
-                <span>구독자</span>
+                <span>팔로워</span>
               </div>
             </div>
           </div>
@@ -502,7 +503,7 @@ export default function ChannelStudio({
             <div className="panel-heading">
               <div>
                 <h3>카테고리</h3>
-                <p>방송국 안에서 작품을 묶어 보여주는 진열대입니다. 최대 12개.</p>
+                <p>방송국 안에서 작품을 묶어 보여주는 진열대입니다. 최대 30개. 아래 추천을 누르면 바로 추가돼요.</p>
               </div>
             </div>
             <div className="category-chips">
@@ -525,6 +526,37 @@ export default function ChannelStudio({
               ))}
               {!data.categories.length && <p className="muted">아직 카테고리가 없어요.</p>}
             </div>
+            {(
+              [
+                ['진열 묶음', SHELVES],
+                ['장르', GENRES],
+              ] as const
+            ).map(([title, names]) => {
+              const left = names.filter((n) => !data.categories.some((c) => c.name === n));
+              return left.length ? (
+                <div className="category-presets" key={title}>
+                  <small>{title} 추천</small>
+                  <div>
+                    {left.map((n) => (
+                      <button
+                        type="button"
+                        key={n}
+                        className="chip"
+                        disabled={busy || data.categories.length >= 30}
+                        onClick={() =>
+                          void act(
+                            () => api('/studio/channel/categories', 'POST', { name: n }),
+                            `‘${n}’ 카테고리를 추가했어요.`,
+                          )
+                        }
+                      >
+                        <Plus size={12} /> {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null;
+            })}
             <form
               className="inline-form"
               onSubmit={(e) => {
@@ -539,7 +571,7 @@ export default function ChannelStudio({
               <input
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                placeholder="예: 신작, 로맨스, 완결작"
+                placeholder="직접 입력 (예: 이번 주 추천, 감독판)"
                 maxLength={20}
                 aria-label="카테고리 이름"
               />
@@ -580,22 +612,54 @@ export default function ChannelStudio({
                           aria-label={d.title + ' 진열 카테고리'}
                           value={d.category_id || ''}
                           disabled={busy}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            // ‘new:이름’은 아직 없는 추천 카테고리: 만들면서 바로 진열해요.
+                            const body = v.startsWith('new:')
+                              ? { category_name: v.slice(4) }
+                              : { category_id: v || null };
                             void act(
-                              () =>
-                                api('/studio/dramas/' + d.id + '/category', 'PATCH', {
-                                  category_id: e.target.value || null,
-                                }),
-                              '작품 진열을 변경했어요.',
-                            )
-                          }
+                              () => api('/studio/dramas/' + d.id + '/category', 'PATCH', body),
+                              v.startsWith('new:')
+                                ? `‘${v.slice(4)}’ 카테고리를 만들고 진열했어요.`
+                                : '작품 진열을 변경했어요.',
+                            );
+                          }}
                         >
                           <option value="">미분류</option>
-                          {data.categories.map((c) => (
-                            <option value={c.id} key={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
+                          {data.categories.length > 0 && (
+                            <optgroup label="내 카테고리">
+                              {data.categories.map((c) => (
+                                <option value={c.id} key={c.id}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {data.categories.length < 30 &&
+                            (
+                              [
+                                ['진열 묶음 추천 (선택하면 추가)', SHELVES],
+                                [
+                                  '장르 추천 (선택하면 추가)',
+                                  [d.genre, ...GENRES.filter((g) => g !== d.genre)],
+                                ],
+                              ] as const
+                            ).map(([label, names]) => {
+                              const left = names.filter(
+                                (n) => n && !data.categories.some((c) => c.name === n),
+                              );
+                              return left.length ? (
+                                <optgroup label={label} key={label}>
+                                  {left.map((n) => (
+                                    <option value={'new:' + n} key={n}>
+                                      {n}
+                                      {n === d.genre ? ' · 이 작품 장르' : ''}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ) : null;
+                            })}
                         </select>
                       </label>
                     </div>

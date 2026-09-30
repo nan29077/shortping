@@ -24,6 +24,8 @@ export function libraryRoutes({ app, db, fail, now, roles, project, charactersOf
   app.post('/api/studio/ai/library', roles('pd', 'admin'), async (req, res) => {
     const b = z.object({ kind: z.enum(KINDS), projectId: z.string().max(80), sourceId: z.string().max(80).optional(), name: z.string().trim().max(40).optional() }).parse(req.body);
     const p = await project(req, b.projectId, 'view');
+    // 라이브러리는 내 계정 보관함이라, 내가 주인인 프로젝트에서만 저장할 수 있어요(팀원이 남의 그림을 가져가지 않도록).
+    if (p.owner_id !== req.user.id) fail(403, '내가 만든 프로젝트의 인물 · 장소 · 소품 · 스타일만 라이브러리에 저장할 수 있어요.');
     let name = '';
     let image = '';
     let data = {};
@@ -32,7 +34,7 @@ export function libraryRoutes({ app, db, fail, now, roles, project, charactersOf
       if (!c) fail(404, '인물을 찾을 수 없어요.');
       name = c.name;
       image = c.image;
-      data = { role: c.role, description: c.description, look: c.look, look_en: c.look_en, look_en_src: c.look_en_src, outfit: c.outfit, voice_model: c.voice_model, voice: c.voice, voice_style: c.voice_style, refs: parse(c.refs, []) };
+      data = { role: c.role, description: c.description, look: c.look, look_en: c.look_en, look_en_src: c.look_en_src, outfit: c.outfit, voice_model: c.voice_model, voice: c.voice, voice_style: c.voice_style, refs: parse(c.refs, []), hair: c.hair || '', body: c.body || '', forbid: c.forbid || '', locked: Number(c.locked || 0) };
     } else if (b.kind === 'location' || b.kind === 'prop') {
       const row = (await (b.kind === 'location' ? locationsOf : propsOf)(p.id)).find((x) => x.id === b.sourceId);
       if (!row) fail(404, b.kind === 'location' ? '장소를 찾을 수 없어요.' : '소품을 찾을 수 없어요.');
@@ -77,6 +79,18 @@ export function libraryRoutes({ app, db, fail, now, roles, project, charactersOf
     if (!r) fail(404, '라이브러리 항목을 찾을 수 없어요.');
     const p = await project(req, req.params.id, r.kind === 'style' ? 'scene' : r.kind === 'character' ? 'script' : 'scene');
     const d = parse(r.data, {});
+    // 프로젝트 주인의 파일만 옮겨 와요(다른 계정의 그림이 섞이면 공개 · 정리 때 문제가 돼요). 쓸 수 없는 그림은 빼고 가져옵니다.
+    let dropped = 0;
+    const owned = async (url) => {
+      if (!url) return '';
+      const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [url]);
+      if (f && f.owner_id === p.owner_id) return url;
+      dropped++;
+      return '';
+    };
+    r.image = await owned(r.image);
+    if (Array.isArray(d.refs)) d.refs = (await Promise.all(d.refs.map(async (x) => (x && (await owned(x.url)) ? x : null)))).filter(Boolean);
+    if (Array.isArray(d.style_refs)) d.style_refs = (await Promise.all(d.style_refs.map(owned))).filter(Boolean);
     const unique = (names, base) => {
       let n = base;
       for (let i = 2; names.includes(n); i++) n = `${base} (${i})`;
@@ -87,8 +101,8 @@ export function libraryRoutes({ app, db, fail, now, roles, project, charactersOf
       const cast = await charactersOf(p.id);
       if (cast.length >= 8) fail(400, '인물은 8명까지 만들 수 있어요.');
       await db.run(
-        'INSERT INTO studio_characters (id,project_id,name,role,description,look,look_en,look_en_src,image,voice_model,voice,voice_style,outfit,refs,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [id, p.id, unique(cast.map((c) => c.name), r.name).slice(0, 30), d.role || '', d.description || '', d.look || '', d.look_en || '', d.look_en_src || '', r.image || '', d.voice_model || 'auto', d.voice || '', d.voice_style || '', d.outfit || '', JSON.stringify(d.refs || []), cast.length],
+        'INSERT INTO studio_characters (id,project_id,name,role,description,look,look_en,look_en_src,image,voice_model,voice,voice_style,outfit,refs,hair,body,forbid,locked,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [id, p.id, unique(cast.map((c) => c.name), r.name).slice(0, 30), d.role || '', d.description || '', d.look || '', d.look_en || '', d.look_en_src || '', r.image || '', d.voice_model || 'auto', d.voice || '', d.voice_style || '', d.outfit || '', JSON.stringify(d.refs || []), d.hair || '', d.body || '', d.forbid || '', Number(d.locked) ? 1 : 0, cast.length],
       );
     } else if (r.kind === 'location' || r.kind === 'prop') {
       const table = r.kind === 'location' ? 'studio_locations' : 'studio_props';
@@ -102,6 +116,6 @@ export function libraryRoutes({ app, db, fail, now, roles, project, charactersOf
       await db.run('UPDATE studio_projects SET style=?,style_refs=?,updated_at=? WHERE id=?', [d.style || p.style, JSON.stringify((d.style_refs || []).slice(0, 3)), now(), p.id]);
     }
     await db.run('UPDATE studio_projects SET updated_at=? WHERE id=?', [now(), p.id]);
-    res.status(201).json({ id: r.kind === 'style' ? p.id : id, kind: r.kind });
+    res.status(201).json({ id: r.kind === 'style' ? p.id : id, kind: r.kind, dropped });
   });
 }

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { loadSettings } from '../settings.mjs';
 import { encrypt, decrypt, hintOf } from './secret.mjs';
 import { adapterOf, lamaPerUnit, TAGS } from './engine.mjs';
-import { kindCatalog, presets, unitOf, capabilityLabel } from './providers.mjs';
+import { kindCatalog, presets, unitOf, capabilityLabel, CAPABILITIES } from './providers.mjs';
 import { familyList, familyOf } from './model-guide.mjs';
 
 // 슈퍼관리자: AI 공급사·모델 등록(중국 모델 포함), 키 암호화 저장, 연결 테스트, 가격·자동 선택 규칙,
@@ -24,6 +24,10 @@ export const MOCK_MODELS = [
   ['mock-music', 'music', '가짜 배경음악 (개발용)', 'standard', 0.2, 'emotion'],
   ['mock-sfx', 'sfx', '가짜 효과음 (개발용)', 'standard', 0.5, 'scene'],
   ['mock-lipsync', 'lipsync', '가짜 입 모양 (개발용)', 'standard', 1, 'lipsync,dialogue'],
+  // 힉스필드 벤치마킹 고도화(2026-09-29): 부분 수정(인페인팅) · 화질 올리기
+  ['mock-inpaint', 'image', '가짜 부분 수정 (개발용)', 'standard', 4, 'inpaint'],
+  ['mock-upscale', 'upscale', '가짜 이미지 화질 올리기 (개발용)', 'standard', 2, 'poster'],
+  ['mock-upscale-video', 'upscale_video', '가짜 영상 화질 올리기 (개발용)', 'standard', 1, 'cinematic'],
 ];
 export async function seedMock(db) {
   const stamp = new Date().toISOString();
@@ -34,7 +38,7 @@ export async function seedMock(db) {
   for (const [id, capability, label, tier, price, tags] of MOCK_MODELS)
     await db.run(
       'INSERT INTO ai_models (id,provider_id,capability,model_id,label,tier,unit,cost_usd,price_lama,tags,max_seconds,image_input,active,priority,created_at,updated_at) VALUES (?,?,?,?,?,?,?,0,?,?,?,1,1,50,?,?) ON CONFLICT(id) DO NOTHING',
-      [id, 'mock', capability, id, label, tier, unitOf[capability], price, tags, capability === 'music' ? 180 : capability === 'lipsync' || capability === 'sfx' ? 30 : 10, stamp, stamp],
+      [id, 'mock', capability, id, label, tier, unitOf[capability], price, tags, capability === 'music' ? 180 : ['lipsync', 'sfx', 'upscale_video'].includes(capability) ? 30 : 10, stamp, stamp],
     );
 }
 
@@ -221,7 +225,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
   app.put('/api/admin/ai/routes', roles('admin'), async (req, res) => {
     const b = z
       .object({
-        capability: z.enum(['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync']),
+        capability: z.enum(CAPABILITIES),
         tier: z.enum(['draft', 'standard', 'premium']),
         model_ids: z.array(z.string().min(1).max(80)).max(10),
         active: z.boolean().default(true),
@@ -243,7 +247,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
   // 가격 일괄 조정: 자동 계산으로 되돌리거나, 현재 라마 가격에 배율을 곱해 고정 단가로 만듭니다.
   app.post('/api/admin/ai/models/bulk', roles('admin'), async (req, res) => {
     const b = z
-      .object({ action: z.enum(['auto', 'multiply']), factor: z.number().min(0.1).max(10).default(1), capability: z.enum(['all', 'text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync']).default('all') })
+      .object({ action: z.enum(['auto', 'multiply']), factor: z.number().min(0.1).max(10).default(1), capability: z.enum(['all', ...CAPABILITIES]).default('all') })
       .parse(req.body);
     const settings = await loadSettings(db);
     const rows = await db.all(
@@ -350,7 +354,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
   });
   const modelSchema = z.object({
     provider_id: z.string().min(1),
-    capability: z.enum(['text', 'image', 'video', 'tts', 'stt', 'music', 'sfx', 'lipsync']),
+    capability: z.enum(CAPABILITIES),
     model_id: z.string().trim().min(1).max(200),
     label: z.string().trim().min(1).max(60),
     tier: z.enum(['draft', 'standard', 'premium']),
@@ -443,6 +447,8 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
             ? { prompt: b.prompt, seconds: Math.min(5, Number(m.max_seconds) || 5), aspect: '9:16' }
             : m.capability === 'stt'
               ? fail(400, '음성 인식 모델은 업로드 영상 자막 만들기에서 시험해 주세요.')
+              : ['lipsync', 'upscale', 'upscale_video'].includes(m.capability)
+                ? fail(400, '이 모델은 원본 파일이 필요해 스튜디오 장면 편집에서 시험해 주세요.')
               : { prompt: b.prompt, aspect: '9:16' };
     const job = await db.transaction(() =>
       engine.enqueue({ userId: req.user.id, kind: 'playground', capability: m.capability, requested: m.id, tier: m.tier, input, bill: false }),

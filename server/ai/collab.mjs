@@ -93,9 +93,9 @@ export function collabRoutes({ app, db, fail, now, roles, project, memberOf, set
           EXISTS (SELECT 1 FROM studio_locations l WHERE l.project_id=p.id AND l.image=?) OR
           EXISTS (SELECT 1 FROM studio_props pr WHERE pr.project_id=p.id AND pr.image=?) OR
           EXISTS (SELECT 1 FROM studio_episodes e WHERE e.project_id=p.id AND (e.video=? OR e.intro_card=? OR e.outro_card=? OR e.thumbnail=? OR e.bgm=?)) OR
-          EXISTS (SELECT 1 FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=p.id AND (s.image=? OR s.audio=? OR s.video=? OR s.lipsync=? OR s.sfx=?))
+          EXISTS (SELECT 1 FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=p.id AND (s.image=? OR s.audio=? OR s.video=? OR s.lipsync=? OR s.sfx=? OR s.end_image=?))
         ) LIMIT 1`,
-      [user.id, ownerId, ...Array(19).fill(url)],
+      [user.id, ownerId, ...Array(20).fill(url)],
     ));
   }
   async function myInvites(user) {
@@ -422,7 +422,7 @@ export function collabRoutes({ app, db, fail, now, roles, project, memberOf, set
       for (const r of eps)
         await copy('studio_episodes', r, {
           video: '', duration: 0, subtitles: '', exported_at: null, status: ['composed', 'composing', 'compose_failed'].includes(r.status) ? 'scripted' : r.status,
-          compose_progress: 0, compose_error: '', compose_claimed_by: null, compose_queued_at: null, script_version: 0, script_review: '', final_review: '', review_note: '',
+          compose_progress: 0, compose_error: '', compose_claimed_by: null, compose_queued_at: null, script_version: 0, script_review: '', final_review: '', review_note: '', compose_dirty: 0,
         });
       for (const r of shots) await copy('studio_shots', r, { verify: r.verify || '', updated_at: null, updated_by: null });
     });

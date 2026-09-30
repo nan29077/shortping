@@ -54,7 +54,8 @@ export async function openDb() {
   const dir = process.env.DATA_DIR || path.resolve('data');
   mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, 'shortping.sqlite'));
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
+  // busy_timeout: 작업 프로세스(npm run worker)나 테스트 도구가 같은 파일을 잠깐 잡고 있어도 바로 실패하지 않고 5초까지 기다립니다.
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const context = new AsyncLocalStorage();
   let queue = Promise.resolve();
   const exclusive = (fn) => {
@@ -141,6 +142,12 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS ai_providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, base_url TEXT NOT NULL DEFAULT '', api_key_enc TEXT NOT NULL DEFAULT '', key_hint TEXT NOT NULL DEFAULT '', secret_enc TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'unknown', last_error TEXT NOT NULL DEFAULT '', last_checked_at TEXT, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ai_models (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE, capability TEXT NOT NULL, model_id TEXT NOT NULL, label TEXT NOT NULL, tier TEXT NOT NULL DEFAULT 'standard', unit TEXT NOT NULL, cost_usd REAL NOT NULL DEFAULT 0, price_lama REAL NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT '', max_seconds INTEGER NOT NULL DEFAULT 10, image_input INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 50, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ai_user_limits (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, daily_lama INTEGER, monthly_lama INTEGER, blocked INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT)`,
+    // 6단계(2026-09-30) 모델 품질: 품질 시험 문제 · 시험 실행 · 품질 표본(시험 + 실제 AI 검수 점수)
+    `CREATE TABLE IF NOT EXISTS ai_benchmarks (id TEXT PRIMARY KEY, name TEXT NOT NULL, capability TEXT NOT NULL, prompt TEXT NOT NULL, ref_image TEXT NOT NULL DEFAULT '', seconds INTEGER NOT NULL DEFAULT 5, created_by TEXT, created_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ai_benchmark_runs (id TEXT PRIMARY KEY, benchmark_id TEXT NOT NULL, model_id TEXT NOT NULL, job_id TEXT, verify_job_id TEXT, status TEXT NOT NULL DEFAULT 'queued', result_url TEXT NOT NULL DEFAULT '', score INTEGER, face INTEGER, cost_won INTEGER NOT NULL DEFAULT 0, seconds REAL, summary TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created_by TEXT, created_at TEXT NOT NULL, finished_at TEXT)`,
+    `CREATE TABLE IF NOT EXISTS ai_quality_samples (id TEXT PRIMARY KEY, model_ref TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL, score INTEGER NOT NULL, face INTEGER, created_at TEXT NOT NULL)`,
+    // AI 작업 처리기(서버마다 하나) 살아 있음 표시: 여러 대로 운영할 때 다른 서버가 처리 중인 작업을 가로채지 않도록
+    `CREATE TABLE IF NOT EXISTS ai_workers (id TEXT PRIMARY KEY, seen_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ai_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id TEXT, target_type TEXT NOT NULL DEFAULT '', target_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, capability TEXT NOT NULL, requested_model TEXT NOT NULL DEFAULT 'auto', model_ref TEXT, provider_id TEXT, vendor_model TEXT NOT NULL DEFAULT '', tier TEXT NOT NULL DEFAULT 'standard', input TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued', estimate_lama INTEGER NOT NULL DEFAULT 0, hold_paid INTEGER NOT NULL DEFAULT 0, hold_bonus INTEGER NOT NULL DEFAULT 0, charged_lama INTEGER NOT NULL DEFAULT 0, cost_won INTEGER NOT NULL DEFAULT 0, vendor_ref TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, tried TEXT NOT NULL DEFAULT '', claimed_by TEXT, billed INTEGER NOT NULL DEFAULT 1, idempotency_key TEXT UNIQUE, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, next_poll_at TEXT)`,
     `CREATE INDEX IF NOT EXISTS ai_jobs_status ON ai_jobs(status, created_at)`,
     `CREATE INDEX IF NOT EXISTS ai_jobs_user ON ai_jobs(user_id, created_at)`,
@@ -182,6 +189,16 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS studio_activity (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS studio_activity_project ON studio_activity(project_id, created_at)`,
     `CREATE TABLE IF NOT EXISTS ai_safety_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, term TEXT NOT NULL, excerpt TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    // ── 계정·운영 고도화(2026-09-29): 이메일·문자 발송 기록, 비밀번호 재설정, 휴대폰 인증, 구독 배분 개별 설정, 조회수·썸네일 클릭 중복 방지 ──
+    `CREATE TABLE IF NOT EXISTS message_outbox (id TEXT PRIMARY KEY, channel TEXT NOT NULL, provider TEXT NOT NULL, recipient TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', purpose TEXT NOT NULL DEFAULT '', user_id TEXT, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS message_outbox_created ON message_outbox(created_at)`,
+    `CREATE TABLE IF NOT EXISTS password_resets (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS phone_verifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, phone TEXT NOT NULL, code_hash TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL, verified_at TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS phone_verifications_user ON phone_verifications(user_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS subscription_overrides (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, weight REAL NOT NULL DEFAULT 1 CHECK(weight >= 0 AND weight <= 5), excluded INTEGER NOT NULL DEFAULT 0, cap_pct REAL NOT NULL DEFAULT 0 CHECK(cap_pct >= 0 AND cap_pct <= 100), memo TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT)`,
+    `CREATE TABLE IF NOT EXISTS view_marks (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, drama_id TEXT NOT NULL REFERENCES dramas(id) ON DELETE CASCADE, episode INTEGER NOT NULL, day TEXT NOT NULL, PRIMARY KEY(user_id, drama_id, episode, day))`,
+    `CREATE TABLE IF NOT EXISTS thumb_click_marks (viewer_key TEXT NOT NULL, thumb_id TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY(viewer_key, thumb_id, day))`,
   ];
   for (const sql of statements) await db.run(sql);
   // Added after the first release: keep existing local and hosted databases usable.
@@ -268,9 +285,37 @@ export async function migrate(db) {
     ['studio_shots', 'verify', "TEXT NOT NULL DEFAULT ''"], // AI 결과 검수(JSON)
     ['studio_shots', 'updated_at', 'TEXT'],
     ['studio_shots', 'updated_by', 'TEXT'],
+    // 힉스필드 벤치마킹 고도화(2026-09-29): 컷 연출(앵글·렌즈 느낌·움직임 강도) · 끝 장면 지정 · 화질 올리기 기록 · 효과
+    ['studio_shots', 'angle', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'lens', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'move_strength', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'end_image', "TEXT NOT NULL DEFAULT ''"], // 영상이 끝날 장면(직접 고른 이미지). 비어 있으면 end_frame(다음 컷 이미지)을 따름
+    ['studio_shots', 'upscaled', "TEXT NOT NULL DEFAULT ''"], // 화질 올린 결과(JSON {image:url, video:url}) — 지금 파일이 이미 올린 것인지 확인용
+    ['studio_shots', 'effect', "TEXT NOT NULL DEFAULT ''"], // 합성 효과(회상·꿈결·긴장·충격 줌·심장 박동·흔들림·흑백)
+    ['studio_assets', 'batch', "TEXT NOT NULL DEFAULT ''"], // 후보 묶음(같은 요청으로 만든 후보 여러 장)
+    ['studio_assets', 'verify', "TEXT NOT NULL DEFAULT ''"], // 후보 AI 검수 결과(JSON)
+    // 전체 점검 반영(2026-09-29): 합성하는 동안 컷이 바뀌었는지(1이면 합성본을 '완료'로 확정하지 않음)
+    ['studio_episodes', 'compose_dirty', 'INTEGER NOT NULL DEFAULT 0'],
+    // 2단계 연출(2026-09-30): 조명 · 시간과 색감 · 카메라 높이 · 조리개(f값) · 초점 거리(mm)
+    ['studio_shots', 'light', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'tone', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'height', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'dof', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_shots', 'focal', 'INTEGER NOT NULL DEFAULT 0'],
+    // 3단계 일관성 고정(2026-09-30): 인물 헤어 · 체형 · 금지 요소 · 외형 고정, 장소 · 소품 고정
+    ['studio_characters', 'hair', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'body', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'forbid', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_characters', 'locked', 'INTEGER NOT NULL DEFAULT 0'],
+    ['studio_locations', 'locked', 'INTEGER NOT NULL DEFAULT 0'],
+    ['studio_locations', 'forbid', "TEXT NOT NULL DEFAULT ''"],
+    ['studio_props', 'locked', 'INTEGER NOT NULL DEFAULT 0'],
+    // 5단계(2026-09-30): 컷 영상 AI 검수 결과(JSON, 검수한 영상 주소 포함)
+    ['studio_shots', 'video_verify', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'script_review', "TEXT NOT NULL DEFAULT ''"], // 승인: ''·requested·approved·changes
     ['studio_episodes', 'final_review', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'review_note', "TEXT NOT NULL DEFAULT ''"],
+    ['ai_jobs', 'flags', "TEXT NOT NULL DEFAULT ''"], // 알림 표시(end_ignored: 고른 모델이 끝 장면 지정을 따르지 않음)
     ['ai_jobs', 'actor_id', 'TEXT'], // 작업을 누른 사람(협업: 라마를 낸 사람은 user_id)
     ['studio_episodes', 'hook', "TEXT NOT NULL DEFAULT ''"],
     ['studio_episodes', 'cliffhanger', "TEXT NOT NULL DEFAULT ''"],
@@ -320,6 +365,11 @@ export async function migrate(db) {
   for (const [t, c, type] of cols) await ensureColumn(db, t, c, type);
   // 결과 확인 중 일시 오류가 연속으로 난 횟수(공급사 작업은 유지한 채 다시 확인합니다).
   await ensureColumn(db, 'ai_jobs', 'poll_failures', 'INTEGER NOT NULL DEFAULT 0');
+  // 계정·운영 고도화(2026-09-29): 휴대폰 인증 시각 · 탈퇴 시각 · 구독 배분 인정 재생(진행률 기준 충족)
+  await ensureColumn(db, 'users', 'phone_verified_at', 'TEXT');
+  await ensureColumn(db, 'users', 'withdrawn_at', 'TEXT');
+  // 이 칸이 생기기 전 기록은 그대로 인정(1)하고, 이후 재생은 진행률 보고로 기준을 넘길 때 1이 됩니다.
+  await ensureColumn(db, 'subscription_views', 'qualified', 'INTEGER NOT NULL DEFAULT 1');
   // 처음 한 번만 기본 충전 상품(웹)을 만들어 둡니다. 이후 구성은 관리자 포인트 관리에서 바꿉니다.
   if (!(await db.get('SELECT id FROM ping_products LIMIT 1'))) {
     const stamp = new Date().toISOString();

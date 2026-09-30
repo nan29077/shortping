@@ -84,7 +84,7 @@ export default function PreviewPlayer({
     return (
       <div className="preview-overlay" role="dialog" aria-label="회차 미리보기">
         <div className="preview-empty">
-          <p>미리볼 컷이 없어요. 스토리보드 이미지를 먼저 만들어 주세요.</p>
+          <p>미리볼 컷이 없어요. 컷 이미지를 먼저 만들어 주세요.</p>
           <button className="primary" onClick={close}>
             닫기
           </button>
@@ -114,7 +114,7 @@ export default function PreviewPlayer({
             </p>
           )}
           <span className="preview-tag">
-            #{index + 1} · {shot.camera || '컷'} {shot.lipsync ? '· 입 모양 영상' : shot.video ? '· 영상' : '· 스토리보드'}
+            #{index + 1} · {shot.camera || '컷'} {shot.lipsync ? '· 입 모양 영상' : shot.video ? '· 영상' : '· 컷 이미지'}
           </span>
           <button className="preview-close" aria-label="닫기" onClick={close}>
             <X size={18} />

@@ -4,11 +4,11 @@ import { existsSync } from 'node:fs';
 import { notify } from './notify.mjs';
 import { settleThumbs } from './thumbs.mjs';
 
-// 연재형 공개: 이미 공개된 작품에 새 회차를 올리면 그 회차만 검수를 받고, 승인되면(또는 예약한 시각에) 공개됩니다.
+// 연재형 공개: 이미 공개된 작품에 새 회차를 올리면 그 회차만 심사를 받고, 승인되면(또는 예약한 시각에) 공개됩니다.
 // 회차 상태(review_status)
 //   approved  공개 중(시청자에게 보임)
-//   draft     공개 작품에 새로 올렸지만 아직 검수 신청 전
-//   pending   회차 검수 대기
+//   draft     공개 작품에 새로 올렸지만 아직 심사 신청 전
+//   pending   회차 심사 대기
 //   rejected  회차 반려(고쳐서 다시 신청)
 //   scheduled 승인됐고 예약한 시각을 기다리는 중
 export const EDITABLE_EPISODE = ['draft', 'rejected'];
@@ -23,16 +23,16 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
     db.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [randomUUID(), actorId, action, targetId, now()]);
   const future = (iso) => !!iso && new Date(iso).getTime() > Date.now();
 
-  // PD: 공개 작품의 새 회차 검수 신청(원하면 공개 예약 시각도 함께)
+  // PD: 공개 작품의 새 회차 심사 신청(원하면 공개 예약 시각도 함께)
   app.post('/api/studio/dramas/:id/episodes/:number/submit', roles('pd', 'admin'), async (req, res) => {
     const b = z.object({ publish_at: z.string().datetime().nullable().optional() }).parse(req.body || {});
     const number = z.coerce.number().int().min(1).parse(req.params.number);
     await db.transaction(async () => {
       const d = await owned(req, true);
-      if (d.status !== 'published') fail(409, '공개 중인 작품의 새 회차만 따로 검수를 신청할 수 있어요. 작품 전체는 작품 검수로 신청해 주세요.');
+      if (d.status !== 'published') fail(409, '공개 중인 작품의 새 회차만 따로 심사를 신청할 수 있어요. 작품 전체는 작품 심사로 신청해 주세요.');
       const e = await epOf(d, number);
       if (!e) fail(404, '회차를 찾을 수 없어요.');
-      if (!EDITABLE_EPISODE.includes(e.review_status)) fail(409, '이미 검수 중이거나 공개된 회차예요.');
+      if (!EDITABLE_EPISODE.includes(e.review_status)) fail(409, '이미 심사 중이거나 공개된 회차예요.');
       if (!e.video || !existsSync(mediaPath(e.video)) || (!demo && e.video.startsWith('/demo/'))) fail(400, `${number}화 영상 파일을 확인해 주세요.`);
       const before = await db.get('SELECT COUNT(*) AS n FROM episodes WHERE drama_id=? AND number<?', [d.id, number]);
       if (Number(before?.n || 0) !== number - 1) fail(400, '앞 회차가 빠져 있어요. 1화부터 순서대로 올려 주세요.');
@@ -42,7 +42,7 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
     });
     res.json({ ok: true });
   });
-  // PD: 공개 예약 시각 바꾸기(검수 중·예약 중 회차)
+  // PD: 공개 예약 시각 바꾸기(심사 중·예약 중 회차)
   app.patch('/api/studio/dramas/:id/episodes/:number/schedule', roles('pd', 'admin'), async (req, res) => {
     const b = z.object({ publish_at: z.string().datetime().nullable() }).parse(req.body);
     const number = z.coerce.number().int().min(1).parse(req.params.number);
@@ -58,7 +58,7 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
     });
     res.json({ ok: true });
   });
-  // 관리자: 회차 검수 대기 목록
+  // 관리자: 회차 심사 대기 목록
   app.get('/api/admin/episodes/review', roles('admin'), async (req, res) => {
     res.json(
       await db.all(
@@ -75,7 +75,7 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
     const result = await db.transaction(async () => {
       const e = await db.get('SELECT e.*, d.owner_id, d.title AS drama_title, d.status AS drama_status FROM episodes e JOIN dramas d ON d.id=e.drama_id WHERE e.id=?' + (db.engine === 'postgresql' ? ' FOR UPDATE OF e' : ''), [req.params.eid]);
       if (!e) fail(404, '회차를 찾을 수 없어요.');
-      if (e.review_status !== 'pending') fail(409, '검수 대기 중인 회차만 처리할 수 있어요.');
+      if (e.review_status !== 'pending') fail(409, '심사 대기 중인 회차만 처리할 수 있어요.');
       if (b.status === 'rejected' && !b.note.trim()) fail(400, '반려 사유를 입력해 주세요.');
       if (b.status === 'approved' && (!e.video || !existsSync(mediaPath(e.video)))) fail(400, '회차 영상 파일을 확인할 수 없어 승인하지 않았어요. PD에게 다시 업로드하도록 안내해 주세요.');
       const status = b.status === 'rejected' ? 'rejected' : future(e.publish_at) ? 'scheduled' : 'approved';
@@ -88,7 +88,7 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
       kind: 'episode_review',
       title:
         result.status === 'rejected'
-          ? `${title} 검수가 반려됐어요`
+          ? `${title} 심사가 반려됐어요`
           : result.status === 'scheduled'
             ? `${title}이 승인됐어요 · ${new Date(result.publish_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} 공개 예정`
             : `${title}이 공개됐어요`,

@@ -43,13 +43,19 @@ import { EDITABLE_EPISODE, episodeEditable, serialRoutes } from './routes-serial
 import { applyThumbs, thumbClick } from './thumbs.mjs';
 import { notify } from './notify.mjs';
 import { createAiEngine } from './ai/engine.mjs';
+import { benchRoutes } from './ai/bench.mjs';
 import { createRenderWorker } from './ai/render-worker.mjs';
 import { adminAiRoutes, seedMock } from './ai/routes-admin-ai.mjs';
 import { studioAiRoutes } from './ai/routes-studio-ai.mjs';
 import { allowLocalDownloads } from './ai/http.mjs';
 import { appearanceFromSettings } from './home-appearance.mjs';
 import { layoutOf } from './home-layout.mjs';
-import { homeShare, injectHomeTags, sharePage, socialOrigin } from './social.mjs';
+import { injectHomeTags, sharePage, socialOrigin } from './social.mjs';
+import { accountRoutes } from './routes-account.mjs';
+import { migrateAccountNumbers } from './bank-secret.mjs';
+import { publicDrama } from './public-fields.mjs';
+import { looksInternal, zodMessage } from './errors.mjs';
+import { GENRES } from './genres.mjs';
 
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
 const demo = !production && process.env.ENABLE_DEMO !== 'false';
@@ -60,19 +66,21 @@ if (production && (!process.env.DATABASE_URL || !origin.startsWith('https://')))
 const db = await openDb();
 await migrate(db);
 if (demo) await seed(db);
+// 평문으로 남아 있던 출금 계좌번호를 암호화합니다(여러 번 실행해도 안전).
+await migrateAccountNumbers(db);
 const randomAvatar = () => `/avatars/block-${String(randomInt(1, 31)).padStart(2, '0')}.webp`;
+// 프로필이 없으면 만들고, 예전 기본 아바타(ping-*.svg)는 새 블록 아바타로 바꾼 뒤 결과를 돌려줍니다(쿼리 한 번).
 async function ensureProfile(id) {
-  await db.run(
-    'INSERT INTO user_profiles (user_id,avatar) VALUES (?,?) ON CONFLICT(user_id) DO NOTHING',
+  return db.get(
+    "INSERT INTO user_profiles (user_id,avatar) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET avatar=CASE WHEN user_profiles.avatar LIKE '/avatars/ping-%.svg' THEN excluded.avatar ELSE user_profiles.avatar END RETURNING avatar,bio,auto_next,auto_unlock",
     [id, randomAvatar()],
   );
-  await db.run(
-    "UPDATE user_profiles SET avatar=? WHERE user_id=? AND avatar LIKE '/avatars/ping-%.svg'",
-    [randomAvatar(), id],
-  );
-  return db.get('SELECT avatar,bio,auto_next,auto_unlock FROM user_profiles WHERE user_id=?', [id]);
 }
-for (const user of await db.all('SELECT id FROM users')) await ensureProfile(user.id);
+// 시작할 때는 손볼 필요가 있는 회원(프로필 없음·예전 아바타)만 처리합니다.
+for (const user of await db.all(
+  "SELECT u.id FROM users u LEFT JOIN user_profiles p ON p.user_id=u.id WHERE p.user_id IS NULL OR p.avatar LIKE '/avatars/ping-%.svg'",
+))
+  await ensureProfile(user.id);
 const startupSettings = await loadSettings(db);
 await backfillEntries(db, startupSettings);
 const app = express();
@@ -80,7 +88,28 @@ app.disable('x-powered-by');
 if (process.env.TRUST_PROXY_HOPS) app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS));
 else if (production)
   // 로드밸런서·CDN 뒤에서 이 값이 없으면 모든 요청이 프록시 IP 하나로 보여, 요청 제한이 전체 사용자 공용이 됩니다.
-  console.warn('[숏핑] TRUST_PROXY_HOPS가 설정되지 않았습니다. 프록시(ALB·Cloudflare) 뒤라면 1 이상으로 지정하세요.');
+  console.warn(
+    '[숏핑] ⚠ TRUST_PROXY_HOPS가 설정되지 않았습니다. 프록시(ALB·Cloudflare·nginx) 뒤에서 운영한다면 프록시 수(보통 1)로 지정하세요. ' +
+      '지정하지 않으면 요청 제한·기록 IP가 프록시 주소 하나로 묶입니다. (관리자 > 서비스 상태에도 경고가 표시됩니다)',
+  );
+// 기본 동작은 바꾸지 않고, 프록시 머리글이 붙은 요청이 오는지만 기록해 관리자 화면 경고에 씁니다.
+const proxySeen = { count: 0, lastAt: null };
+if (!process.env.TRUST_PROXY_HOPS)
+  app.use((req, res, next) => {
+    if (req.headers['x-forwarded-for']) {
+      if (!proxySeen.count && production)
+        console.warn('[숏핑] ⚠ X-Forwarded-For 머리글이 붙은 요청이 들어왔어요. 프록시 뒤라면 TRUST_PROXY_HOPS를 설정해 주세요.');
+      proxySeen.count++;
+      proxySeen.lastAt = new Date().toISOString();
+    }
+    next();
+  });
+const proxyStatus = () => ({
+  hops: process.env.TRUST_PROXY_HOPS ? Number(process.env.TRUST_PROXY_HOPS) : 0,
+  forwardedSeen: proxySeen.count > 0,
+  seenCount: proxySeen.count,
+  lastSeenAt: proxySeen.lastAt,
+});
 app.use(
   helmet({
     contentSecurityPolicy: production
@@ -178,6 +207,9 @@ const publicUser = (u) =>
         bio: u.bio || '',
         auto_next: u.auto_next !== 0,
         auto_unlock: u.auto_unlock === 1 || u.auto_unlock === true,
+        // 본인에게만 내려가는 값(로그인 사용자 정보)
+        phone: u.phone || '',
+        phone_verified: Boolean(u.phone_verified_at),
       }
     : null;
 const cookieToken = (req) => {
@@ -306,7 +338,16 @@ function publicLayout(settings) {
   const live = n.enabled && n.text && (!n.start || n.start <= t) && (!n.end || n.end > t);
   return { ...layout, notice: live ? { text: n.text, link: n.link, tone: n.tone } : null };
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, database: db.engine }));
+// 로드밸런서·모니터링용: DB까지 실제로 응답하는지 확인하고, 안 되면 503을 돌려줍니다.
+app.get('/api/health', async (req, res) => {
+  try {
+    await db.get('SELECT 1 AS ok');
+    res.json({ ok: true, database: db.engine });
+  } catch (e) {
+    console.error('[숏핑] 상태 확인: DB 응답 없음', e?.message);
+    res.status(503).json({ ok: false, error: '데이터베이스에 연결할 수 없어요.' });
+  }
+});
 app.get('/api/auth/me', (req, res) => res.json({ user: publicUser(req.user) }));
 app.post('/api/auth/demo', authLimiter, async (req, res) => {
   if (!demo) fail(404, '사용할 수 없는 기능입니다.');
@@ -381,6 +422,7 @@ app.patch('/api/account/profile', requireAuth, async (req, res) => {
       [b.avatar, b.bio, b.auto_next ? 1 : 0, autoUnlock ? 1 : 0, req.user.id],
     );
   });
+  await dropOldAvatar(req.user.id, profile.avatar, b.avatar).catch((e) => console.error('avatar cleanup', e?.message));
   res.json({
     user: publicUser({
       ...req.user,
@@ -445,23 +487,39 @@ app.delete('/api/account/history', requireAuth, async (req, res) => {
   await db.run('DELETE FROM history WHERE user_id=?', [req.user.id]);
   res.json({ ok: true });
 });
-// 회차 공개 여부: 연재 중인 작품에 새로 올린 회차는 회차 단위 검수(pending)를 거쳐 승인(approved)돼야 보입니다.
+// 회차 공개 여부: 연재 중인 작품에 새로 올린 회차는 회차 단위 심사(pending)를 거쳐 승인(approved)돼야 보입니다.
 // 예약 공개 회차(scheduled)는 정한 시각이 되면 공개 처리기가 approved로 바꿉니다.
 const VISIBLE = "e.review_status='approved'";
 const catalogSql =
   `SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND ${VISIBLE}) AS episode_count, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_total, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.source='studio') AS studio_episodes, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.review_status='pending') AS pending_episodes FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id`;
-// 작품 주인·관리자는 검수 중인 회차도 봅니다.
+// 작품 주인·관리자는 심사 중인 회차도 봅니다.
 const seesAll = (user, d) => !!user && (user.role === 'admin' || user.id === d.owner_id);
 app.get('/api/dramas', async (req, res) =>
   // 썸네일 A/B 비교 중인 작품은 시청자마다 정해진 후보 이미지를 보여 줍니다.
-  res.json(await applyThumbs(db, await db.all(catalogSql + " WHERE d.status='published' ORDER BY d.views DESC"), req.user?.id || req.ip)),
+  // 공개 목록에는 시청자 화면에 필요한 칸만 보냅니다(심사 의견·소유자 ID 등 내부 정보 제외).
+  res.json(
+    (await applyThumbs(db, await db.all(catalogSql + " WHERE d.status='published' ORDER BY d.views DESC"), req.user?.id || req.ip)).map(
+      publicDrama,
+    ),
+  ),
 );
+// 썸네일 A/B 클릭: 같은 사람(로그인 회원 또는 IP)은 후보마다 하루 한 번만 셉니다(새로고침·반복 호출로 부풀리기 방지).
+const kstDay = () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+const changedRows = (r) => Number(r?.rowCount ?? r?.changes ?? 0);
+async function countThumbClick(req, dramaId, thumbId) {
+  if (!/^[a-f0-9-]{36}$/.test(thumbId)) return;
+  const key = req.user ? 'u:' + req.user.id : 'ip:' + (req.ip || '');
+  const r = await db
+    .run('INSERT INTO thumb_click_marks (viewer_key,thumb_id,day) VALUES (?,?,?) ON CONFLICT DO NOTHING', [key, thumbId, kstDay()])
+    .catch(() => null);
+  if (changedRows(r)) await thumbClick(db, dramaId, thumbId);
+}
 app.get('/api/dramas/:id', async (req, res) => {
   const d = await db.get(catalogSql + ' WHERE d.id=?', [req.params.id]);
   if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
     fail(404, '작품을 찾을 수 없습니다.');
   const entitled = await hasAccess(req.user, d);
-  if (typeof req.query.t === 'string') await thumbClick(db, d.id, req.query.t);
+  if (typeof req.query.t === 'string') await countThumbClick(req, d.id, req.query.t);
   const settings = await loadSettings(db);
   const owned = await ownedEpisodes(req.user, d.id);
   const episodes = await db.all(
@@ -474,7 +532,8 @@ app.get('/api/dramas/:id', async (req, res) => {
   const lockedCount = episodes.filter((e) => isLocked(e.number)).length;
   const perEpisode = episodePingsOf(d, settings);
   res.json({
-    ...d,
+    // 작품 주인·관리자는 관리용 칸(심사 의견 등)까지, 시청자는 공개 칸만 받습니다.
+    ...(seesAll(req.user, d) ? d : publicDrama(d)),
     entitled,
     // AI 기본법에 따른 생성형 AI 결과물 표시: PD 자가 신고 또는 스튜디오 제작 회차가 있으면 표시
     ai_label: d.ai_usage !== 'none' || Number(d.studio_episodes) > 0,
@@ -526,11 +585,43 @@ async function recordSubscriptionView(user, d, number) {
     ])
   )
     return;
+  // 재생을 시작한 기록만으로는 배분에 넣지 않습니다(qualified=0). 시청 위치 보고(/api/history)로
+  // 회차 길이의 기준 %를 넘겨 봤다는 것이 확인되면 1로 바뀝니다. 기준이 0%면 바로 인정합니다.
+  const settings = await loadSettings(db);
+  const instant = Number(settings.sub_min_progress_pct || 0) <= 0 ? 1 : 0;
   await db.run(
-    'INSERT INTO subscription_views (user_id,drama_id,episode,period,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING',
-    [user.id, d.id, number, periodOf(stamp), stamp],
+    'INSERT INTO subscription_views (user_id,drama_id,episode,period,created_at,qualified) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING',
+    [user.id, d.id, number, periodOf(stamp), stamp, instant],
   );
 }
+// 시청 위치 보고가 기준(회차 길이의 sub_min_progress_pct %)을 넘으면: 조회수 +1(회원·회차당 하루 한 번),
+// 이번 달 구독 재생 기록을 '인정'으로 바꿉니다. 재생 시작 후 실제로 흐른 시간이 기준 시간의 절반(2배속 허용)도
+// 안 되면 구독 배분에는 아직 넣지 않습니다(위치만 앞으로 보내는 조작 방지).
+async function recordQualifiedView(user, d, episode, progress) {
+  if (!user || user.role === 'admin' || user.id === d.owner_id) return;
+  const settings = await loadSettings(db);
+  const pct = Math.min(100, Math.max(0, Number(settings.sub_min_progress_pct ?? 30)));
+  const duration = Number(episode.duration) || 0;
+  const needed = (duration * pct) / 100;
+  if (progress < needed) return;
+  const marked = await db.run(
+    'INSERT INTO view_marks (user_id,drama_id,episode,day) VALUES (?,?,?,?) ON CONFLICT DO NOTHING',
+    [user.id, d.id, episode.number, kstDay()],
+  );
+  if (changedRows(marked)) await db.run('UPDATE dramas SET views=views+1 WHERE id=?', [d.id]);
+  const stamp = now();
+  const earliest = new Date(Date.now() - (needed / 2) * 1000).toISOString();
+  await db.run(
+    'UPDATE subscription_views SET qualified=1 WHERE user_id=? AND drama_id=? AND episode=? AND period=? AND qualified=0 AND created_at<=?',
+    [user.id, d.id, episode.number, periodOf(stamp), earliest],
+  );
+}
+// 하루 단위 중복 방지 표시는 며칠 지나면 필요 없으니 정리합니다.
+setInterval(() => {
+  const old = new Date(Date.now() - 3 * 86400000 + 9 * 3600000).toISOString().slice(0, 10);
+  void db.run('DELETE FROM view_marks WHERE day<?', [old]).catch(() => {});
+  void db.run('DELETE FROM thumb_click_marks WHERE day<?', [old]).catch(() => {});
+}, 6 * 3600 * 1000).unref();
 async function hasAccess(user, d) {
   if (d.free) return true;
   if (!user) return false;
@@ -631,12 +722,17 @@ app.post('/api/history', requireAuth, async (req, res) => {
   const d = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [b.dramaId]);
   if (!d) fail(404, '작품을 찾을 수 없습니다.');
   if (!(await canWatch(req.user, d, b.episode))) fail(403, '시청 권한이 없습니다.');
-  if (!(await db.get(`SELECT id FROM episodes e WHERE drama_id=? AND number=?${seesAll(req.user, d) ? '' : ' AND ' + VISIBLE}`, [d.id, b.episode])))
-    fail(404, '회차를 찾을 수 없습니다.');
+  const episode = await db.get(
+    `SELECT id,number,duration FROM episodes e WHERE drama_id=? AND number=?${seesAll(req.user, d) ? '' : ' AND ' + VISIBLE}`,
+    [d.id, b.episode],
+  );
+  if (!episode) fail(404, '회차를 찾을 수 없습니다.');
   await db.run(
     'INSERT INTO history (user_id,drama_id,episode,progress,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(user_id,drama_id) DO UPDATE SET episode=excluded.episode,progress=excluded.progress,updated_at=excluded.updated_at',
     [req.user.id, b.dramaId, b.episode, b.progress, now()],
   );
+  // 조회수·구독 배분 인정(실패해도 시청 위치 저장에는 영향 없음)
+  await recordQualifiedView(req.user, d, episode, b.progress).catch((err) => console.error('qualified view', err?.message));
   res.json({ ok: true });
 });
 // 원화 결제는 숏핑 패스(구독)만 남았습니다. 회차·작품은 핑으로 엽니다(/api/pings/unlock).
@@ -949,7 +1045,7 @@ const dramaSchema = z.object({
   title: z.string().trim().min(2).max(70),
   tagline: z.string().trim().min(2).max(120),
   synopsis: z.string().trim().min(10).max(3000),
-  genre: z.enum(['로맨스', '스릴러', '판타지', '코미디', '청춘']),
+  genre: z.enum(GENRES),
   free: z.boolean().default(false),
   episode_pings: z.number().int().min(0).max(1000).default(0),
   free_episodes: z.number().int().min(1).max(50),
@@ -1142,11 +1238,52 @@ const upload = multer({
 async function uploadMedia(req, res) {
   const f = req.file;
   if (!f) fail(400, 'MP4, JPG, PNG, WEBP 파일만 업로드할 수 있어요.');
-  if (req.path === '/api/account/avatar' && !f.mimetype.startsWith('image/')) {
+  if (req.path === '/api/account/avatar') return res.json(await uploadAvatar(req, f));
+  res.json(await registerMediaFile(f, req.user.id));
+}
+// 프로필 이미지는 일반 이미지 저장소가 아닙니다: 이미지 형식·크기(5MB)·가로세로(64~4096px)를 확인하고,
+// 시청자 계정은 하루 20장까지만 올릴 수 있어요. 저장하지 않은 이미지는 저장 공간 정리에서 지워집니다.
+const AVATAR_DAILY_LIMIT = 20;
+async function uploadAvatar(req, f) {
+  if (!f.mimetype.startsWith('image/')) {
     unlinkSync(f.path);
     fail(400, '프로필은 JPG, PNG, WEBP 이미지만 등록할 수 있어요.');
   }
-  res.json(await registerMediaFile(f, req.user.id));
+  if (req.user.role === 'viewer') {
+    const today = await db.get("SELECT COUNT(*) AS n FROM media_files WHERE owner_id=? AND mime LIKE 'image/%' AND created_at>?", [
+      req.user.id,
+      new Date(Date.now() - 86400000).toISOString(),
+    ]);
+    if (Number(today?.n || 0) >= AVATAR_DAILY_LIMIT) {
+      unlinkSync(f.path);
+      fail(429, '프로필 이미지는 하루 20번까지 올릴 수 있어요. 내일 다시 시도해 주세요.');
+    }
+  }
+  const result = await registerMediaFile(f, req.user.id);
+  const w = Number(result.width) || 0,
+    h = Number(result.height) || 0;
+  if (w < 64 || h < 64 || w > 4096 || h > 4096) {
+    await db.run('DELETE FROM media_files WHERE url=?', [result.url]).catch(() => {});
+    await rm(path.join(uploadDir, path.basename(result.url)), { force: true }).catch(() => {});
+    fail(400, '프로필 이미지는 가로·세로 64~4096px 사이로 올려 주세요.');
+  }
+  return result;
+}
+// 프로필 이미지를 바꾸면 전에 올린 이미지(다른 곳에서 쓰지 않는 본인 파일)는 바로 지웁니다.
+async function dropOldAvatar(userId, oldUrl, newUrl) {
+  if (!oldUrl || oldUrl === newUrl || !/^\/uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(oldUrl)) return;
+  const file = await db.get('SELECT owner_id FROM media_files WHERE url=?', [oldUrl]);
+  if (file?.owner_id !== userId) return;
+  const used = await db.get(
+    `SELECT 1 AS used WHERE EXISTS (SELECT 1 FROM user_profiles WHERE avatar=? AND user_id<>?)
+       OR EXISTS (SELECT 1 FROM dramas WHERE image=?) OR EXISTS (SELECT 1 FROM channels WHERE banner=? OR logo=?)
+       OR EXISTS (SELECT 1 FROM drama_thumbnails WHERE url=?) OR EXISTS (SELECT 1 FROM episodes WHERE thumbnail=?)
+       OR EXISTS (SELECT 1 FROM studio_library WHERE image=?) OR EXISTS (SELECT 1 FROM studio_characters WHERE image=?)`,
+    [oldUrl, userId, oldUrl, oldUrl, oldUrl, oldUrl, oldUrl, oldUrl, oldUrl],
+  );
+  if (used) return;
+  await db.run('DELETE FROM media_files WHERE url=?', [oldUrl]);
+  await rm(path.join(uploadDir, path.basename(oldUrl)), { force: true }).catch(() => {});
 }
 // 업로드된 파일(일반·분할 업로드 공통)의 형식을 확인하고 media_files에 등록합니다.
 // 실패하면 파일을 지웁니다.
@@ -1198,7 +1335,7 @@ app.post(
   requireAuth,
   multer({
     storage,
-    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
     fileFilter: (req, file, cb) =>
       cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)),
   }).single('file'),
@@ -1228,7 +1365,7 @@ app.post('/api/studio/dramas/:id/episodes', roles('pd', 'admin'), async (req, re
     if (d.status === 'published') {
       // 연재 중인 작품: 공개된 회차는 그대로 두고, 새 회차(다음 번호)나 아직 공개 전인 회차만 올리고 고칩니다.
       if (existing && !EDITABLE_EPISODE.includes(existing.review_status))
-        fail(409, existing.review_status === 'approved' ? '이미 공개된 회차는 바꿀 수 없어요. 새 회차로 올려 주세요.' : '검수 중이거나 공개 예약된 회차예요.');
+        fail(409, existing.review_status === 'approved' ? '이미 공개된 회차는 바꿀 수 없어요. 새 회차로 올려 주세요.' : '심사 중이거나 공개 예약된 회차예요.');
       const last = await db.get('SELECT MAX(number) AS n FROM episodes WHERE drama_id=?', [d.id]);
       if (!existing && b.number !== Number(last?.n || 0) + 1) fail(409, `다음 회차(${Number(last?.n || 0) + 1}화)부터 순서대로 올려 주세요.`);
     } else if (!['draft', 'rejected'].includes(d.status)) fail(409, '임시저장 또는 반려 상태에서 회차를 수정해 주세요.');
@@ -1289,10 +1426,10 @@ app.post('/api/admin/dramas/:id/review', roles('admin'), async (req, res) => {
     await contentEvent(req, d.id, b.status, b.note.trim());
     return d;
   });
-  // PD에게 검수 결과 알림(알림 저장에 실패해도 검수 결과에는 영향 없음)
+  // PD에게 심사 결과 알림(알림 저장에 실패해도 심사 결과에는 영향 없음)
   await notify(db, reviewed.owner_id, {
     kind: 'drama_review',
-    title: b.status === 'published' ? `${reviewed.title} 검수가 승인됐어요` : `${reviewed.title} 검수가 반려됐어요`,
+    title: b.status === 'published' ? `${reviewed.title} 심사가 승인됐어요` : `${reviewed.title} 심사가 반려됐어요`,
     body: b.status === 'published' ? '시청자가 지금 볼 수 있어요.' : b.note.trim(),
     link: 'studio/contents',
   }).catch(() => {});
@@ -1316,7 +1453,8 @@ app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/support', requireAuth, async (req, res) => {
-  const admin = req.user.role === 'admin';
+  // 관리자도 시청자 화면의 '문의하기'(mine=1)에서는 본인 문의만 봅니다. 전체 문의는 관리자 화면에서 봅니다.
+  const admin = req.user.role === 'admin' && req.query.mine !== '1';
   res.json(
     await db.all(
       'SELECT t.*,u.name FROM support_tickets t JOIN users u ON t.user_id=u.id' +
@@ -1378,6 +1516,7 @@ const routeContext = {
 };
 studioRoutes(routeContext);
 adminRoutes(routeContext);
+accountRoutes({ ...routeContext, authLimiter, sessionToken, publicUser, origin, proxyStatus, production });
 uploadRoutes(routeContext);
 lamaRoutes(routeContext);
 serialRoutes(routeContext);
@@ -1388,6 +1527,8 @@ const aiEngine = createAiEngine({ db, uploadDir, demo });
 // 회차·예고편 합성 대기열. COMPOSE_WORKER=external이면 별도 작업 프로세스(npm run worker)가 처리합니다.
 const renderer = createRenderWorker({ db, uploadDir });
 adminAiRoutes({ ...routeContext, engine: aiEngine });
+// 모델 품질 시험 · 품질 대시보드(6단계, 최고 관리자 전용)
+benchRoutes({ ...routeContext, engine: aiEngine });
 studioAiRoutes({ ...routeContext, engine: aiEngine, renderer });
 await aiEngine.start();
 if (process.env.COMPOSE_WORKER !== 'external') {
@@ -1436,15 +1577,38 @@ app.use('/api', (req, res) => res.status(404).json({ error: '요청을 찾을 �
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   if (err instanceof z.ZodError)
+    // 첫 번째 문제를 한국어 문장으로 바꿔 error에 싣습니다(화면은 error를 그대로 보여 줍니다).
+    // details(문제별 문장)와 field(첫 문제 항목)는 화면이 입력칸을 짚어 줄 때 씁니다.
     return res.status(400).json({
-      error: '입력 내용을 확인해 주세요.',
-      details: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+      error: zodMessage(err.issues[0]),
+      field: err.issues[0]?.path?.join('.') || '',
+      details: err.issues.map((i) => zodMessage(i)),
     });
   if (err instanceof multer.MulterError)
-    return res.status(400).json({ error: '업로드 제한을 확인해 주세요. 영상은 최대 500MB입니다.' });
-  console.error(err.message, err.detail ? '\n' + err.detail : '');
-  res.status(err.status || 500).json({
-    error: err.status ? err.message : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    return res.status(400).json({
+      error:
+        err.code === 'LIMIT_FILE_SIZE' && req.path === '/api/account/avatar'
+          ? '프로필 이미지는 5MB 이하로 올려 주세요.'
+          : '업로드 제한을 확인해 주세요. 영상은 최대 500MB입니다.',
+    });
+  // JSON 형식 오류·본문 크기 초과(express.json)는 사용자가 고칠 수 있는 요청 문제로 안내합니다.
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: '요청 형식이 올바르지 않아요.' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: '보낸 내용이 너무 커요.' });
+  const status = Number(err.status || err.statusCode) || 500;
+  // 5xx는 원인 추적을 위해 서버 기록에 스택까지 남깁니다(화면에는 정리된 문구만 보냅니다).
+  if (status >= 500)
+    console.error(`[숏핑] ${req.method} ${String(req.originalUrl || '').split('?')[0]} → ${status}\n${err.stack || err.message}`, err.detail ? '\n' + err.detail : '');
+  else if (err.detail) console.error(err.message, '\n' + err.detail);
+  // 직접 정한 안내(상태 코드가 있는 오류)만 보여 주고, 내부 경로·시스템 오류 원문은 감춥니다.
+  const safe = Boolean(err.status) && !looksInternal(err.message);
+  res.status(status).json({
+    error: safe
+      ? err.message
+      : status === 404
+        ? '요청한 항목을 찾을 수 없어요.'
+        : status < 500
+          ? '요청을 처리하지 못했어요. 입력 내용을 확인해 주세요.'
+          : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
     // 핑 부족처럼 화면이 다음 행동(충전하러 가기)을 정할 수 있는 오류는 코드와 수치를 함께 보냅니다.
     ...(err.status && err.code ? { code: err.code, need: err.need, balance: err.balance } : {}),
   });
@@ -1476,10 +1640,29 @@ if (production) {
 const server = app.listen(port, process.env.HOST || '127.0.0.1', () =>
   console.log(`숏핑 → http://localhost:${port} · ${db.engine} · demo=${demo}`),
 );
-async function shutdown() {
-  server.close();
-  await db.close();
+// 종료 신호(SIGTERM·SIGINT): 새 연결을 받지 않고, 진행 중인 요청이 끝나길 최대 10초 기다린 뒤 DB를 닫고 끝냅니다.
+// 두 번째 신호가 오거나 10초가 지나면 바로 끝냅니다(배포 도구·테스트가 멈추지 않게).
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) process.exit(0);
+  shuttingDown = true;
+  console.log(`[숏핑] ${signal} 받음 — 새 요청을 멈추고 종료합니다.`);
+  const force = setTimeout(() => process.exit(0), 10_000);
+  force.unref();
+  // 새 AI 작업은 더 가져가지 않아요(진행 중인 것은 아래에서 다음 서버에 넘겨줘요).
+  aiEngine.pause();
+  try {
+    await new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeIdleConnections?.();
+    });
+  } catch {
+    /* 이미 닫힘 */
+  }
+  // 처리 중이던 AI 작업을 넘겨주고(다음 서버가 바로 이어받도록) DB를 닫습니다.
+  await aiEngine.stop().catch(() => {});
+  await Promise.resolve(db.close()).catch(() => {});
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
