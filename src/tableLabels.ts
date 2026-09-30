@@ -45,6 +45,6 @@ export function installTableLabels() {
     if (queued) return;
     queued = true;
     requestAnimationFrame(run);
-  }).observe(document.body, { childList: true, subtree: true, characterData: false });
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
   run();
 }

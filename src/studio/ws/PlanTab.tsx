@@ -36,7 +36,8 @@ export default function PlanTab({ ws, genres }: { ws: WS; genres: string[] }) {
   const { data } = ws;
   return (
     <>
-      {ws.can("manage") && <AutopilotPanel data={data} models={ws.models} notify={ws.notify} reload={ws.load} goLama={ws.goLama} compact />}
+      {/* 빠른 제작은 서버가 소유자 본인만 허용해요(관리자가 대신 눌러 403이 나지 않게). */}
+      {ws.can("manage") && (!data.team || data.team.role === "owner") && <AutopilotPanel data={data} models={ws.models} notify={ws.notify} reload={ws.load} goLama={ws.goLama} compact />}
       <StoryForm ws={ws} genres={genres} />
       <ScriptImportSection ws={ws} />
       <AdaptSection ws={ws} />

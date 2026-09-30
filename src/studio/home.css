@@ -1,0 +1,446 @@
+/* ── AI 드라마 제작 첫 화면(아이디어 입력창 중심) ─────────────────── */
+.ai-home {
+  margin-bottom: 26px;
+}
+.ai-hero {
+  position: relative;
+  text-align: center;
+  padding: 18px 0 20px;
+}
+.ai-hero .eyebrow {
+  display: block;
+  margin-bottom: 8px;
+}
+.ai-hero h2 {
+  margin: 0 0 8px;
+  font-size: clamp(22px, 3.2vw, 34px);
+  letter-spacing: -0.5px;
+}
+.ai-hero p {
+  margin: 0 auto;
+  max-width: 560px;
+  color: #8ea592;
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+.ai-hero-wallet {
+  position: absolute;
+  right: 0;
+  top: 14px;
+}
+
+/* 입력 카드 */
+.ai-start {
+  position: relative;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid #2c3a33;
+  background: linear-gradient(180deg, #131b1a, #0f1516);
+  box-shadow:
+    0 0 0 6px #c4f56208,
+    0 24px 60px #00000060;
+  display: grid;
+  gap: 14px;
+}
+.ai-start:focus-within {
+  border-color: #c4f56255;
+  box-shadow:
+    0 0 0 6px #c4f56210,
+    0 24px 60px #00000060;
+}
+.ai-start.has-shot {
+  grid-template-columns: minmax(0, 1fr) 300px;
+  max-width: 1060px;
+}
+.ai-start-main {
+  min-width: 0;
+}
+.ai-start textarea {
+  margin: 0;
+  min-height: 92px;
+  font-size: 15px;
+  line-height: 1.7;
+  border-color: transparent;
+  background: #0b1113;
+  resize: vertical;
+}
+.ai-start textarea:focus {
+  outline: none;
+  border-color: #2c3a33;
+}
+.ai-start-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.ai-start-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.ai-start-chips .se-pop {
+  width: min(460px, 90vw);
+}
+.ai-start-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.ai-shoot,
+.ai-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  padding: 0 16px 0 14px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+.ai-shoot span,
+.ai-go span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  font-size: 13px;
+}
+.ai-shoot small,
+.ai-go small {
+  font-size: 10px;
+  opacity: 0.8;
+  font-weight: 600;
+}
+.ai-go {
+  box-shadow: 0 6px 20px #c4f56233;
+}
+.ai-start-error {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #ff7a7a14;
+  border: 1px solid #ff7a7a44;
+  color: #ffb0b0;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ai-start-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 10.5px;
+}
+.ai-styles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 첫 컷 미리 보기 */
+.ai-shot {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 10px;
+  align-content: start;
+}
+.ai-shot-frame {
+  aspect-ratio: 9 / 16;
+  max-height: 420px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0b1012;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 10px 30px #00000055;
+  justify-self: center;
+  width: min(100%, 236px);
+}
+.ai-shot-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ai-shot-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #8ea592;
+  font-size: 12px;
+}
+.ai-shot-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-shot-side strong {
+  font-size: 14px;
+}
+.ai-shot-side small {
+  line-height: 1.6;
+}
+.ai-shot-side .primary,
+.ai-shot-side .secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+}
+.ai-shot-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+.ai-shot-tools .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 스토리 스타터 띠 */
+.ai-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 26px 0 10px;
+  flex-wrap: wrap;
+}
+.ai-strip-head .text-link {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ai-strip-filters {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.ai-strip-filters::-webkit-scrollbar {
+  display: none;
+}
+.ai-strip-filters .chip {
+  flex: none;
+}
+.ai-strip {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 2px 12px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  scrollbar-color: #2c3a33 transparent;
+}
+.ai-strip > li {
+  flex: 0 0 200px;
+  scroll-snap-align: start;
+  display: flex;
+}
+.ai-card {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid #27322c;
+  background: #ffffff05;
+  text-align: left;
+  color: #dbe6dd;
+  transition:
+    border-color 0.15s,
+    transform 0.15s,
+    background 0.15s;
+}
+.ai-card:hover:not(:disabled) {
+  border-color: #c4f56266;
+  background: #c4f5620a;
+  transform: translateY(-2px);
+}
+.ai-card.on {
+  border-color: var(--lime);
+  background: #c4f56213;
+}
+.ai-card strong {
+  font-size: 13px;
+  margin-top: 2px;
+}
+.ai-card small {
+  color: #8ea592;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ai-card em {
+  font-style: normal;
+  font-size: 10px;
+  color: #6f8978;
+  margin-top: auto;
+  padding-top: 4px;
+}
+.ai-card .studio-template-icon {
+  width: 40px;
+  height: 40px;
+}
+.ai-card-on {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--lime);
+  color: #101710;
+}
+.ai-card.util {
+  background: #0b1113;
+  border-style: dashed;
+}
+.ai-card-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #ffffff08;
+  color: #a9b8ae;
+}
+
+@media (max-width: 900px) {
+  .ai-start.has-shot {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ai-shot {
+    grid-template-columns: 150px minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+  .ai-shot-frame {
+    max-height: none;
+  }
+}
+@media (max-width: 760px) {
+  .ai-hero {
+    text-align: left;
+    padding: 8px 0 14px;
+  }
+  .ai-hero p {
+    margin: 0;
+  }
+  .ai-hero-wallet {
+    position: static;
+    margin-top: 10px;
+  }
+  .ai-start {
+    padding: 10px;
+    border-radius: 16px;
+  }
+  .ai-start textarea {
+    font-size: 14px;
+    min-height: 84px;
+  }
+  .ai-start-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ai-start-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0 -10px;
+    padding: 0 10px 4px;
+  }
+  .ai-start-chips::-webkit-scrollbar {
+    display: none;
+  }
+  .ai-start-chips .se-chipwrap {
+    position: static;
+    flex: none;
+  }
+  .ai-start-chips .se-pop {
+    position: fixed;
+    z-index: 80;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: auto;
+    max-height: 82vh;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+  }
+  .ai-start-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .ai-shoot,
+  .ai-go {
+    justify-content: center;
+    height: 48px;
+    padding: 0 10px;
+  }
+  .ai-shoot span,
+  .ai-go span {
+    align-items: center;
+  }
+  .ai-shot {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+  .ai-strip > li {
+    flex-basis: 170px;
+  }
+}
+
+/* 새 프로젝트 창: 첫 컷을 포스터로 넣는다는 안내 */
+.first-shot-note {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid #3f5a3c;
+  background: #c4f5620d;
+}
+.first-shot-note img {
+  width: 44px;
+  height: 78px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.first-shot-note span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.first-shot-note small {
+  color: #8ea592;
+  line-height: 1.5;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.ai-start-note.danger {
+  color: #ffb0b0;
+}

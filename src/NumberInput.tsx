@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type InputHTMLAttributes, type PointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, type InputHTMLAttributes, type PointerEvent } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
 // 숫자 입력칸: 브라우저 기본 위/아래 화살표 대신 앱 디자인에 맞춘 버튼을 붙여요.
@@ -32,6 +32,8 @@ export default function NumberInput(rest: Props) {
     return () => ro.disconnect();
   }, []);
   const timer = useRef<{ t?: ReturnType<typeof setTimeout>; moved?: boolean }>({});
+  // 누른 채로 화면이 바뀌어도 반복 타이머가 남지 않게
+  useEffect(() => () => clearTimeout(timer.current.t), []);
 
   const bump = (dir: 1 | -1) => {
     const el = ref.current;
@@ -43,7 +45,9 @@ export default function NumberInput(rest: Props) {
     } catch {
       const min = el.min === '' ? -Infinity : Number(el.min);
       const max = el.max === '' ? Infinity : Number(el.max);
-      el.value = String(Math.min(max, Math.max(min, Number(el.value || 0) + dir)));
+      // React가 값 변화를 알아차리도록 원래 setter로 넣어요(el.value= 는 React 추적기가 가로채요)
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(el, String(Math.min(max, Math.max(min, Number(el.value || 0) + dir))));
     }
     if (el.value === before) return;
     timer.current.moved = true;
@@ -55,7 +59,7 @@ export default function NumberInput(rest: Props) {
     clearTimeout(timer.current.t);
     timer.current.t = undefined;
     // 칸을 벗어날 때 저장·보정하는 화면이 있어서, 버튼을 뗄 때 한 번 알려 줘요.
-    if (timer.current.moved && rest.onBlur) {
+    if (timer.current.moved && rest.onBlur && document.activeElement !== ref.current) {
       timer.current.moved = false;
       setTimeout(
         () => ref.current?.dispatchEvent(new FocusEvent('focusout', { bubbles: true })),
@@ -70,6 +74,7 @@ export default function NumberInput(rest: Props) {
     bump(dir);
     const repeat = (delay: number) => {
       timer.current.t = setTimeout(() => {
+        if (!ref.current) return;
         bump(dir);
         repeat(70);
       }, delay);
@@ -81,7 +86,7 @@ export default function NumberInput(rest: Props) {
   return (
     <span className={'num-field' + (rest.className ? ' has-' + rest.className.split(' ')[0] : '')}>
       <input ref={ref} type="number" {...rest} />
-      <span ref={steps} className="num-steps" aria-hidden="true">
+      <span ref={steps} className="num-steps" aria-hidden="true" onContextMenu={(e) => e.preventDefault()}>
         <button
           type="button"
           tabIndex={-1}

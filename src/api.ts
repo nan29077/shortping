@@ -1226,6 +1226,7 @@ export const jobKindLabel: Record<string, string> = {
   tool_poster: 'AI 포스터(업로드 작품)',
   tool_subtitles: '자동 자막',
   playground: '관리자 시험',
+  tool_first_shot: '첫 컷 미리 보기',
 };
 export const jobStatusLabel: Record<string, string> = {
   queued: '대기 중',

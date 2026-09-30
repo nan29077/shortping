@@ -501,7 +501,10 @@ export function createAiEngine({ db, uploadDir, demo }) {
     return db.transaction(async () => {
       const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
       if (!fresh || fresh.status !== 'running') return false; // 취소·삭제된 작업
-      const output = await handler.onSuccess({ job: fresh, input, result: media, model });
+      // 결과 반영(DB 갱신) 중 오류는 공급사 문제가 아니라서 같은 입력을 다시 만들지 않아요(원가만 늘어남). 모델 전환도 하지 않음.
+      const output = await handler.onSuccess({ job: fresh, input, result: media, model }).catch((e) => {
+        throw Object.assign(e instanceof Error ? e : new Error(String(e)), { retryable: false, status: e?.status || 500, handlerError: true });
+      });
       const charge = Number(fresh.billed) ? Math.min(Number(fresh.estimate_lama), lamaFor(model, settings, units)) : 0;
       let used = 0;
       if (Number(fresh.hold_paid) + Number(fresh.hold_bonus) > 0) {
@@ -546,7 +549,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
       if (!fresh || !['running', 'queued'].includes(fresh.status)) return;
       const attempts = Number(fresh.attempts) + 1;
       // 자동 선택이면 요청 형식 오류(4xx)처럼 같은 모델로는 다시 해도 안 되는 경우에도 다른 모델을 한 번 더 시도합니다.
-      const switchOnly = err?.retryable === false && fresh.requested_model === 'auto' && err?.status !== 401;
+      const switchOnly = err?.retryable === false && !err?.handlerError && fresh.requested_model === 'auto' && err?.status !== 401;
       const retryable = (err?.retryable !== false || switchOnly) && attempts < 3;
       if (retryable) {
         // 자동 선택이면 아직 안 써 본 다음 모델(예약한 라마 안에서)로, 직접 선택이면 같은 모델로 한 번 더 시도합니다.

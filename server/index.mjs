@@ -264,6 +264,8 @@ async function mediaUser(req) {
 app.use('/api', async (req, res, next) => {
   try {
     const token = sessionToken(req);
+    // 같은 계정의 다른 기기 · 탭을 구분하는 짧은 세션 표식(토큰 자체는 저장하지 않아요)
+    req.sessionKey = token ? createHash('sha256').update(token).digest('hex').slice(0, 16) : '';
     req.user = token
       ? await db.get(
           'SELECT u.*,p.avatar,p.bio,p.auto_next,p.auto_unlock FROM users u JOIN sessions s ON s.user_id=u.id LEFT JOIN user_profiles p ON p.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?',

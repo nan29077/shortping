@@ -264,7 +264,7 @@ test('compose v2 through the render queue with cards and music, trailer, metadat
   p = await waitJobs(pid, 180000);
   assert.ok(p.episodes.every((e) => e.status === 'composed'), JSON.stringify(p.episodes.map((e) => [e.status, e.compose_error])));
   const status = (await request(`/studio/ai/projects/${pid}/episodes/${ep1.id}/compose`, { cookie: seller.cookie })).data;
-  assert.equal(status.progress, 1);
+  assert.equal(status.progress, 100); // 조회 API는 %로 줘요(2026-09-30)
   const vtt = await (await fetch(`${base}/api/studio/ai/episodes/${ep1.id}/subtitles`, { headers: { cookie: seller.cookie } })).text();
   assert.match(vtt, /line:50%/);
   // 인트로 2초 + 엔딩 2.5초가 더해진다

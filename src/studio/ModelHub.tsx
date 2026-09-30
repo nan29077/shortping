@@ -52,6 +52,8 @@ export default function ModelHub({
   setChoice,
   projectId,
   close,
+  quick,
+  setQuick,
 }: {
   models: AiModelOption[];
   families: AiFamily[];
@@ -61,6 +63,8 @@ export default function ModelHub({
   setChoice: (k: ChoiceKey, c: Choice) => void;
   projectId?: string;
   close: () => void;
+  quick?: boolean;
+  setQuick?: (v: boolean) => void;
 }) {
   const [why, setWhy] = useState<Record<string, ModelWhy[]>>({});
   const [family, setFamily] = useState('');
@@ -137,6 +141,15 @@ export default function ModelHub({
         <p className="muted hub-tip">
           <Info size={13} /> 초안으로 전체를 먼저 만들어 보고, 마음에 드는 컷만 ‘고급으로 다시’ 만들면 라마를 아낄 수 있어요.
         </p>
+        {setQuick && (
+          <label className={'opt-row quick-run' + (quick ? ' on' : '')}>
+            <input type="checkbox" checked={!!quick} onChange={(e) => setQuick(e.target.checked)} />
+            <span>
+              <b>확인 없이 바로 실행</b>
+              <small>만들기 버튼에 예상 라마가 보이면 확인 창을 건너뛰어요. 라마가 모자라거나 예산·지원 한도를 넘을 때는 그래도 물어봐요.</small>
+            </span>
+          </label>
+        )}
         {connected.length > 0 && (
           <div className="hub-row">
             <span className="hub-label">AI 계열로 맞추기</span>

@@ -1,0 +1,382 @@
+/* ── 3단계(2026-09-30): 한 줄 레일 · 대본 서랍 · 완성 바 · 공개 전 확인 · 시작 방법 ── */
+
+/* 한 줄 레일: 큰 탭 카드 대신 작은 알약 4개 + 진행률 */
+.ws-rail {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid #22302a;
+  background: #0e1516;
+}
+.ws-rail .ws-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ws-rail .ws-tabs::-webkit-scrollbar {
+  display: none;
+}
+.ws-rail .ws-tabs button {
+  flex: none;
+  gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  min-height: 38px;
+}
+.ws-rail .ws-tabs button:hover {
+  background: #ffffff08;
+}
+.ws-rail .ws-tabs button > b {
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+}
+.ws-rail .ws-tabs strong {
+  font-size: 12px;
+}
+.ws-rail .ws-tabs small {
+  font-size: 9.5px;
+}
+.ws-rail .ws-tabs button.active {
+  border-color: #3f5a3c;
+  background: #c4f56213;
+}
+.ws-rail .ws-tabs button.active > b {
+  background: var(--lime);
+  color: #101710;
+}
+.ws-rail .ws-progress {
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin: 0 6px 0 auto;
+  min-width: 160px;
+}
+.ws-rail .studio-progress-bar {
+  flex: 1;
+  min-width: 60px;
+}
+.ws-rail .next-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #2c3a33;
+  background: #ffffff06;
+  font-size: 11px;
+  color: #c9d8cd;
+  white-space: nowrap;
+}
+.ws-rail .next-action span {
+  font-size: 11px;
+}
+.ws-rail .next-action.here,
+.ws-rail .next-action.done {
+  color: #8ea592;
+  border-style: dashed;
+}
+.ws-rail .next-action.done {
+  color: var(--lime);
+}
+@media (max-width: 760px) {
+  .ws-rail {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 6px 6px 8px;
+  }
+  .ws-rail .ws-progress {
+    margin: 0 4px;
+    min-width: 0;
+  }
+  .ws-rail .ws-tabs button > span small {
+    display: none;
+  }
+}
+
+/* 장면 편집 머리 오른쪽 버튼 */
+.ws-head-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 컷이 없을 때: 시작 방법 3가지 */
+.ws-start-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+.ws-start-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid #27322c;
+  background: #ffffff05;
+  text-align: left;
+  color: #dbe6dd;
+  min-height: 140px;
+}
+.ws-start-card:hover:not(:disabled) {
+  border-color: #c4f56266;
+  background: #c4f5620a;
+}
+.ws-start-card > svg {
+  color: var(--lime);
+}
+.ws-start-card strong {
+  font-size: 13px;
+}
+.ws-start-card small {
+  color: #8ea592;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.ws-start-card:first-child {
+  border-color: #3f5a3c;
+  background: #c4f5620d;
+}
+@media (max-width: 760px) {
+  .ws-start-options {
+    grid-template-columns: 1fr;
+  }
+  .ws-start-card {
+    min-height: 0;
+  }
+}
+
+/* 대본 서랍 */
+.ws-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  background: #00000088;
+  backdrop-filter: blur(2px);
+}
+.ws-drawer {
+  position: fixed;
+  z-index: 86;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(640px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: #0f1516;
+  border-left: 1px solid #2c3a33;
+  box-shadow: -20px 0 60px #000000aa;
+  animation: ws-drawer-in 0.2s ease-out;
+}
+.ws-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 10px 12px 16px;
+  border-bottom: 1px solid #22302a;
+}
+.ws-drawer-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.ws-drawer-head small {
+  font-size: 10.5px;
+}
+.ws-drawer-head .icon-button {
+  margin-left: auto;
+}
+.ws-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 16px 24px;
+  min-width: 0;
+}
+.ws-drawer-body .management-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+@keyframes ws-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@media (max-width: 760px) {
+  .ws-drawer {
+    width: 100vw;
+    border-left: 0;
+  }
+  .ws-drawer-body {
+    padding: 12px 12px calc(24px + env(safe-area-inset-bottom));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-drawer {
+    animation: none;
+  }
+}
+
+/* 완성 바 */
+.ws-finishbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #2c3a33;
+  background: #0e1516;
+}
+.ws-finishbar.done {
+  border-color: #3f5a3c;
+}
+.ws-finishbar-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ws-finishbar-info > svg {
+  color: var(--lime);
+  flex: none;
+}
+.ws-finishbar-info span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ws-finishbar-info b {
+  font-size: 13px;
+}
+.ws-finishbar-info small {
+  font-size: 11px;
+}
+.ws-finishbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ws-finishbar-actions .text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.ws-finishbar > .ready-list {
+  flex-basis: 100%;
+  margin-top: 4px;
+}
+@media (max-width: 760px) {
+  .ws-finishbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ws-finishbar-actions {
+    justify-content: flex-start;
+  }
+}
+
+/* 공개 전 확인 목록 */
+.ready-list {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #2c3a33;
+  background: #ffffff05;
+  margin-bottom: 14px;
+}
+.ready-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ready-head > svg {
+  color: var(--lime);
+}
+.ready-head strong {
+  font-size: 12.5px;
+}
+.ready-head small {
+  flex-basis: 100%;
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+.ready-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ready-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 5px 0;
+  border-bottom: 1px dashed #1f2b26;
+}
+.ready-list li:last-child {
+  border-bottom: 0;
+}
+.ready-list li i {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  background: #ffffff10;
+  color: #8ea592;
+}
+.ready-list li.ok i {
+  background: #c4f56222;
+  color: var(--lime);
+}
+.ready-list li.must i {
+  background: #f5c26222;
+  color: #f5d38e;
+}
+.ready-list li.ok span {
+  color: #8ea592;
+}
+.ready-list li span {
+  flex: 1;
+  min-width: 0;
+}
+.ready-list li .text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  font-size: 11px;
+}

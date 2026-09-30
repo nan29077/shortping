@@ -110,7 +110,9 @@ test('media token opens only media routes, is tamper-proof, and dies with the se
   const [body, sig] = mt.data.token.split('.');
   const forged = Buffer.from(JSON.stringify({ s: 'a'.repeat(32), e: Date.now() + 3600000 })).toString('base64url');
   assert.equal((await call(sample + '?mt=' + forged + '.' + sig)).status, 403);
-  assert.equal((await call(sample + '?mt=' + body + '.' + sig.slice(0, -2) + 'AA')).status, 403);
+  // 서명 끝을 확실히 다른 글자로 바꿔요(원래 끝이 'AA'면 같은 토큰이 되어 우연히 통과할 수 있어요).
+  const tampered = sig.slice(0, -2) + (sig.endsWith('AA') ? 'BB' : 'AA');
+  assert.equal((await call(sample + '?mt=' + body + '.' + tampered)).status, 403);
   // 미디어가 아닌 경로에서는 미디어 토큰으로 로그인되지 않음
   assert.equal((await call('/api/auth/me' + q)).data.user, null);
   // 공개 작품 재생도 미디어 토큰으로 열림(무료 1화)

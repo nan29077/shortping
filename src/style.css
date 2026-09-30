@@ -8725,6 +8725,9 @@ input[type='number']::-webkit-outer-spin-button {
   padding-right: 36px !important;
 }
 .num-steps {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   position: absolute;
   top: 5px;
   bottom: 5px;

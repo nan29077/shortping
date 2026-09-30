@@ -285,6 +285,7 @@ export async function migrate(db) {
     ['studio_shots', 'verify', "TEXT NOT NULL DEFAULT ''"], // AI 결과 검수(JSON)
     ['studio_shots', 'updated_at', 'TEXT'],
     ['studio_shots', 'updated_by', 'TEXT'],
+    ['studio_shots', 'updated_session', 'TEXT'], // 같은 사람이라도 다른 기기 · 탭에서 고쳤는지 알기 위해(세션 해시 앞부분)
     // 힉스필드 벤치마킹 고도화(2026-09-29): 컷 연출(앵글·렌즈 느낌·움직임 강도) · 끝 장면 지정 · 화질 올리기 기록 · 효과
     ['studio_shots', 'angle', "TEXT NOT NULL DEFAULT ''"],
     ['studio_shots', 'lens', "TEXT NOT NULL DEFAULT ''"],

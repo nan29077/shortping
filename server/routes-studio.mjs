@@ -199,10 +199,15 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
       if (list.length >= MAX_CATEGORIES)
         fail(400, `카테고리는 최대 ${MAX_CATEGORIES}개까지 만들 수 있어요.`);
       if (list.some((c) => c.name === b.name)) fail(409, '이미 있는 카테고리입니다.');
+      const last = await db.get('SELECT COALESCE(MAX(sort_order),-1) AS n FROM channel_categories WHERE channel_id=?', [channel.id]);
       await db.run(
         'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?)',
-        [randomUUID(), channel.id, b.name, list.length],
+        [randomUUID(), channel.id, b.name, Number(last?.n ?? -1) + 1],
       );
+    }).catch((e) => {
+      // 같은 이름을 동시에 만들면 UNIQUE 제약이 막아요(PostgreSQL). 500 대신 409로.
+      if (!e.status && db.isUnique(e)) fail(409, '이미 있는 카테고리입니다.');
+      throw e;
     });
     res.status(201).json({ ok: true });
   });
@@ -243,9 +248,10 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
           if (list.length >= MAX_CATEGORIES)
             fail(400, `카테고리는 최대 ${MAX_CATEGORIES}개까지 만들 수 있어요.`);
           b.category_id = createdId = randomUUID();
+          const last = await db.get('SELECT COALESCE(MAX(sort_order),-1) AS n FROM channel_categories WHERE channel_id=?', [channel.id]);
           await db.run(
             'INSERT INTO channel_categories (id,channel_id,name,sort_order) VALUES (?,?,?,?)',
-            [createdId, channel.id, b.category_name, list.length],
+            [createdId, channel.id, b.category_name, Number(last?.n ?? -1) + 1],
           );
         }
       } else if (b.category_id) {
@@ -260,6 +266,9 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
         b.category_id || null,
         drama.id,
       ]);
+    }).catch((e) => {
+      if (!e.status && db.isUnique(e)) fail(409, '같은 이름의 카테고리를 방금 만들었어요. 다시 골라 주세요.');
+      throw e;
     });
     res.json({ ok: true, category_id: b.category_id || null, created: !!createdId });
   });

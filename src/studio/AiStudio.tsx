@@ -7,12 +7,9 @@ import {
   Clapperboard,
   FileCheck2,
   Footprints,
-  Plus,
   Search,
   ShieldCheck,
-  Sparkles,
   Trash2,
-  Upload,
 } from 'lucide-react';
 import { api, lama, teamRoleName, type AiOverview, type AutopilotEstimate } from '../api';
 import { Empty, Modal, navigate } from '../App';
@@ -27,6 +24,7 @@ import { JoinInvite } from './ws/TeamParts';
 import ReverseStart from './ReverseStart';
 import './ws/team.css';
 import NumberInput from '../NumberInput';
+import StartHero, { type FirstShot } from './StartHero';
 
 // 숏핑 스튜디오(AI 제작) 첫 화면: 이용 약관 동의 → 프로젝트 목록 → 작업 공간
 const TERMS = [
@@ -37,12 +35,13 @@ const TERMS = [
   '라마는 작업을 시작할 때 예상치만큼 예약되고, 끝나면 실제 사용량만 차감돼요. 실패한 작업은 전액 돌려드려요. AI 결과물의 품질은 모델에 따라 다를 수 있어요.',
 ];
 
-const readStudioRoute = (): { id: string | null; tab: TabId; join?: string } => {
+const readStudioRoute = (): { id: string | null; tab: TabId; join?: string; explicit: boolean } => {
   const p = location.hash.replace(/^#\/?/, '').split('/');
   // 협업 초대 링크: #/studio/ai/join/<토큰>
-  if (p[0] === 'studio' && p[1] === 'ai' && p[2] === 'join' && p[3]) return { id: null, tab: 'plan', join: p[3] };
-  const tab = (TABS.some((t) => t.id === p[3]) ? p[3] : 'plan') as TabId;
-  return p[0] === 'studio' && p[1] === 'ai' && p[2] ? { id: p[2], tab } : { id: null, tab: 'plan' };
+  if (p[0] === 'studio' && p[1] === 'ai' && p[2] === 'join' && p[3]) return { id: null, tab: 'plan', join: p[3], explicit: true };
+  const explicit = TABS.some((t) => t.id === p[3]);
+  const tab = (explicit ? p[3] : 'plan') as TabId;
+  return p[0] === 'studio' && p[1] === 'ai' && p[2] ? { id: p[2], tab, explicit } : { id: null, tab: 'plan', explicit: false };
 };
 // 빠른 제작: 프로젝트를 만들자마자 빠른 제작을 시작합니다(비어 있는 단계만, 정한 라마 안에서).
 const quickDefault = { on: true, bible: true, video: false, lipsync: false, sfx: false, music: false, cap: '' };
@@ -79,9 +78,12 @@ export default function AiStudio({
     [sort, setSort] = useState('recent'),
     [form, setForm] = useState(blank),
     [quick, setQuick] = useState(quickDefault),
-    [reverse, setReverse] = useState(false);
+    [reverse, setReverse] = useState(false),
+    // 첫 화면에서 뽑은 첫 컷(프로젝트를 만들 때 포스터 · 스타일 참고로 넣어요)
+    [firstShot, setFirstShot] = useState<FirstShot | null>(null);
   const [ask, confirmUi] = useConfirm();
   const pick = (t: Template | null) => {
+    setFirstShot(null);
     setForm(
       t
         ? {
@@ -151,6 +153,7 @@ export default function AiStudio({
         notify={notify}
         goLama={goLama}
         tab={route.tab}
+        autoTab={!route.explicit}
         setTab={(t) => navigate(`studio/ai/${open}/${t}`, { replace: true })}
         back={() => {
           setOpen(null);
@@ -232,27 +235,27 @@ export default function AiStudio({
     );
   return (
     <>
-      <div className="studio-hero">
-        <div>
-          <span className="eyebrow">SHORTPING STUDIO</span>
-          <h2>AI로 숏폼 드라마 만들기</h2>
-          <p>
-            아이디어 한 줄 → 기획 → 캐릭터 → 대본 → 컷 이미지·음성 → 영상 → 합성 → 검수 신청까지 한
-            곳에서.
-          </p>
-        </div>
-        <div className="studio-hero-side">
-          <button className="wallet-chip lama-chip" onClick={goLama}>
-            <Sparkles size={14} /> {lama(data.wallet.total)}
-          </button>
-          <button className="secondary" disabled={!data.enabled} onClick={() => setReverse(true)} title="내가 올린 완성 영상의 자막으로 대본을 복원해 새 프로젝트를 만들어요">
-            <Clapperboard size={16} /> 영상에서 대본 뽑기
-          </button>
-          <button className="primary" disabled={!data.enabled} onClick={startCreate}>
-            <Plus size={16} /> 새 프로젝트
-          </button>
-        </div>
-      </div>
+      <StartHero
+        form={form}
+        setForm={setForm}
+        genres={data.genres}
+        models={data.models}
+        wallet={data.wallet}
+        enabled={data.enabled && data.models.length > 0}
+        firstShot={firstShot}
+        setFirstShot={setFirstShot}
+        onContinue={(mode) => {
+          setQuick({ ...quick, on: mode === 'quick' });
+          setForm({ ...form, title: form.title.trim() || form.logline.trim().replace(/[.!?。]+$/, '').slice(0, 30) });
+          setWizard(2);
+          setCreating(true);
+        }}
+        onOpenTemplates={startCreate}
+        onReverse={() => setReverse(true)}
+        notify={notify}
+        goLama={goLama}
+        onSpent={() => void load()}
+      />
       {reverse && (
         <ReverseStart
           close={() => setReverse(false)}
@@ -263,61 +266,6 @@ export default function AiStudio({
           }}
         />
       )}
-      <div className="creator-start-grid">
-        <button
-          onClick={() => {
-            setForm({
-              ...blank,
-              title: '나의 첫 숏폼',
-              logline: '우연히 발견한 편지 한 장으로 평범한 하루가 완전히 달라진다.',
-            });
-            setWizard(2);
-            setCreating(true);
-          }}
-          disabled={!data.enabled}
-        >
-          <span className="creator-card-icon">
-            <Sparkles />
-          </span>
-          <strong>처음이라면, 30초 한 편</strong>
-          <p>
-            1화 프로젝트로 제작 순서를 익혀요.
-            <br />
-            설정은 언제든 바꿀 수 있어요.
-          </p>
-          <span>
-            쉬운 시작 <ArrowRight size={15} />
-          </span>
-        </button>
-        <button onClick={() => navigate('studio/contents')}>
-          <span className="creator-card-icon">
-            <Upload />
-          </span>
-          <strong>완성된 영상 등록하기</strong>
-          <p>
-            직접 만든 MP4와 자막을 올리고
-            <br />
-            회차별로 정리해요.
-          </p>
-          <span>
-            내 작품 · 회차 <ArrowRight size={15} />
-          </span>
-        </button>
-        <button onClick={() => navigate('studio/production-guide')}>
-          <span className="creator-card-icon">
-            <BookOpen />
-          </span>
-          <strong>제작 가이드 확인</strong>
-          <p>
-            대본 예시부터 첫 공개까지,
-            <br />
-            필요한 내용을 검색해 보세요.
-          </p>
-          <span>
-            매뉴얼 읽기 <ArrowRight size={15} />
-          </span>
-        </button>
-      </div>
       {!data.enabled && (
         <div className="info-box">AI 제작이 잠시 중단된 상태예요. 관리자에게 문의해 주세요.</div>
       )}
@@ -326,16 +274,6 @@ export default function AiStudio({
           아직 연결된 AI 모델이 없어요. 관리자가 AI 연결 관리에서 모델을 연결하면 사용할 수 있어요.
         </div>
       )}
-      <ol className="flow-steps">
-        {['기획', '캐릭터', '대본', '컷 이미지·음성', '영상', '합성·포스터', '검수 신청'].map(
-          (s, i) => (
-            <li key={s}>
-              <b>{i + 1}</b>
-              {s}
-            </li>
-          ),
-        )}
-      </ol>
       {invites.length > 0 && (
         <section className="team-inbox" aria-label="받은 초대">
           <h3>받은 초대 <small>{invites.length}</small></h3>
@@ -548,6 +486,15 @@ export default function AiStudio({
                 setBusy(true);
                 try {
                   const r = await api<{ id: string }>('/studio/ai/projects', 'POST', form);
+                  // 첫 컷을 뽑아 두었으면 포스터와 스타일 참고로 넣어요(실패해도 프로젝트는 그대로).
+                  let shotNote = '';
+                  if (firstShot) {
+                    const fails: string[] = [];
+                    await api(`/studio/ai/projects/${r.id}/poster`, 'PUT', { image: firstShot.url }).catch((e) => fails.push('포스터: ' + (e as Error).message));
+                    await api(`/studio/ai/projects/${r.id}/settings`, 'PATCH', { style_refs: [firstShot.url] }).catch((e) => fails.push('스타일 참고: ' + (e as Error).message));
+                    setFirstShot(null);
+                    shotNote = fails.length ? ` 첫 컷을 넣지 못한 항목이 있어요 — ${fails.join(' · ')}` : '';
+                  }
                   setCreating(false);
                   let message = '프로젝트를 만들었어요. 기획 · 설정부터 차례로 만들어 보세요.';
                   if (quick.on) {
@@ -580,7 +527,7 @@ export default function AiStudio({
                     }
                   }
                   setOpen(r.id);
-                  notify(message);
+                  notify(message + shotNote);
                 } catch (err) {
                   notify((err as Error).message);
                 } finally {
@@ -592,6 +539,15 @@ export default function AiStudio({
               <button type="button" className="text-link" onClick={() => setWizard(1)}>
                 <ArrowLeft size={14} /> 템플릿 다시 고르기
               </button>
+              {firstShot && (
+                <div className="first-shot-note">
+                  <img src={asset(firstShot.url)} alt="" />
+                  <span>
+                    <b>첫 컷을 이 프로젝트의 포스터 · 스타일 참고로 넣어요.</b>
+                    <small>인물 · 컷 이미지를 만들 때 이 톤을 따라가요. 기획 탭의 ‘스타일 잠금’에서 바꿀 수 있어요.</small>
+                  </span>
+                </div>
+              )}
               <label>
                 가제
                 <input

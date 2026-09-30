@@ -298,16 +298,19 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
         ]);
         await db.run('UPDATE studio_episodes SET script_version=? WHERE id=?', [version, e.id]);
       }
+      // 같은 순번의 옛 컷 ID를 다시 써서 컷별 버전 기록 · 의견 · 작업 기록을 잃지 않아요(2026-09-30).
+      const oldIds = current.map((x) => x.id);
       await db.run('DELETE FROM studio_shots WHERE episode_id=?', [e.id]);
       let i = 0;
       for (const s of shots) {
+        const shotId = oldIds[i] || randomUUID();
         const speaker = s.speaker_id && cast.has(s.speaker_id) ? s.speaker_id : null;
         const castIds = String(s.cast_ids || '').split(',').filter((x) => cast.has(x)).join(',');
         await db.run(
           `INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,location_id,camera,camera_move,emotion,speed,narration,seconds,image,audio,audio_seconds,video,lipsync,sfx,sfx_prompt,sfx_volume,transition,caption,prop_ids,states,angle,lens,move_strength,end_image,effect,seed,seed_lock,end_frame,upscaled,verify,light,tone,height,dof,focal)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
-            randomUUID(), e.id, i++, s.scene || '', s.visual || '', s.visual_en || '', s.visual_en_src || '', s.dialogue || '', speaker, castIds,
+            shotId, e.id, i++, s.scene || '', s.visual || '', s.visual_en || '', s.visual_en_src || '', s.dialogue || '', speaker, castIds,
             s.location_id && places.has(s.location_id) ? s.location_id : null, s.camera || '', s.camera_move || '', s.emotion || '', Number(s.speed) || 1, Number(s.narration) ? 1 : 0,
             Math.round(Math.min(10, Math.max(2, Number(s.seconds) || 5))), s.image || '', s.audio || '', Number(s.audio_seconds) || 0, s.video || '', s.lipsync || '', s.sfx || '', s.sfx_prompt || '',
             s.sfx_volume ?? 0.6, s.transition || 'cut', s.caption ?? null,

@@ -61,24 +61,35 @@ export default function JobCenter({
   const jobs = data.jobs.filter((j) => j.kind !== 'translate' && (filter === 'all' || (filter === 'active' ? j.status === 'queued' || j.status === 'running' : j.status === 'failed')));
   const counts = {
     active: data.jobs.filter((j) => j.status === 'queued' || j.status === 'running').length,
-    failed: data.jobs.filter((j) => j.status === 'failed').length,
+    failed: data.jobs.filter((j) => j.status === 'failed' && j.kind !== 'translate').length,
   };
   const limit = Number(data.project.budget_lama || 0);
   const reserved = data.jobs.filter((j) => j.status === 'queued' || j.status === 'running').reduce((n, j) => n + Number(j.estimate_lama), 0);
   const used = Number(data.spent) + reserved;
   const owner = !data.team || data.team.role === 'owner';
   const shared = !!data.team?.members.length;
-  const retry = async (j: StudioJob, requested: string, budgetOk = false, payOwn = false): Promise<void> => {
+  const retry = async (j: StudioJob, requested: string, budgetOk = false, payOwn = false, key = ''): Promise<void> => {
     setBusy(j.id);
     try {
-      await api(`/studio/ai/jobs/${j.id}/retry`, 'POST', { requested, ...(budgetOk ? { budgetOk: true } : {}), ...(payOwn ? { payOwn: true } : {}) });
+      // 다시 시도 전에 예상 라마와 모델을 보여 주고 확인해요(고른 모델이 원래보다 비쌀 수 있어요).
+      if (!key) {
+        const est = await api<{ lama: number; model: string; jobs: number; wallet: { total: number } }>(`/studio/ai/jobs/${j.id}/retry`, 'POST', { requested, estimate: true });
+        const ok = await ask({
+          title: '다시 시도할까요?',
+          text: `${est.model} · 예상 ${lama(est.lama)}${est.jobs > 1 ? ` (${est.jobs}건)` : ''} · 보유 ${lama(est.wallet.total)}. 예상치만큼 예약하고 끝나면 실제 사용량만 차감해요.`,
+          ok: `${lama(est.lama)}로 다시 시도`,
+        });
+        if (!ok) return;
+        key = crypto.randomUUID();
+      }
+      await api(`/studio/ai/jobs/${j.id}/retry`, 'POST', { requested, idempotencyKey: key, ...(budgetOk ? { budgetOk: true } : {}), ...(payOwn ? { payOwn: true } : {}) });
       notify(requested === 'auto' ? '다른 모델로 다시 시작했어요.' : '고른 모델로 다시 시작했어요.');
       await reload();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'project_budget') {
-        if (await ask({ title: '프로젝트 예산을 넘어요', text: (e as Error).message + ' 그래도 다시 시도할까요?', ok: '예산 넘어도 진행' })) return retry(j, requested, true, payOwn);
+        if (await ask({ title: '프로젝트 예산을 넘어요', text: (e as Error).message + ' 그래도 다시 시도할까요?', ok: '예산 넘어도 진행' })) return retry(j, requested, true, payOwn, key);
       } else if (e instanceof ApiError && e.code === 'sponsor_limit') {
-        if (await ask({ title: '지원 한도를 넘어요', text: (e as Error).message, ok: '내 라마로 진행' })) return retry(j, requested, budgetOk, true);
+        if (await ask({ title: '지원 한도를 넘어요', text: (e as Error).message, ok: '내 라마로 진행' })) return retry(j, requested, budgetOk, true, key);
       } else {
         if (e instanceof ApiError && e.code === 'insufficient_lama') goLama();
         notify((e as Error).message);

@@ -6,10 +6,11 @@ import { changedFields, useSyncedForm } from '../hooks';
 import { JobBadge, Versions, isBusy } from '../parts';
 import ThumbStudio from '../ThumbStudio';
 import CardMaker from '../CardMaker';
-import { ModelSettings, Section, episodeStatus, epLabel, runningCount, type WS } from './shared';
+import { ModelSettings, Section, episodeStatus, epLabel, pct, runningCount, type WS } from './shared';
 import { asset } from '../../platform';
 import QualityCheck from './QualityCheck';
 import { ReviewBar } from './TeamParts';
+import { ReadyChecklist } from './Readiness';
 import NumberInput from '../../NumberInput';
 
 type Meta = { titles: string[]; tagline: string; synopsis: string; hashtags: string[]; episode_titles: { number: number; title: string }[]; at?: string };
@@ -234,8 +235,8 @@ function ComposeRow({ ws, e, open }: { ws: WS; e: StudioEpisode; open: (o: Overl
         </small>
         {composing && (
           <div className="ws-compose-progress">
-            <i style={{ width: `${Math.max(3, info?.progress ?? Number(e.compose_progress || 0))}%` }} />
-            <span>{info?.queue ? `앞에 ${info.queue}개 대기 중` : `합성 중 ${Math.round(info?.progress ?? Number(e.compose_progress || 0))}%`}</span>
+            <i style={{ width: `${Math.max(3, pct(info?.progress ?? e.compose_progress))}%` }} />
+            <span>{info?.queue ? `앞에 ${info.queue}개 대기 중` : `합성 중 ${pct(info?.progress ?? e.compose_progress)}%`}</span>
           </div>
         )}
         {e.status === 'compose_failed' && <small className="danger">합성 실패: {e.compose_error || '원인을 알 수 없어요.'}</small>}
@@ -305,8 +306,8 @@ function TrailerSection({ ws }: { ws: WS }) {
     >
       {working && (
         <div className="ws-compose-progress">
-          <i style={{ width: `${Math.max(3, Number(render?.progress || 0))}%` }} />
-          <span>{status === 'queued' ? '대기 중' : `만드는 중 ${Math.round(Number(render?.progress || 0))}%`}</span>
+          <i style={{ width: `${Math.max(3, pct(render?.progress))}%` }} />
+          <span>{status === 'queued' ? '대기 중' : `만드는 중 ${pct(render?.progress)}%`}</span>
         </div>
       )}
       {status === 'failed' && <p className="danger">예고편을 만들지 못했어요.{render?.error ? ` ${render.error}` : ''} 다시 시도해 주세요.</p>}
@@ -591,6 +592,7 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
   };
   return (
     <Section title={serial ? '새 회차 공개 (연재)' : '작품으로 내보내기 · 검수 신청'} desc={serial ? '공개 중인 작품에 새 회차를 더해요. 새 회차만 따로 검수를 받고, 원하는 시각에 공개되게 예약할 수 있어요.' : '합성한 회차가 작품의 회차로 등록되고 ‘AI 제작’ 표시가 붙어요. 관리자 검수를 거쳐 공개돼요.'}>
+      <ReadyChecklist ws={ws} />
       {drama && (
         <div className="info-box">
           연결된 작품: <b>{drama.title}</b> · {dramaStatus[drama.status] || drama.status}

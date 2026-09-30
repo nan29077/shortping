@@ -192,7 +192,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   };
   engine.registerHandler('plan', planHandler);
   // 대본 컷 저장: 인물 이름→ID, 등장 인물 여러 명, 영어 묘사(번역 캐시), 카메라 움직임·감정·효과음까지 함께 넣습니다.
-  async function insertShots(episodeId, projectId, list, startOrder = 0) {
+  // reuseIds: 대본을 다시 쓸 때 같은 순번의 옛 컷 ID를 그대로 써서, 컷에 매인 버전 기록 · 의견 · 작업 기록이 고아가 되지 않게 해요(2026-09-30).
+  async function insertShots(episodeId, projectId, list, startOrder = 0, reuseIds = []) {
     const cast = await charactersOf(projectId);
     const places = await locationsOf(projectId);
     const things = await propsOf(projectId);
@@ -200,7 +201,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const placeOf = (name) => places.find((l) => l.name === String(name || '').trim())?.id || null;
     const propOf = (name) => things.find((x) => x.name === String(name || '').trim())?.id || null;
     let i = startOrder;
+    let n = 0;
     for (const s of list) {
+      const shotId = reuseIds[n++] || randomUUID();
       const narration = String(s.speaker || '').trim() === '내레이션';
       const speakerId = narration ? null : idOf(s.speaker);
       const castIds = [...new Set([...(s.cast || []).map(idOf), speakerId].filter(Boolean))].join(',');
@@ -214,7 +217,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       const propIds = [...new Set((s.props || []).map(propOf).filter(Boolean))].join(',');
       await db.run(
         'INSERT INTO studio_shots (id,episode_id,sort_order,scene,visual,visual_en,visual_en_src,dialogue,speaker_id,cast_ids,camera,camera_move,angle,lens,light,tone,emotion,narration,sfx_prompt,seconds,location_id,prop_ids,states) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [randomUUID(), episodeId, i++, s.scene, s.visual, en, en ? s.visual : '', s.dialogue, s.dialogue ? speakerId : null, castIds, s.camera, s.camera_move || '', angleOf(s.angle), lensOf(s.lens), lightOf(s.light), toneOf(s.tone), s.emotion || '', narration && s.dialogue ? 1 : 0, s.sfx || '', Math.round(Math.min(10, Math.max(2, s.seconds))), placeOf(s.location), propIds, Object.keys(states).length ? JSON.stringify(states) : ''],
+        [shotId, episodeId, i++, s.scene, s.visual, en, en ? s.visual : '', s.dialogue, s.dialogue ? speakerId : null, castIds, s.camera, s.camera_move || '', angleOf(s.angle), lensOf(s.lens), lightOf(s.light), toneOf(s.tone), s.emotion || '', narration && s.dialogue ? 1 : 0, s.sfx || '', Math.round(Math.min(10, Math.max(2, s.seconds))), placeOf(s.location), propIds, Object.keys(states).length ? JSON.stringify(states) : ''],
       );
     }
     return i;
@@ -281,9 +284,11 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         }
       })();
       await snapshotScript(e.id, e.project_id, 'before_ai', instruction ? `AI 다시 쓰기 전 · ${instruction}` : 'AI 대본 쓰기 전');
+      const oldIds = (await db.all('SELECT id FROM studio_shots WHERE episode_id=? ORDER BY sort_order', [e.id])).map((x) => x.id);
       await db.run('DELETE FROM studio_shots WHERE episode_id=?', [e.id]);
-      await insertShots(e.id, e.project_id, script.shots);
-      await db.run("UPDATE studio_episodes SET status='scripted',video='',duration=0 WHERE id=?", [e.id]);
+      await insertShots(e.id, e.project_id, script.shots, 0, oldIds);
+      // 합성 중이면 상태를 덮지 않고 '내용 바뀜'만 표시해요(합성 완료 확정이 실패하지 않도록).
+      await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composing' THEN status ELSE 'scripted' END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END,video=CASE WHEN status='composing' THEN video ELSE '' END,duration=CASE WHEN status='composing' THEN duration ELSE 0 END WHERE id=?", [e.id]);
       await touch(e.project_id);
       return { shots: script.shots.length };
     },
@@ -583,17 +588,19 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       if (maxNumber > Number(p.episode_count)) await db.run('UPDATE studio_projects SET episode_count=? WHERE id=?', [Math.min(60, maxNumber), p.id]);
       for (const e of out.episodes) {
         let row = await db.get('SELECT * FROM studio_episodes WHERE project_id=? AND number=?', [p.id, e.number]);
+        let oldIds = [];
         if (!row) {
           const id = randomUUID();
           await db.run("INSERT INTO studio_episodes (id,project_id,number,title,summary,status) VALUES (?,?,?,?,?,'outline')", [id, p.id, e.number, e.title || `${e.number}화`, e.summary]);
           row = { id };
         } else {
           await snapshotScript(row.id, p.id, 'before_import', '대본 붙여 넣기 전');
+          oldIds = (await db.all('SELECT id FROM studio_shots WHERE episode_id=? ORDER BY sort_order', [row.id])).map((x) => x.id);
           await db.run('DELETE FROM studio_shots WHERE episode_id=?', [row.id]);
           if (e.title || e.summary) await db.run("UPDATE studio_episodes SET title=CASE WHEN ?<>'' THEN ? ELSE title END, summary=CASE WHEN ?<>'' THEN ? ELSE summary END WHERE id=?", [e.title, e.title, e.summary, e.summary, row.id]);
         }
-        await insertShots(row.id, p.id, e.shots);
-        await db.run("UPDATE studio_episodes SET status='scripted',video='',duration=0 WHERE id=?", [row.id]);
+        await insertShots(row.id, p.id, e.shots, 0, oldIds);
+        await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composing' THEN status ELSE 'scripted' END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END,video=CASE WHEN status='composing' THEN video ELSE '' END,duration=CASE WHEN status='composing' THEN duration ELSE 0 END WHERE id=?", [row.id]);
         made += e.shots.length;
       }
       // 한국어로만 적힌 외모·장소·소품 묘사는 영어로 옮겨 둡니다(플랫폼 부담).
@@ -731,6 +738,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   };
   // 업로드 영상용 AI 도구: 포스터 후보(작품에 바로 적용하지 않고 후보로만 남김), 자동 자막
   engine.registerHandler('tool_poster', { onSuccess: async ({ result }) => ({ url: result.url }) });
+  engine.registerHandler('tool_first_shot', { onSuccess: async ({ result }) => ({ url: result.url }) });
   engine.registerHandler('tool_subtitles', {
     async onSuccess({ job, result }) {
       const segments = (result.segments || []).filter((s) => String(s.text || '').trim());
@@ -1548,6 +1556,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   app.patch('/api/studio/ai/projects/:id', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, 'script');
     const b = projectSchema.partial().parse(req.body);
+    // 모델 정책(중국 모델 제외) · 회차 수는 관리 항목이에요(2026-09-30 점검).
+    if (req.teamRole && req.teamRole !== 'owner' && !can(req.teamRole, 'manage') && ((b.exclude_cn !== undefined && (b.exclude_cn ? 1 : 0) !== Number(p.exclude_cn)) || (b.episode_count !== undefined && Number(b.episode_count) !== Number(p.episode_count))))
+      fail(403, `${ROLE_NAME[req.teamRole] || req.teamRole} 역할은 회차 수 · 모델 정책을 바꿀 수 없어요.`);
     const next = { ...p, ...b, exclude_cn: b.exclude_cn === undefined ? Number(p.exclude_cn) : b.exclude_cn ? 1 : 0 };
     await db.transaction(async () => {
       await db.run('UPDATE studio_projects SET title=?,logline=?,genre=?,tone=?,style=?,synopsis=?,episode_count=?,episode_seconds=?,exclude_cn=?,updated_at=? WHERE id=?', [
@@ -1810,7 +1821,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (b.prop_ids) await checkProps(s.project_id, b.prop_ids);
     if (b.states) for (const cid of Object.keys(b.states)) await checkSpeaker(s.project_id, cid);
     // 같은 컷을 다른 사람이 먼저 고쳤으면 덮어쓰지 않고 알려 줍니다(혼자 작업할 때는 해당 없음).
-    if (b.base_updated_at !== undefined && s.updated_at && s.updated_by && s.updated_by !== req.user.id && s.updated_at !== b.base_updated_at) {
+    // 같은 사람이라도 다른 기기 · 탭(세션)에서 먼저 고쳤으면 알려요(2026-09-30). 같은 탭의 연속 저장은 그대로 통과.
+    const otherSession = s.updated_by === req.user.id && !!s.updated_session && !!req.sessionKey && s.updated_session !== req.sessionKey;
+    if (b.base_updated_at !== undefined && s.updated_at && s.updated_by && (s.updated_by !== req.user.id || otherSession) && s.updated_at !== b.base_updated_at) {
+      if (otherSession) throw Object.assign(new Error('다른 기기나 탭에서 이 컷을 먼저 고쳤어요. 새로 불러온 뒤 다시 고쳐 주세요.'), { status: 409, code: 'edit_conflict' });
       const who = await db.get('SELECT name FROM users WHERE id=?', [s.updated_by]);
       throw Object.assign(new Error(`${who?.name || '다른 사람'}님이 이 컷을 먼저 고쳤어요. 새로 불러온 뒤 다시 고쳐 주세요.`), { status: 409, code: 'edit_conflict' });
     }
@@ -1847,7 +1861,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     // 시드 고정을 켜면 지금 시드를 정해 두고, 같은 컷을 다시 만들 때 비슷한 그림이 나오게 합니다.
     const seed = next.seed_lock && (s.seed === null || s.seed === undefined) ? Math.floor(Math.random() * 2147483647) : s.seed;
     await db.run(
-      `UPDATE studio_shots SET scene=?,visual=?,dialogue=?,speaker_id=?,cast_ids=?,location_id=?,camera=?,camera_move=?,emotion=?,speed=?,narration=?,seed_lock=?,seed=?,end_frame=?,transition=?,sfx_prompt=?,sfx_volume=?,caption=?,seconds=?,prop_ids=?,states=?,angle=?,lens=?,move_strength=?,end_image=?,effect=?,light=?,tone=?,height=?,dof=?,focal=?,updated_at=?,updated_by=?${
+      `UPDATE studio_shots SET scene=?,visual=?,dialogue=?,speaker_id=?,cast_ids=?,location_id=?,camera=?,camera_move=?,emotion=?,speed=?,narration=?,seed_lock=?,seed=?,end_frame=?,transition=?,sfx_prompt=?,sfx_volume=?,caption=?,seconds=?,prop_ids=?,states=?,angle=?,lens=?,move_strength=?,end_image=?,effect=?,light=?,tone=?,height=?,dof=?,focal=?,updated_at=?,updated_by=?,updated_session=?${
         audioReset ? ",audio='',audio_seconds=0,lipsync=''" : ''
       } WHERE id=?`,
       [
@@ -1856,7 +1870,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         states ? (Object.keys(states).length ? JSON.stringify(states) : '') : s.states || '',
         next.angle, next.lens, next.move_strength, next.end_image, next.effect,
         next.light, next.tone, next.height, next.dof, next.focal,
-        now(), req.user.id,
+        now(), req.user.id, req.sessionKey || '',
         s.id,
       ],
     );
@@ -1936,6 +1950,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       .parse(req.body);
     const e = await db.get('SELECT id FROM studio_episodes WHERE id=? AND project_id=?', [req.params.eid, p.id]);
     if (!e) fail(404, '회차를 찾을 수 없어요.');
+    // 말하는 인물 · 길이는 대본 항목이라 단일 컷 수정과 같은 권한(작가)을 요구해요(2026-09-30 점검).
+    if (req.teamRole && req.teamRole !== 'owner' && !can(req.teamRole, 'script') && (b.speaker_id !== undefined || b.seconds !== undefined))
+      fail(403, `${ROLE_NAME[req.teamRole] || req.teamRole} 역할은 말하는 인물 · 길이를 바꿀 수 없어요(작가 권한 필요).`);
     if (b.speaker_id !== undefined) await checkSpeaker(p.id, b.speaker_id);
     const fields = ['emotion', 'speed', 'camera_move', 'transition', 'speaker_id', 'seconds', 'camera', 'angle', 'lens', 'move_strength', 'effect', 'light', 'tone', 'height'].filter((k) => b[k] !== undefined);
     if (!fields.length) fail(400, '바꿀 내용을 골라 주세요.');
@@ -2130,8 +2147,11 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
             fail(409, '이 컷을 만드는 작업이 진행 중이에요. 끝난 뒤 후보를 만들어 주세요.');
         }
         // 같은 대상의 같은 작업이 진행 중이면 새로 만들지 않습니다(인물 참고 이미지는 자세별로 따로).
+        // 자세별 참고 이미지(keySuffix=pose)는 같은 자세가 진행 중일 때만 막아요(2026-09-30 점검: 세트 이중 실행 방지).
         const active = spec.keySuffix
-          ? null
+          ? spec.input?.candidate
+            ? null
+            : await db.get("SELECT * FROM ai_jobs WHERE project_id=? AND kind=? AND target_id=? AND status IN ('queued','running') AND input LIKE ?", [p.id, spec.kind, spec.target.id, `%"pose":"${String(spec.input?.pose || spec.keySuffix).replace(/[%_"\\]/g, '')}"%`])
           : await db.get("SELECT * FROM ai_jobs WHERE project_id=? AND kind=? AND target_id=? AND status IN ('queued','running')", [p.id, spec.kind, spec.target.id]);
         if (active) {
           if (!multi) fail(409, '같은 작업이 이미 진행 중이에요.');
@@ -2161,6 +2181,11 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       for (const spec of specs) if (spec.persist) await db.run(spec.persist.sql, spec.persist.params);
       await db.run("UPDATE studio_projects SET status=CASE WHEN status='draft' THEN 'producing' ELSE status END,updated_at=? WHERE id=?", [now(), p.id]);
       return out;
+    }).catch((e) => {
+      // 소유자 지원으로 결제하는 팀원에게는 소유자 잔액을 보여 주지 않고, 내 라마로 진행할 수 있다고 알려요(2026-09-30 점검).
+      if (e?.code === 'insufficient_lama' && req.teamMember && req.teamRole !== 'owner' && req.teamMember.pay_mode === 'sponsor' && !b.payOwn)
+        throw Object.assign(new Error('프로젝트 소유자의 라마가 부족해요. 소유자에게 충전을 요청하거나, 내 라마로 진행할 수 있어요.'), { status: 409, code: 'sponsor_insufficient' });
+      throw e;
     });
     return { jobs, created: createdFlags };
   }
@@ -2187,7 +2212,17 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const p = await project(req, job.project_id, 'view');
     if (!['failed', 'canceled'].includes(job.status)) fail(400, '실패하거나 취소한 작업만 다시 시도할 수 있어요.');
     if (!RETRYABLE.has(job.kind)) fail(400, '이 작업은 원래 화면에서 다시 시작해 주세요.');
-    const body = z.object({ requested: z.string().max(80).default('auto'), tier: z.enum(['draft', 'standard', 'premium']).optional(), budgetOk: z.boolean().optional(), payOwn: z.boolean().optional() }).parse(req.body || {});
+    const body = z
+      .object({
+        requested: z.string().max(80).default('auto'),
+        tier: z.enum(['draft', 'standard', 'premium']).optional(),
+        budgetOk: z.boolean().optional(),
+        payOwn: z.boolean().optional(),
+        idempotencyKey: z.string().uuid().optional(),
+        // estimate: true면 실행하지 않고 예상 라마 · 모델만 돌려줘요(다시 시도 전에 확인).
+        estimate: z.boolean().optional(),
+      })
+      .parse(req.body || {});
     let input = {};
     try {
       input = JSON.parse(job.input || '{}');
@@ -2217,12 +2252,17 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       tier: body.tier || job.tier,
       budgetOk: body.budgetOk,
       payOwn: body.payOwn,
+      ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey } : {}),
     });
     let specs = await plan(req, p, b);
     // 후보 묶음의 한 장을 다시 시도하면 후보로 다시 만들어요(이미 고른 컷 이미지·영상을 덮어쓰지 않게).
     if (input.candidate && ['shot_image', 'shot_video'].includes(job.kind))
       specs = specs.map((x) => ({ ...x, keySuffix: 'r' + job.id.slice(0, 8), input: { ...x.input, candidate: input.candidate, seed: Number.isInteger(input.seed) ? input.seed + 1 : x.input.seed } }));
     const exclude = body.requested === 'auto' && job.model_ref ? [job.model_ref] : [];
+    if (body.estimate) {
+      const { lama: price, label } = await priceSpecs(p, b, specs, exclude);
+      return res.json({ lama: price, model: body.requested === 'auto' ? `자동 선택 (예: ${label})` : label, jobs: specs.length, wallet: await lamaWalletOf(db, req.user.id) });
+    }
     res.status(201).json(await jobsView(req, await runSpecs(req, p, b, specs, { exclude })));
   });
   app.post('/api/studio/ai/jobs/:jid/cancel', roles('pd', 'admin'), async (req, res) => {
@@ -2241,7 +2281,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   // 회차 합성 시작(검사 후 합성 대기열에 넣음). 빠른 제작에서도 같은 함수를 씁니다.
   async function startCompose(p, e) {
     const shots = await shotsOf(e.id);
-    const busy = await db.get("SELECT id FROM ai_jobs WHERE project_id=? AND target_type='shot' AND status IN ('queued','running') AND target_id IN (SELECT id FROM studio_shots WHERE episode_id=?) LIMIT 1", [p.id, e.id]);
+    const busy = await db.get("SELECT id FROM ai_jobs WHERE project_id=? AND status IN ('queued','running') AND ((target_type='shot' AND target_id IN (SELECT id FROM studio_shots WHERE episode_id=?)) OR (target_type='episode' AND target_id=?)) LIMIT 1", [p.id, e.id, e.id]);
     if (busy) fail(409, '이 회차의 AI 작업이 끝난 뒤 합성해 주세요.');
     if (!shots.length) fail(400, '대본(컷)이 없어요. 대본을 먼저 만들어 주세요.');
     const missing = shots.findIndex((s) => !s.video && !s.image && !s.lipsync);
@@ -2268,7 +2308,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const r = await db.get("SELECT status,created_at FROM studio_renders WHERE kind='episode' AND target_id=? ORDER BY created_at DESC LIMIT 1", [e.id]);
     // 대기 순서: 나보다 먼저 들어온 대기 중 합성 수
     const ahead = r?.status === 'queued' ? Number((await db.get("SELECT COUNT(*) AS n FROM studio_renders WHERE status IN ('queued','running') AND created_at<?", [r.created_at]))?.n || 0) : 0;
-    res.json({ ...e, progress: Number(e.compose_progress || 0), queue: ahead, error: e.status === 'compose_failed' ? e.compose_error || '합성에 실패했어요.' : '' });
+    res.json({ ...e, progress: Math.round(Number(e.compose_progress || 0) * 100), queue: ahead, error: e.status === 'compose_failed' ? e.compose_error || '합성에 실패했어요.' : '' });
   });
 
   // 작품으로 내보내기: 합성된 회차를 작품(드라마)의 회차로 등록하고, 원하면 바로 검수를 신청합니다.
@@ -2649,6 +2689,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       }
       if (ap.cap && spent + need > ap.cap)
         return pause(`설정한 최대 ${ap.cap.toLocaleString('ko-KR')}라마를 넘어서 멈췄어요. (지금까지 ${spent.toLocaleString('ko-KR')}라마, 다음 단계 예상 ${need.toLocaleString('ko-KR')}라마)`);
+      // 프로젝트 예산도 지켜요(2026-09-30 점검): 빠른 제작은 확인 창을 거치지 않으므로 넘기 전에 멈춥니다.
+      const budget = await budgetOf(p);
+      if (budget.limit > 0 && budget.spent + need > budget.limit)
+        return pause(`프로젝트 예산 ${budget.limit.toLocaleString('ko-KR')}라마를 넘어서 멈췄어요. (사용 ${budget.spent.toLocaleString('ko-KR')}라마, 다음 단계 예상 ${need.toLocaleString('ko-KR')}라마) 기획 · 설정에서 예산을 올리거나 직접 이어 만들 수 있어요.`);
       try {
         for (const spec of work.specs) await engine.screen({ userId: p.owner_id, kind: spec.kind, texts: [spec.input.userText, spec.input.text] });
         const queuedOk = await db.transaction(async () => {
@@ -2823,6 +2867,45 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           userText: b.prompt,
         },
         target: { type: 'drama', id: d.id },
+      }),
+    );
+    res.status(201).json({ id: job.id, lama: Number(job.estimate_lama) });
+  });
+  // 힉스필드 · 폴로 벤치마킹 2단계(2026-09-30): 첫 컷 미리 보기.
+  // 프로젝트를 만들기 전에 아이디어 한 줄로 대표 컷 하나를 뽑아 봐요(이미지 1장 라마). 마음에 들면 그 이미지를
+  // 새 프로젝트의 포스터 · 스타일 참고로 넣고 이어 가요.
+  const firstShotSchema = z.object({
+    logline: z.string().trim().min(5).max(300),
+    genre: z.enum(GENRES).default('로맨스'),
+    tone: z.string().trim().max(100).default(''),
+    style: z.string().trim().max(500).default(''),
+    requested: z.string().max(80).default('auto'),
+    tier: z.enum(['draft', 'standard', 'premium']).default('standard'),
+    seed: z.number().int().min(0).max(1000000).optional(),
+  });
+  const firstShotPrompt = (b) =>
+    `Korean short-form drama key frame, vertical 9:16, genre: ${b.genre}. ${b.logline}. ${b.tone ? `Mood: ${b.tone}. ` : ''}${b.style || 'Cinematic realistic look.'} One striking moment that sells the story, cinematic lighting and composition, no text, no captions, no watermark.`;
+  const firstShotInput = (b) => ({ prompt: firstShotPrompt(b), aspect: '9:16', userText: [b.logline, b.tone].filter(Boolean).join(' '), ...(b.seed !== undefined ? { seed: b.seed } : {}) });
+  app.post('/api/studio/ai/tools/first-shot/estimate', roles('pd', 'admin'), async (req, res) => {
+    await requireTerms(req);
+    const b = firstShotSchema.parse(req.body);
+    const e = await engine.estimate({ capability: 'image', requested: b.requested, tier: b.tier, tags: ['cinematic'], input: firstShotInput(b) });
+    res.json({ lama: e.lama, won: e.lama * 10, model: b.requested === 'auto' ? `자동 선택 (예: ${e.model.label})` : e.model.label, wallet: await lamaWalletOf(db, req.user.id) });
+  });
+  app.post('/api/studio/ai/tools/first-shot', roles('pd', 'admin'), async (req, res) => {
+    await requireTerms(req);
+    const b = firstShotSchema.parse(req.body);
+    await engine.screen({ userId: req.user.id, kind: 'tool_first_shot', texts: [b.logline, b.tone] });
+    const job = await db.transaction(() =>
+      engine.enqueue({
+        userId: req.user.id,
+        kind: 'tool_first_shot',
+        capability: 'image',
+        requested: b.requested,
+        tier: b.tier,
+        tags: ['cinematic'],
+        input: firstShotInput(b),
+        target: { type: 'first_shot', id: req.user.id },
       }),
     );
     res.status(201).json({ id: job.id, lama: Number(job.estimate_lama) });

@@ -13,7 +13,8 @@ export const TABS: { id: TabId; name: string; hint: string }[] = [
   { id: 'finish', name: '완성 · 공개', hint: '합성 · 예고편 · 썸네일 · 공개' },
 ];
 
-export type RunOpts = { targetId?: string; instruction?: string; options?: Record<string, unknown>; tier?: 'draft' | 'standard' | 'premium'; requested?: string };
+// quickOk: 예상 라마가 이미 화면에 보이는 버튼(컷 에디터 만들기)에서만 true — '확인 없이 바로 실행'이 켜져 있어도 다른 버튼은 늘 확인 창을 거쳐요.
+export type RunOpts = { targetId?: string; instruction?: string; options?: Record<string, unknown>; tier?: 'draft' | 'standard' | 'premium'; requested?: string; quickOk?: boolean };
 // 작업 공간의 탭들이 함께 쓰는 값과 함수
 export type WS = {
   data: StudioProjectDetail;
@@ -41,6 +42,11 @@ export type WS = {
   // 협업: 내 역할로 할 수 있는지(소유자·혼자 작업은 늘 true) · 의견 창 열기
   can: (need: TeamPerm | TeamPerm[]) => boolean;
   comment: (target: { type: 'project' | 'episode' | 'shot'; id: string; label: string }) => void;
+  // 확인 창 없이 바로 실행(컷 에디터 만들기 버튼)
+  quick: boolean;
+  setQuick: (v: boolean) => void;
+  // 견적 · 실행 요청이 진행 중(버튼 잠금용)
+  running: boolean;
 };
 
 export const episodeStatus: Record<string, string> = {
@@ -52,6 +58,11 @@ export const episodeStatus: Record<string, string> = {
 };
 export const epLabel = (e: { number: number; title: string }) => (e.title.startsWith(`${e.number}화`) ? e.title : `${e.number}화 · ${e.title}`);
 export const hasModel = (models: AiModelOption[], cap: string) => models.some((m) => m.capability === cap);
+// 합성 진행률: 서버는 0~1로 저장하고 조회 API는 %로 줘요. 둘 다 %로 맞춰요.
+export const pct = (v: unknown) => {
+  const n = Number(v || 0);
+  return Math.round(n <= 1 ? n * 100 : n);
+};
 export const runningCount = (jobs: StudioJob[], pred: (j: StudioJob) => boolean) => jobs.filter((j) => (j.status === 'queued' || j.status === 'running') && pred(j)).length;
 
 // 자동 저장 상태 표시

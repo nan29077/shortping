@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, HelpCircle, Loader2, Sparkles, X } from 'lucide-react';
 import {
   api,
@@ -151,6 +151,20 @@ type Estimate = {
   payer?: { mode: 'self' | 'sponsor'; limit: number; used: number; over: boolean };
 };
 const tierShort: Record<string, string> = { draft: '초안', standard: '표준', premium: '고급' };
+// 바로 실행(확인 창 생략): 이 브라우저에 기억해요. 라마가 모자라거나 예산·지원 한도를 넘으면 그래도 확인 창을 띄워요.
+const QUICK_KEY = 'shortping.studio.quickRun';
+export const loadQuickRun = () => {
+  try {
+    return localStorage.getItem(QUICK_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+export const saveQuickRun = (v: boolean) => {
+  try {
+    localStorage.setItem(QUICK_KEY, v ? '1' : '0');
+  } catch {}
+};
 // 실행 전 예상 라마를 보여 주고 확인을 받습니다. 자동 선택이면 '왜 이 모델?'과 다른 후보, 품질 바꾸기, 예산 확인까지.
 export function useRunner({
   projectId,
@@ -169,17 +183,53 @@ export function useRunner({
   const [showWhy, setShowWhy] = useState(false);
   const [estimating, setEstimating] = useState(false);
   // 품질·모델을 바꾸면 예상을 다시 받는 동안 버튼을 잠가, 옛 예상값으로 실행되지 않게 합니다.
-  const ask = async (label: string, body: Record<string, unknown>) => {
+  const [quick, setQuickState] = useState(loadQuickRun);
+  const setQuick = (v: boolean) => {
+    setQuickState(v);
+    saveQuickRun(v);
+  };
+  // 같은 실행이 겹치지 않게(더블클릭 · 두 번 탭): 견적 · 실행 중에는 새 요청을 받지 않아요.
+  const inflight = useRef(false);
+  // ask(label, body, { quickOk }) — quickOk가 true인 호출(컷 에디터 만들기 버튼처럼 예상 라마가 이미 보이는 곳)에서만 확인 창을 건너뛸 수 있어요.
+  // 확인 창이 열려 있는 동안(품질 · 후보 모델 바꾸기)에는 항상 견적만 새로 받아요.
+  const ask = async (label: string, body: Record<string, unknown>, { quickOk = false }: { quickOk?: boolean } = {}) => {
+    if (inflight.current) return;
+    inflight.current = true;
     setEstimating(true);
     try {
       const estimate = await api<Estimate>(`/studio/ai/projects/${projectId}/estimate`, 'POST', body);
-      setPending({ label, body, estimate, idempotencyKey: uuid() });
+      const sponsoredNow = estimate.payer?.mode === 'sponsor' && !estimate.payer.over;
+      const blocked = (!sponsoredNow && estimate.wallet.total < estimate.lama) || !!estimate.budget?.over || !!estimate.payer?.over;
+      if (quick && quickOk && !pending && !blocked) {
+        setBusy(true);
+        try {
+          await api(`/studio/ai/projects/${projectId}/run`, 'POST', { ...body, idempotencyKey: uuid() });
+          notify(`${label} · ${lama(estimate.lama)} 예약하고 시작했어요.`);
+          onRan();
+          return;
+        } catch (e) {
+          if (e instanceof ApiError && e.code === 'insufficient_lama') onNeedLama();
+          if (e instanceof ApiError && e.code === 'sponsor_insufficient') {
+            // 소유자 라마가 모자라요 → 확인 창을 띄워 내 라마로 진행할지 고르게 해요.
+            setPending({ label, body: { ...body, payOwn: true }, estimate: { ...estimate, payer: { mode: 'self', limit: 0, used: 0, over: false } }, idempotencyKey: uuid() });
+            notify((e as Error).message);
+            return;
+          }
+          notify((e as Error).message);
+          return;
+        } finally {
+          setBusy(false);
+        }
+      }
+      // 확인 창 안에서 품질 · 모델을 바꿀 때는 같은 멱등키를 유지해요(두 번 실행 방지).
+      setPending((cur) => ({ label, body, estimate, idempotencyKey: cur?.idempotencyKey || uuid() }));
       setBudgetOk(false);
       setShowWhy(false);
     } catch (e) {
       notify((e as Error).message);
     } finally {
       setEstimating(false);
+      inflight.current = false;
     }
   };
   const locked = busy || estimating;
@@ -281,6 +331,15 @@ export function useRunner({
         </label>
       )}
       <p className="muted settings-note">예상치만큼 먼저 예약하고, 끝나면 실제 사용량만 차감해요. 실패하면 전액 돌려드려요.</p>
+      {!lacking && !overBudget && !est.payer?.over && (
+        <label className="opt-row quick-run">
+          <input type="checkbox" checked={quick} onChange={(e) => setQuick(e.target.checked)} />
+          <span>
+            <b>다음부터 확인 없이 바로 실행</b>
+            <small>만들기 버튼에 예상 라마가 보이니 이 창을 건너뛰어요. 라마가 모자라거나 예산을 넘을 때는 그래도 물어봐요. 모델 센터에서 다시 끌 수 있어요.</small>
+          </span>
+        </label>
+      )}
       {lacking ? (
         <button
           className="primary full"
@@ -304,6 +363,9 @@ export function useRunner({
               onRan();
             } catch (e) {
               if (e instanceof ApiError && e.code === 'insufficient_lama') onNeedLama();
+              if (e instanceof ApiError && e.code === 'sponsor_insufficient') {
+                setPending({ ...pending, body: { ...pending.body, payOwn: true }, estimate: { ...est, payer: { mode: 'self', limit: 0, used: 0, over: false } }, idempotencyKey: uuid() });
+              }
               notify((e as Error).message);
             } finally {
               setBusy(false);
@@ -315,7 +377,7 @@ export function useRunner({
       )}
     </Modal>
   );
-  return { ask, confirm };
+  return { ask, confirm, quick, setQuick, locked };
 }
 
 // 작업 상태 표시. 실패하면 눌러서 이유를 볼 수 있고(휴대폰에서도), 바로 다시 시도할 수 있어요.

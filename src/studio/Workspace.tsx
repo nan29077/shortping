@@ -19,6 +19,7 @@ import './ws/vibe.css';
 import './ws/drama.css';
 import './ws/team.css';
 import './ws/direction.css';
+import './ws/stage3.css';
 import { actionNeed, CommentsPanel, needMessage, RoleBanner, ShareModal, TeamChips, teamCan, type CommentTarget } from './ws/TeamParts';
 
 const icons = { plan: Wand2, script: Clapperboard, scene: Film, finish: Send } as const;
@@ -98,6 +99,7 @@ export default function Workspace({
   goLama,
   tab,
   setTab,
+  autoTab = false,
 }: {
   projectId: string;
   models: AiModelOption[];
@@ -109,6 +111,8 @@ export default function Workspace({
   goLama: () => void;
   tab: TabId;
   setTab: (t: TabId) => void;
+  // 주소에 탭이 없으면 컷이 있는 프로젝트는 장면 편집(컷 에디터)에서 열어요(3단계).
+  autoTab?: boolean;
 }) {
   const [data, setData] = useState<StudioProjectDetail | null>(null),
     [error, setError] = useState(''),
@@ -161,6 +165,20 @@ export default function Workspace({
   useEffect(() => {
     void load();
   }, [load]);
+  // 화면을 떠나며 저장하지 못한 입력이 있으면 알려요(useAutosave가 unmount 때 보내는 신호).
+  useEffect(() => {
+    const on = (ev: Event) => notify(`저장하지 못한 내용이 있어요: ${(ev as CustomEvent<string>).detail || '잠시 후 다시 시도해 주세요.'}`);
+    window.addEventListener('sp:save-error', on);
+    return () => window.removeEventListener('sp:save-error', on);
+  }, [notify]);
+  // 주소에 탭이 없이 열었고 컷이 있으면 장면 편집으로(처음 한 번만).
+  const landed = useRef(false);
+  useEffect(() => {
+    if (!autoTab || landed.current || !data) return;
+    landed.current = true;
+    if (data.episodes.some((e) => e.shots.length)) setTab('scene');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, autoTab]);
   // 탭을 옮기면 떠나는 탭의 남은 저장이 끝난 뒤 한 번 더 불러와, 다른 탭에서 고친 내용이 바로 보이게 해요.
   const firstTab = useRef(true);
   useEffect(() => {
@@ -180,13 +198,15 @@ export default function Workspace({
       ['queued', 'rendering'].includes(data.project.trailer_status || '') ||
       data.autopilot?.status === 'running' ||
       (data.chat || []).some((m) => m.status === 'thinking' || m.status === 'applying'));
+  // 팀과 함께 작업 중이면(팀원이 있으면) 쉬는 동안에도 20초마다 새로 봐서 다른 사람의 변경이 저장할 때(409)가 아니라 미리 보이게 해요.
+  const teamActive = !!data?.team?.members.length;
   useEffect(() => {
-    if (!active) return;
+    if (!active && !teamActive) return;
     const t = setInterval(() => {
       if (document.visibilityState === 'visible') void load();
-    }, 2000);
+    }, active ? 2000 : 20000);
     return () => clearInterval(t);
-  }, [active, load]);
+  }, [active, teamActive, load]);
   const runner = useRunner({ projectId, notify, onRan: () => void load(), onNeedLama: goLama });
   const act = useCallback(
     async (fn: () => Promise<unknown>, message?: string) => {
@@ -236,10 +256,10 @@ export default function Workspace({
         return next;
       }),
     // 자동 모드면 늘 '자동 선택', 직접 모드면 고른 모델. 버튼에서 품질·모델을 바로 지정할 수도 있어요(예: 고급으로 다시).
-    run: (label, action, cap, { tier, requested, ...opts } = {}) => {
+    run: (label, action, cap, { tier, requested, quickOk, ...opts } = {}) => {
       // 협업자는 역할에 맞는 AI 작업만(서버도 한 번 더 확인해요)
       if (!teamCan(data.team, actionNeed(action))) return notify(needMessage(data.team, actionNeed(action)));
-      void runner.ask(label, { action, ...opts, requested: requested ?? (mode === 'auto' ? 'auto' : choices[cap].requested), tier: tier ?? choices[cap].tier });
+      void runner.ask(label, { action, ...opts, requested: requested ?? (mode === 'auto' ? 'auto' : choices[cap].requested), tier: tier ?? choices[cap].tier }, { quickOk: !!quickOk });
     },
     act,
     busy,
@@ -252,6 +272,9 @@ export default function Workspace({
     preview: (e) => setPreview(e),
     can: (need) => teamCan(data.team, need),
     comment: (t) => setComments(t),
+    quick: runner.quick,
+    setQuick: runner.setQuick,
+    running: runner.locked,
   };
   const runningJobs = data.jobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
   const failedCount = data.jobs.filter((j) => j.status === 'failed' && j.kind !== 'translate').length;
@@ -291,40 +314,46 @@ export default function Workspace({
         </div>
       </div>
       <RoleBanner ws={ws} />
-      <nav className="ws-tabs" aria-label="작업 단계">
-        {TABS.map((t, i) => {
-          const Icon = icons[t.id];
-          const s = progress[t.id];
-          return (
-            <button key={t.id} className={tab === t.id ? 'active' : ''} aria-current={tab === t.id ? 'page' : undefined} onClick={() => setTab(t.id)}>
-              <b>{s.ok ? <Check size={12} /> : i + 1}</b>
-              <span>
-                <strong>
-                  <Icon size={14} /> {t.name}
-                </strong>
-                <small>{s.text && !s.ok ? s.text : t.hint}</small>
+      {/* 3단계(2026-09-30): 큰 탭 카드 대신 한 줄 레일. 순서는 자유 — 어디서든 시작하고, 진행률과 다음 할 일만 작게 보여요. */}
+      <div className="ws-rail">
+        <nav className="ws-tabs" aria-label="작업 단계">
+          {TABS.map((t, i) => {
+            const Icon = icons[t.id];
+            const s = progress[t.id];
+            return (
+              <button key={t.id} className={tab === t.id ? 'active' : ''} aria-current={tab === t.id ? 'page' : undefined} onClick={() => setTab(t.id)} title={t.hint}>
+                <b>{s.ok ? <Check size={11} /> : i + 1}</b>
+                <span>
+                  <strong>
+                    <Icon size={13} /> {t.name}
+                  </strong>
+                  {s.text && !s.ok && <small>{s.text}</small>}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="ws-progress">
+          <div className="studio-progress-bar" role="progressbar" aria-label="제작 진행률" aria-valuenow={done * 25} aria-valuemin={0} aria-valuemax={100}>
+            <i style={{ width: done * 25 + '%' }} />
+          </div>
+          {next ? (
+            next.id !== tab ? (
+              <button className="next-action" onClick={() => setTab(next.id)} title={nextText[next.id]}>
+                <span>다음 · {next.name}</span>
+                <ChevronRight size={14} />
+              </button>
+            ) : (
+              <span className="next-action here" title={nextText[next.id]}>
+                지금 단계
               </span>
-            </button>
-          );
-        })}
-      </nav>
-      <div className="ws-progress">
-        <div className="studio-progress-bar" role="progressbar" aria-label="제작 진행률" aria-valuenow={done * 25} aria-valuemin={0} aria-valuemax={100}>
-          <i style={{ width: done * 25 + '%' }} />
+            )
+          ) : (
+            <span className="next-action done">
+              <Check size={13} /> 모두 마침
+            </span>
+          )}
         </div>
-        {next ? (
-          next.id !== tab && (
-            <button className="next-action" onClick={() => setTab(next.id)}>
-              <span>다음 할 일 · {next.name}</span>
-              <small>{nextText[next.id]}</small>
-              <ChevronRight size={16} />
-            </button>
-          )
-        ) : (
-          <span className="next-action done">
-            <Check size={15} /> 모든 단계를 마쳤어요.
-          </span>
-        )}
       </div>
       {data.autopilot?.status === 'running' && tab !== 'plan' && (
         <button className="autopilot-banner" onClick={() => setTab('plan')}>
@@ -359,6 +388,8 @@ export default function Workspace({
           setChoice={ws.setChoice}
           projectId={projectId}
           close={() => setPanel('')}
+          quick={runner.quick}
+          setQuick={runner.setQuick}
         />
         </Suspense>
       )}

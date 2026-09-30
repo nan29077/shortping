@@ -76,7 +76,11 @@ export function useAutosave<T>(value: T, saved: T, save: (v: T, base: T) => Prom
     window.addEventListener('pagehide', onHide);
     return () => {
       window.removeEventListener('pagehide', onHide);
-      void flush();
+      // 화면이 사라진 뒤의 저장 실패는 아무도 못 보므로 작업 공간에 신호를 보내 토스트로 알려요(2026-09-30 점검).
+      const hadChanges = formKey(latest.current) !== baseline.current;
+      void flush().then((ok) => {
+        if (!ok && hadChanges && enabledRef.current) window.dispatchEvent(new CustomEvent('sp:save-error', { detail: '' }));
+      });
     };
   }, [flush]);
   // blocked: 고친 내용이 있는데 값이 올바르지 않아 저장을 기다리는 중(예: 길이 칸이 비었을 때)
