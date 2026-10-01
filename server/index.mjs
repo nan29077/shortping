@@ -1,6 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import multer from 'multer';
 import { z } from 'zod';
 import {
@@ -216,12 +216,18 @@ const authLimiters = {
   demo: authLimit(40),
   register: authLimit(20),
   login: authLimit(60),
-  // 같은 이메일로 비밀번호를 15분에 10번 틀리면 그 이메일만 잠시 막아요(성공한 로그인은 세지 않음).
+  // 같은 곳(IP)에서 같은 이메일로 15분에 10번 틀리면 잠시 막아요(성공한 로그인은 세지 않음).
+  // 이메일만으로 세면 남이 일부러 틀려서 주인을 막을 수 있어, 이메일만 기준은 훨씬 넉넉하게(50번) 둬요.
   loginEmail: authLimit(10, {
-    keyGenerator: (req) => 'e:' + String(req.body?.email || '').trim().toLowerCase(),
+    keyGenerator: (req) => 'e:' + String(req.body?.email || '').trim().toLowerCase() + '|' + ipKeyGenerator(req.ip || ''),
+    skipSuccessfulRequests: true,
+    message: { error: '이 이메일로 로그인을 여러 번 실패했어요. 15분 뒤에 다시 시도하거나 비밀번호를 재설정해 주세요.' },
+  }),
+  loginEmailAll: authLimit(50, {
+    keyGenerator: (req) => 'ea:' + String(req.body?.email || '').trim().toLowerCase(),
     skipSuccessfulRequests: true,
     validate: { keyGeneratorIpFallback: false },
-    message: { error: '이 이메일로 로그인을 여러 번 실패했어요. 15분 뒤에 다시 시도하거나 비밀번호를 재설정해 주세요.' },
+    message: { error: '이 이메일로 로그인 실패가 너무 많아요. 15분 뒤에 다시 시도하거나 비밀번호를 재설정해 주세요.' },
   }),
   reset: authLimit(20),
   password: authLimit(10, byUser),
@@ -412,7 +418,7 @@ app.post('/api/auth/register', authLimiters.register, async (req, res) => {
     fail(409, '이미 가입된 이메일입니다.');
   await session(req, res, user);
 });
-app.post('/api/auth/login', authLimiters.login, authLimiters.loginEmail, async (req, res) => {
+app.post('/api/auth/login', authLimiters.login, authLimiters.loginEmail, authLimiters.loginEmailAll, async (req, res) => {
   const c = credentials.parse(req.body);
   const user = await db.get('SELECT * FROM users WHERE email=?', [c.email]);
   const [salt, hash] = (
@@ -1129,7 +1135,7 @@ app.get('/api/studio', roles('pd', 'admin'), async (req, res) => {
       : [],
     logs: isAdmin
       ? await db.all(
-          'SELECT a.*,u.name FROM audit_logs a JOIN users u ON a.actor_id=u.id ORDER BY a.created_at DESC LIMIT 30',
+          'SELECT a.*,u.name FROM audit_logs a JOIN users u ON a.actor_id=u.id ORDER BY a.created_at DESC, a.id DESC LIMIT 30',
         )
       : [],
   });

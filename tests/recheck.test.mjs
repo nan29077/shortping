@@ -103,9 +103,16 @@ test('회원 이름 · 연락처 변경은 운영 기록에 남고, 운영 기�
   const first = await request('/admin/audit', { cookie: admin });
   assert.equal(first.status, 200);
   assert.ok(first.data.logs.length > 0);
-  const last = first.data.logs.at(-1).created_at;
-  const older = await request('/admin/audit?before=' + encodeURIComponent(last), { cookie: admin });
-  assert.ok(older.data.logs.every((l) => l.created_at < last));
+  const tail = first.data.logs.at(-1);
+  const last = tail.created_at;
+  const older = await request('/admin/audit?before=' + encodeURIComponent(last) + '&beforeId=' + encodeURIComponent(tail.id), { cookie: admin });
+  assert.ok(older.data.logs.every((l) => l.created_at < last || (l.created_at === last && l.id < tail.id)));
+  // 같은 순간에 남은 기록도 빠지거나 겹치지 않아요.
+  const stamp = new Date().toISOString();
+  const ids = ['00000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-00000000000b', '00000000-0000-4000-8000-00000000000c'];
+  for (const id of ids) await testDb.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [id, 'demo-admin', 'test:tie', v.id, stamp]);
+  const page = await request('/admin/audit?before=' + encodeURIComponent(stamp) + '&beforeId=' + ids[2], { cookie: admin });
+  assert.deepEqual(page.data.logs.filter((l) => l.action === 'test:tie').map((l) => l.id), [ids[1], ids[0]]);
   assert.equal((await request('/admin/audit', { cookie: v.cookie })).status, 403);
 });
 

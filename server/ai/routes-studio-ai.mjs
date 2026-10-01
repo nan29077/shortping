@@ -1622,7 +1622,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           try {
             prev = JSON.parse(waiting.input || '{}');
           } catch {}
-          const r = await db.run("UPDATE ai_jobs SET input=? WHERE id=? AND status='queued'", [JSON.stringify({ ...prev, ...translatePrompt(list), items: list, userText: '' }), waiting.id]);
+          // 여러 항목을 묶은 대기 작업이면 같은 항목만 새 문장으로 바꾸고 나머지는 그대로 둬요(묶음이 지워지지 않게).
+          const merged = [...(Array.isArray(prev.items) ? prev.items : []).filter((x) => x?.id !== list[0].id), ...list];
+          const r = await db.run("UPDATE ai_jobs SET input=? WHERE id=? AND status='queued'", [JSON.stringify({ ...prev, ...translatePrompt(merged), items: merged, userText: '' }), waiting.id]);
           if (Number(r?.rowCount ?? r?.changes ?? 0) > 0) return;
         }
       }
@@ -2467,9 +2469,11 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           subtitles = randomUUID() + '.vtt';
           await copyFile(path.join(subsDir, e.subtitles), path.join(subsDir, subtitles));
         }
-        const previous = (await db.get('SELECT subtitles FROM episodes WHERE drama_id=? AND number=?', [drama.id, e.number]))?.subtitles || '';
-        // 스튜디오 회차에 자막이 없으면 공개 회차에 붙어 있던 자막(예: 자동 자막)을 그대로 둬요.
-        if (!subtitles && /^[a-f0-9-]+\.vtt$/.test(previous)) subtitles = previous;
+        const existing = await db.get('SELECT subtitles,video FROM episodes WHERE drama_id=? AND number=?', [drama.id, e.number]);
+        const previous = existing?.subtitles || '';
+        // 스튜디오 회차에 자막이 없고 영상이 그대로면 공개 회차에 붙어 있던 자막(예: 자동 자막)을 그대로 둬요.
+        // 영상이 바뀌었으면 예전 자막은 시간이 맞지 않으니 쓰지 않아요.
+        if (!subtitles && /^[a-f0-9-]+\.vtt$/.test(previous) && existing?.video === e.video) subtitles = previous;
         await db.run(
           "INSERT INTO episodes (id,drama_id,number,title,video,duration,source,subtitles,studio_episode_id,thumbnail,review_status) VALUES (?,?,?,?,?,?,'studio',?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration,source='studio',subtitles=excluded.subtitles,studio_episode_id=excluded.studio_episode_id,thumbnail=excluded.thumbnail",
           [randomUUID(), drama.id, e.number, e.title.slice(0, 100), e.video, Math.max(1, Number(e.duration)), subtitles, e.id, e.thumbnail || '', serial ? 'draft' : 'approved'],

@@ -126,10 +126,16 @@ export function usePanelFocus(ref: { current: HTMLElement | null }, close: () =>
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     const box = ref.current;
-    const first = box?.querySelector<HTMLElement>('textarea, input, button:not([disabled])');
+    // 휴대폰(터치)에서는 입력칸에 초점을 주면 키보드가 바로 올라와서 패널 자체에 초점을 둬요.
+    const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+    const first = touch ? null : box?.querySelector<HTMLElement>('textarea, input, button:not([disabled])');
     (first || box)?.focus();
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== 'Escape' || document.querySelector('.modal-backdrop')) return;
+      if (ev.key !== 'Escape' || ev.defaultPrevented || document.querySelector('.modal-backdrop')) return;
+      // 초점이 이 패널 안에 있을 때만 닫아요(다른 패널 · 편집 창이 함께 열려 있어도 Esc 한 번에 하나만 닫히게).
+      const active = document.activeElement;
+      if (!box || !(box.contains(active) || active === document.body)) return;
+      if (active === document.body && document.querySelector('.ws-overlay')) return;
       ev.preventDefault();
       closeRef.current();
     };

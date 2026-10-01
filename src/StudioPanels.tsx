@@ -375,7 +375,7 @@ export function StudioAudit({
     setLoading(true);
     setLoadError('');
     try {
-      const r = await api<{ logs: StudioData['logs']; more: boolean }>('/admin/audit?before=' + encodeURIComponent(last.created_at));
+      const r = await api<{ logs: StudioData['logs']; more: boolean }>('/admin/audit?before=' + encodeURIComponent(last.created_at) + '&beforeId=' + encodeURIComponent(last.id));
       setOlder((o) => [...o, ...r.logs]);
       setMore(r.more);
     } catch (e) {

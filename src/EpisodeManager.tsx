@@ -250,17 +250,22 @@ export default function EpisodeManager({
       }
       patch(item.key, { status: 'uploading', error: undefined });
       let result;
+      // 이번 시도에서 받은 업로드 번호(처음 올릴 때는 item.handle이 아직 비어 있어요).
+      let handle = item.handle;
       try {
         result = await uploadVideo(item.file, (progress) => patch(item.key, { progress }), {
           signal: abort.current.signal,
           handle: item.handle,
-          onHandle: (handle) => patch(item.key, { handle }),
+          onHandle: (h) => {
+            handle = h;
+            patch(item.key, { handle: h });
+          },
         });
       } catch (e) {
         // 서버가 파일을 거절한 경우(형식·용량 등)는 다시 올려도 같아서 자동 재시도에서 뺍니다.
         // 동시 업로드 한도(upload_limit)는 파일 문제가 아니라 잠시 뒤 다시 시도하면 돼요.
         const rejected = e instanceof ApiError && e.code !== 'network' && e.code !== 'unauthorized' && e.code !== 'upload_limit';
-        if (rejected) cancelUpload(item.handle);
+        if (rejected) cancelUpload(handle);
         patch(item.key, {
           status: 'error',
           error: (e as Error).message,

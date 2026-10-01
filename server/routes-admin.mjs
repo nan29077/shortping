@@ -653,10 +653,12 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
   });
   // 운영 기록 더 보기: 화면 처음엔 최근 30건만 오고, 그보다 오래된 기록을 100건씩 이어서 받아요(2026-10-01 재점검).
   app.get('/api/admin/audit', roles('admin'), async (req, res) => {
+    // (시각, id) 기준으로 이어 받아요. 같은 순간에 남은 기록이 페이지 경계에 걸려도 빠지지 않게요.
     const before = typeof req.query.before === 'string' && req.query.before ? req.query.before : '9999';
+    const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId : '';
     const logs = await db.all(
-      'SELECT a.*,u.name FROM audit_logs a JOIN users u ON a.actor_id=u.id WHERE a.created_at<? ORDER BY a.created_at DESC LIMIT 100',
-      [before],
+      'SELECT a.*,u.name FROM audit_logs a JOIN users u ON a.actor_id=u.id WHERE (a.created_at<? OR (a.created_at=? AND a.id<?)) ORDER BY a.created_at DESC, a.id DESC LIMIT 100',
+      [before, before, beforeId],
     );
     res.json({ logs, more: logs.length === 100 });
   });

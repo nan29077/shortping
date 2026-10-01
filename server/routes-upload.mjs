@@ -174,6 +174,8 @@ export function uploadRoutes({
   });
   app.delete('/api/studio/uploads/:id', roles('pd', 'admin'), async (req, res) => {
     const s = await session(req);
+    // 조각을 쓰거나 마무리하는 중이면 취소하지 않아요(마무리 결과와 엇갈리지 않게). 멈춘 업로드는 나중에 자동 정리돼요.
+    if (writing.has(s.id)) fail(409, '업로드를 마무리하는 중이라 지금은 취소할 수 없어요.');
     if (s.status === 'open') {
       await rm(partPath(s.id), { force: true });
       await db.run("UPDATE upload_sessions SET status='canceled',updated_at=? WHERE id=?", [now(), s.id]);

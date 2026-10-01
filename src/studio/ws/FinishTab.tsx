@@ -38,7 +38,10 @@ export default function FinishTab({ ws }: { ws: WS }) {
     setTimeout(() => overlayRef.current?.focus(), 0);
     let asking = false;
     const onKey = async (ev: KeyboardEvent) => {
-      if (ev.key !== 'Escape' || asking || document.querySelector('.modal-backdrop')) return;
+      if (ev.key !== 'Escape' || asking || ev.defaultPrevented || document.querySelector('.modal-backdrop')) return;
+      // 초점이 AI 조수 · 의견 같은 옆 패널에 있으면 그 패널이 Esc를 받아요(한 번에 하나만 닫히게).
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest('aside') && !overlayRef.current?.contains(active)) return;
       ev.preventDefault();
       asking = true;
       const ok = await ws.ask({ title: '편집 창을 닫을까요?', text: '저장하지 않은 썸네일 · 카드 편집 내용은 사라져요.', ok: '닫기', danger: true });
