@@ -90,6 +90,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
           ' ORDER BY s.created_at DESC LIMIT 400',
         params,
       ),
+      // 화면 목록은 최근 400건까지만 보내요. 전체 건수와 CSV(전체)는 따로 받아요.
+      entry_count: Number((await db.get('SELECT COUNT(*) AS n FROM settlement_entries s' + filter, params))?.n || 0),
       // 목록은 최근 200건이지만, 누적 통계는 전체 기준으로 따로 계산합니다(라마 전환은 은행 지급과 분리).
       payoutStats: await db.get(
         `SELECT COALESCE(SUM(CASE WHEN status='paid' AND method<>'lama' THEN payable ELSE 0 END),0) AS paid_bank,
@@ -105,9 +107,26 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         ),
       ),
       closed: await db.all(
-        "SELECT period, COUNT(*) AS creators, SUM(gross) AS gross FROM settlement_entries WHERE kind='subscription' GROUP BY period ORDER BY period DESC LIMIT 12",
+        // 배분이 없던 달도 마감 기록이 있으면 '마감된 달'로 보여요(2026-10-01 재점검).
+        `SELECT p.period, COUNT(s.id) AS creators, COALESCE(SUM(s.gross),0) AS gross
+           FROM (SELECT DISTINCT target_id AS period FROM audit_logs WHERE action='settlement:closed') p
+           LEFT JOIN settlement_entries s ON s.kind='subscription' AND s.period=p.period
+          GROUP BY p.period ORDER BY p.period DESC LIMIT 12`,
       ),
     });
+  });
+  // 정산 원장 전체(CSV 내보내기용). 화면 목록과 달리 건수를 자르지 않아요(최대 10만 건).
+  app.get('/api/admin/settlements/entries', roles('admin'), async (req, res) => {
+    const month = typeof req.query.month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month) ? req.query.month : '';
+    res.json(
+      await db.all(
+        `SELECT s.*, d.title AS drama_title, u.name AS pd_name FROM settlement_entries s
+         LEFT JOIN dramas d ON d.id=s.drama_id JOIN users u ON u.id=s.pd_id` +
+          (month ? ' WHERE s.period=?' : '') +
+          ' ORDER BY s.created_at DESC LIMIT 100000',
+        month ? [month] : [],
+      ),
+    );
   });
   app.post('/api/admin/settlements/close', roles('admin'), async (req, res) => {
     const b = z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }).parse(req.body);
@@ -421,8 +440,8 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
 
   // ── 메인페이지 관리 ─────────────────────────────────────────
   // 변경할 때마다 적용 직후 상태를 기록해 두고(최근 30개), 기록에서 되돌릴 수 있게 합니다.
-  const recordHome = async (kind, data, actorId) => {
-    await db.run('INSERT INTO home_history (id,kind,data,actor_id,created_at) VALUES (?,?,?,?,?)', [randomUUID(), kind, JSON.stringify(data), actorId, now()]);
+  const recordHome = async (kind, data, actorId, at = now()) => {
+    await db.run('INSERT INTO home_history (id,kind,data,actor_id,created_at) VALUES (?,?,?,?,?)', [randomUUID(), kind, JSON.stringify(data), actorId, at]);
     const old = await db.all('SELECT id FROM home_history ORDER BY created_at DESC LIMIT 1000 OFFSET 30');
     for (const r of old) await db.run('DELETE FROM home_history WHERE id=?', [r.id]);
   };
@@ -442,8 +461,15 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     copyright: z.string().trim().min(2).max(60),
     style: styleSchema.optional(),
   });
+  const appearanceRecord = (a) => ({ theme: a.theme, eyebrow: a.eyebrow, headline: a.headline, highlight: a.highlight, description: a.description, caption: a.caption, copyright: a.copyright, style: a.style });
+  // 첫 변경이면 바꾸기 전 상태도 기록해 둬요(그래야 처음 상태로 되돌릴 수 있어요, 2026-10-01 재점검).
+  const recordBeforeFirst = async (kind, data, actorId) => {
+    if (await db.get('SELECT id FROM home_history WHERE kind=? LIMIT 1', [kind])) return;
+    await recordHome(kind, data, actorId, new Date(Date.now() - 1000).toISOString());
+  };
   async function applyAppearance(b, actorId) {
     if (b.style) await checkImage(b.style.image);
+    await recordBeforeFirst('appearance', appearanceRecord(appearanceFromSettings(await loadSettings(db))), actorId);
     const settings = await saveSettings(
       db,
       {
@@ -459,13 +485,14 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       actorId,
     );
     const appearance = appearanceFromSettings(settings);
-    await recordHome('appearance', { theme: appearance.theme, eyebrow: appearance.eyebrow, headline: appearance.headline, highlight: appearance.highlight, description: appearance.description, caption: appearance.caption, copyright: appearance.copyright, style: appearance.style }, actorId);
+    await recordHome('appearance', appearanceRecord(appearance), actorId);
     return appearance;
   }
   async function applyLayout(value, actorId) {
     const iso = (v) => (v ? new Date(v).toISOString() : '');
     const layout = normalizeLayout({ ...value, notice: { ...value.notice, start: iso(value.notice.start), end: iso(value.notice.end) } });
     if (layout.notice.start && layout.notice.end && layout.notice.start >= layout.notice.end) fail(400, '공지 띠 종료 시각은 시작 시각보다 뒤여야 해요.');
+    await recordBeforeFirst('layout', layoutOf((await loadSettings(db)).home_layout), actorId);
     const settings = await saveSettings(db, { home_layout: JSON.stringify(layout) }, actorId);
     const saved = layoutOf(settings.home_layout);
     await recordHome('layout', saved, actorId);
@@ -603,7 +630,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       .parse(req.body);
     if (req.params.id === req.user.id || req.params.id === 'demo-admin')
       fail(400, '현재 관리자 계정은 변경할 수 없어요.');
-    const current = await db.get('SELECT id,status FROM users WHERE id=?', [req.params.id]);
+    const current = await db.get('SELECT id,status,name,phone FROM users WHERE id=?', [req.params.id]);
     if (!current) fail(404, '회원을 찾을 수 없습니다.');
     // 탈퇴는 출금 대기 · AI 예약 확인과 개인정보 정리를 거치는 탈퇴 절차로만 해요. 탈퇴한 계정은 되살릴 수 없어요.
     if (b.status === 'withdrawn' && current.status !== 'withdrawn')
@@ -617,7 +644,9 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       );
       if (b.status !== 'active')
         await db.run('DELETE FROM sessions WHERE user_id=?', [req.params.id]);
-      await audit(req.user.id, `user:${b.role}:${b.status}`, req.params.id);
+      // 이름 · 연락처를 바꾼 것도 운영 기록에 남겨요(값 자체는 개인정보라 적지 않음).
+      const changed = [current.name !== b.name ? 'name' : '', (current.phone || '') !== b.phone ? 'phone' : ''].filter(Boolean);
+      await audit(req.user.id, `user:${b.role}:${b.status}${changed.length ? ':' + changed.join('+') : ''}`, req.params.id);
     });
     res.json({ ok: true });
   });
@@ -629,6 +658,7 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       'INSERT INTO member_notes (id,user_id,actor_id,note,created_at) VALUES (?,?,?,?,?)',
       [randomUUID(), req.params.id, req.user.id, b.note, now()],
     );
+    await audit(req.user.id, 'user:note-added', req.params.id);
     res.status(201).json({ ok: true });
   });
   app.post('/api/admin/members/:id/logout', roles('admin'), async (req, res) => {

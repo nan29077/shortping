@@ -497,16 +497,25 @@ export function AdminSettlementPanel({
           <div>
             <h3>정산 원장</h3>
             <p>
-              {data.entries.length}건{month && ` · ${month}`}
+              {(data.entry_count ?? data.entries.length).toLocaleString('ko-KR')}건{month && ` · ${month}`}
+              {(data.entry_count ?? data.entries.length) > 120 && ' · 최근 120건 표시(CSV는 전체)'}
             </p>
           </div>
           <button
             className="secondary compact"
             disabled={!data.entries.length}
-            onClick={() =>
+            onClick={async () => {
+              // 화면 목록은 잘려 있으니 CSV는 서버에서 전체를 받아 만들어요.
+              let all = data.entries;
+              try {
+                all = await api<typeof data.entries>('/admin/settlements/entries' + (month ? '?month=' + month : ''));
+              } catch (e) {
+                notify((e as Error).message);
+                return;
+              }
               downloadCsv('숏핑-정산원장.csv', [
                 ['정산일', 'PD', '구분', '작품', '판매액', '수수료', '정산액', '상태'],
-                ...data.entries.map((e) => [
+                ...all.map((e) => [
                   moment(e.created_at),
                   e.pd_name || '',
                   settleKindLabel(e.kind),
@@ -516,8 +525,8 @@ export function AdminSettlementPanel({
                   e.net,
                   entryStatus[e.status],
                 ]),
-              ])
-            }
+              ]);
+            }}
           >
             <Download size={16} />
             원장 CSV

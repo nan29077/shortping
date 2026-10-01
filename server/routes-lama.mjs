@@ -154,6 +154,7 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
     if (!(await db.get('SELECT id FROM lama_products WHERE id=?', [req.params.id]))) fail(404, '충전 상품을 찾을 수 없습니다.');
     if (await db.get('SELECT id FROM orders WHERE product_id=? LIMIT 1', [req.params.id])) {
       await db.run('UPDATE lama_products SET active=0,updated_at=? WHERE id=?', [now(), req.params.id]);
+      await audit(req.user.id, 'lama-product:deactivated', req.params.id);
       return res.json({ ok: true, deactivated: true });
     }
     await db.run('DELETE FROM lama_products WHERE id=?', [req.params.id]);

@@ -283,6 +283,10 @@ export default function Studio({
       ];
   const tabs = groups.flatMap((g) => g.items);
   const tab = tabs.some((t) => t.id === section) ? section || 'overview' : 'overview';
+  // 다른 메뉴로 옮기면 열려 있던 작품 검토 창을 닫아요(2026-10-01 재점검).
+  useEffect(() => {
+    setReview(null);
+  }, [tab]);
   // 메뉴: 왼쪽 위 햄버거 버튼으로 엽니다. 넓은 화면은 옆 메뉴를 접었다 펴고, 좁은 화면(휴대폰)은 서랍처럼 열려요.
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {

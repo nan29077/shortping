@@ -21,8 +21,11 @@ export function benchRoutes({ app, db, fail, now, roles, engine, uploadDir }) {
   const audit = (actorId, action, targetId) => db.run('INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)', [randomUUID(), actorId, action, targetId, now()]).catch(() => {});
   const imageRef = (url) => (url && url.startsWith('/uploads/') ? { path: url, mime: /\.png$/.test(url) ? 'image/png' : /\.webp$/.test(url) ? 'image/webp' : 'image/jpeg' } : undefined);
   // 처음 쓰면 기본 시험 문제를 넣어 둬요.
+  // 한 번만 넣어요: 관리자가 문제를 모두 지웠다고 다시 생기지 않게 표시를 남겨요(2026-10-01 재점검).
   async function seed(actorId) {
+    if (await db.get("SELECT key FROM platform_settings WHERE key='bench_seeded'")) return;
     const n = Number((await db.get('SELECT COUNT(*) AS n FROM ai_benchmarks'))?.n || 0);
+    await db.run("INSERT INTO platform_settings (key,value,updated_at,updated_by) VALUES ('bench_seeded','1',?,?) ON CONFLICT(key) DO NOTHING", [now(), actorId]);
     if (n) return;
     for (const x of PRESETS)
       await db.run('INSERT INTO ai_benchmarks (id,name,capability,prompt,ref_image,seconds,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)', [randomUUID(), x.name, x.capability, x.prompt, '', x.seconds || 5, actorId, now()]);

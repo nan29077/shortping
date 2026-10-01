@@ -413,6 +413,8 @@ export type PlatformSettings = {
 export type AdminSettlement = {
   settings: PlatformSettings;
   month: string;
+  // 정산 원장 전체 건수(화면 목록 entries는 최근 400건까지)
+  entry_count?: number;
   totals: Balance & { gross: number; fee: number; net: number };
   creators: {
     id: string;

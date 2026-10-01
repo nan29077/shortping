@@ -25,9 +25,11 @@ const orderTitle = (o: Order) =>
       : '숏핑 패스');
 export function downloadCsv(name: string, rows: (string | number)[][]) {
   // Quoting alone does not prevent spreadsheet formula execution.
+  // 숫자(음수 금액 포함)와 빈 값 표시('-')는 그대로 두고, 수식으로 읽힐 수 있는 글자만 막아요(2026-10-01 재점검).
   const safe = (value: string | number) => {
     let text = String(value);
-    if (/^[\s]*[=+@-]/.test(text)) text = "'" + text;
+    const plainNumber = typeof value === 'number' || /^-?\d+(\.\d+)?$/.test(text.trim()) || text.trim() === '-';
+    if (!plainNumber && /^[\s]*[=+@\-\t\r]/.test(text)) text = "'" + text;
     return '"' + text.replaceAll('"', '""') + '"';
   };
   const url = URL.createObjectURL(

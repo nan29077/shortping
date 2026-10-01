@@ -404,6 +404,7 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
     const used = await db.get('SELECT id FROM ai_jobs WHERE model_ref=? LIMIT 1', [m.id]);
     if (used) {
       await db.run('UPDATE ai_models SET active=0,updated_at=? WHERE id=?', [now(), m.id]);
+      await audit(req.user.id, 'ai-model:deactivated', m.id);
       return res.json({ ok: true, deactivated: true });
     }
     await db.run('DELETE FROM ai_models WHERE id=?', [m.id]);
