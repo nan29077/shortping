@@ -12,7 +12,7 @@ import {
   type User,
   type Wallet,
 } from './api';
-import { Modal, backTo, loginWithReturn } from './App';
+import { Modal, armResumePurchase, backTo, loginWithReturn } from './App';
 
 // 핑 충전 화면. 지금은 테스트 결제이고, PG·인앱결제가 연동되면 결제 승인 후 같은 적립 로직을 탑니다.
 export default function PingsPage({
@@ -93,7 +93,10 @@ export default function PingsPage({
           (returnTo ? ' · 보던 화면으로 돌아갈게요.' : ''),
       );
       // 보던 화면으로 돌아갈 때 충전 화면이 뒤로 가기 기록에 남지 않게 합니다.
-      if (returnTo) backTo(returnTo);
+      if (returnTo) {
+        armResumePurchase();
+        backTo(returnTo);
+      }
     } catch (e) {
       notify((e as Error).message);
     } finally {
@@ -219,7 +222,7 @@ export default function PingsPage({
               : '실제 결제 연동을 준비하고 있어요.'}
           </div>
           <button className="primary full" disabled={busy || !demo} onClick={charge}>
-            {busy ? '처리 중…' : '테스트 결제로 충전하기'}
+            {busy ? '처리 중…' : demo ? '테스트 결제로 충전하기' : '결제 준비 중이에요'}
           </button>
         </Modal>
       )}

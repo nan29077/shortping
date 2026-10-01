@@ -185,7 +185,7 @@ function DiagnosisView({ d, shots, onFix }: { d: Diagnosis; shots: StudioShot[];
     <div className="ws-diagnosis">
       <button type="button" className="ws-diagnosis-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <Stethoscope size={14} /> 대본 진단 <b className={avg >= 75 ? 'lime' : avg >= 55 ? '' : 'danger'}>{avg}점</b>
-        {d.at && <small>{new Date(d.at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>}
+        {d.at && <small>{new Date(d.at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>}
       </button>
       {open && (
         <>
@@ -502,7 +502,7 @@ function VersionsModal({ ws, e, close }: { ws: WS; e: StudioEpisode; close: () =
                   {v.note && <small> · {v.note}</small>}
                 </span>
                 <small className="muted">
-                  {new Date(v.created_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · 컷 {v.shots.length}개
+                  {new Date(v.created_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · 컷 {v.shots.length}개
                 </small>
                 <button type="button" className="text-link" onClick={() => setOpen(open === v.id ? '' : v.id)}>
                   {open === v.id ? '접기' : '보기'}

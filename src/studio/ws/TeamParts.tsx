@@ -24,7 +24,7 @@ import NumberInput from '../../NumberInput';
 
 const ROLES = ['producer', 'writer', 'editor', 'reviewer'] as const;
 type MemberRole = (typeof ROLES)[number];
-const when = (iso: string) => new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const when = (iso: string) => new Date(iso).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const inviteUrl = (token: string) => `${API_ORIGIN || location.origin}/#/studio/ai/join/${token}`;
 // 작업 → 필요한 권한(서버 team.mjs와 같은 규칙)
 const SCRIPT_ACTIONS = new Set(['plan', 'adapt', 'bible', 'season', 'metadata', 'parse_script', 'reverse_script', 'script', 'diagnose', 'rewrite_range', 'variants', 'rewrite_shot', 'bridge_shot']);

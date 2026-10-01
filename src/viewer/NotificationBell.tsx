@@ -90,7 +90,7 @@ export function relativeTime(value: string, now = Date.now()) {
   const d = new Date(t);
   return d.getFullYear() === new Date(now).getFullYear()
     ? `${d.getMonth() + 1}월 ${d.getDate()}일`
-    : d.toLocaleDateString('ko-KR');
+    : d.toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' });
 }
 
 // 로그인한 사용자의 알림 종. 시청자 헤더와 스튜디오 헤더에서 함께 씁니다.

@@ -91,7 +91,9 @@ const unlockPings = (p: Exclude<Purchase, 'subscription'>) =>
 const readRoute = (): Route => {
   // 주소 뒤의 ?이하(예: #/reset?token=…)는 화면 이름이 아니라 값이므로 떼어 냅니다.
   const p = location.hash.replace('#', '').split('?')[0].split('/').filter(Boolean);
-  return { page: p[0] || 'home', id: p[1], episode: Number(p[2]) || 1 };
+  // 회차 번호가 없으면 1화, 숫자가 아니면(#/watch/x/abc) 없는 회차로 처리해 '회차를 찾을 수 없어요'를 보여 줘요.
+  const episode = p[2] === undefined ? 1 : /^[1-9]\d*$/.test(p[2]) ? Number(p[2]) : NaN;
+  return { page: p[0] || 'home', id: p[1], episode };
 };
 // ── 앱 안 이동 기록 ─────────────────────────────────────────────
 // 각 기록 항목의 history.state에 앱 안에서 몇 번째 화면인지(spIdx)와 직전 화면(spPrev)을 남깁니다.
@@ -151,6 +153,19 @@ export const goBack = (fallback: string) => {
   else navigate(fallback, { replace: true });
 };
 // 직전 화면이 정확히 target일 때만 뒤로 가기를 쓰고, 아니면 target으로 현재 항목을 바꿉니다.
+// 핑이 모자라 충전하러 갔다가 충전에 성공해 돌아오면, 열려던 회차(작품)의 열기 창을 다시 띄워요(2026-10-01 재점검).
+let chargeTarget: { dramaId: string; episode?: number } | null = null;
+let resumeTarget: { dramaId: string; episode?: number } | null = null;
+export const armResumePurchase = () => {
+  resumeTarget = chargeTarget;
+  chargeTarget = null;
+};
+const takeResumePurchase = (dramaId: string) => {
+  if (resumeTarget?.dramaId !== dramaId) return null;
+  const t = resumeTarget;
+  resumeTarget = null;
+  return t;
+};
 export const backTo = (target: string) => {
   if (navIdx > 0 && readNavState()?.spPrev === target) history.back();
   else navigate(target, { replace: true });
@@ -329,7 +344,12 @@ export default function App() {
   const shell = useRef<HTMLDivElement>(null);
   // 알림 띠: 오류 문구는 빨간 느낌표로 보여 줍니다. tone을 주지 않으면 문구로 짐작합니다.
   const cancelTitle = config.demo ? '테스트 구독 종료' : '구독 해지';
-  const notify = useCallback((s: string, tone?: ToastTone) => setToast({ text: s, tone: tone || toneOf(s) }), []);
+  // 로그인 만료 안내가 뜬 직후에는, 실패한 요청이 띄우는 일반 오류 문구로 덮지 않아요(2026-10-01 재점검).
+  const expiredAtRef = useRef(0);
+  const notify = useCallback((s: string, tone?: ToastTone) => {
+    if (Date.now() - expiredAtRef.current < 4000) return;
+    setToast({ text: s, tone: tone || toneOf(s) });
+  }, []);
   // 화면을 떠나며 저장하지 못한 입력이 있으면 알려요(useAutosave가 사라질 때 보내는 신호).
   // 작업 공간보다 오래 남는 여기서 들어야, 스튜디오 목록·다른 메뉴로 옮겨 갈 때의 실패도 놓치지 않아요.
   useEffect(() => {
@@ -382,6 +402,7 @@ export default function App() {
       userRef.current = null;
       setUser(null);
       setLib(emptyLibrary);
+      expiredAtRef.current = Date.now();
       setToast({ text: '로그인이 만료되었어요. 다시 로그인해 주세요.', tone: 'error' });
       loginWithReturn();
     };
@@ -487,6 +508,7 @@ export default function App() {
   // 충전 화면에서 돌아올 곳(지금 보던 작품·회차)을 주소에 담아 보냅니다.
   const goCharge = (target?: Purchase | null) => {
     setCheckout(null);
+    chargeTarget = target && target !== 'subscription' ? { dramaId: target.drama.id, episode: target.episode } : null;
     const back =
       target && target !== 'subscription'
         ? target.episode
@@ -731,7 +753,6 @@ export default function App() {
                   }
                 >
                   <Bell size={20} />
-                  <i />
                 </button>
               )}
               {user && (
@@ -1177,7 +1198,7 @@ export default function App() {
               <WatchPage
                 key={route.id + '-' + route.episode + '-' + lib.orders.length}
                 id={route.id!}
-                number={route.episode || 1}
+                number={route.episode ?? 1}
                 user={user}
                 lib={lib}
                 buy={buy}
@@ -1243,7 +1264,7 @@ export default function App() {
                 </div>
                 {lib.subscription && (
                   <div className="info-box">
-                    이용 기간: {new Date(lib.subscription.expires_at).toLocaleDateString('ko-KR')}
+                    이용 기간: {new Date(lib.subscription.expires_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}
                     까지
                     <br />
                     {config.demo ? '테스트 구독은 자동 갱신되지 않아요.' : '구독 해지는 마이페이지에서 할 수 있어요.'}
@@ -1399,7 +1420,7 @@ export default function App() {
                         </strong>
                         <span>
                           {lib.subscription
-                            ? new Date(lib.subscription.expires_at).toLocaleDateString('ko-KR') +
+                            ? new Date(lib.subscription.expires_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' }) +
                               '까지 이용 가능'
                             : '숏핑 패스 알아보기'}
                         </span>
@@ -1521,7 +1542,7 @@ export default function App() {
                                         : `${o.title || '작품'} 전체`}
                               </strong>
                               <span>
-                                {new Date(o.created_at).toLocaleString('ko-KR')} ·{' '}
+                                {new Date(o.created_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} ·{' '}
                                 {o.kind.startsWith('ping_') && o.kind !== 'ping_charge'
                                   ? '핑 사용'
                                   : config.demo
@@ -1958,11 +1979,12 @@ export default function App() {
                   보너스 핑부터 먼저 사용돼요. 연 회차는 마이페이지에서 언제든 다시 볼 수 있어요.
                 </div>
                 {short ? (
-                  <button className="primary full" onClick={() => goCharge(checkout)}>
+                  <button className="primary full" data-autofocus="" onClick={() => goCharge(checkout)}>
                     <Coins size={16} /> 핑 충전하러 가기
                   </button>
                 ) : (
-                  <button className="primary full" disabled={busy} onClick={pay}>
+                  // 첫 초점은 고른 상품의 결제 버튼에 둬요(더 비싼 '전체 열기'가 아니라, 2026-10-01 재점검).
+                  <button className="primary full" data-autofocus="" disabled={busy} onClick={pay}>
                     {busy ? '처리 중…' : `${pings(need)}으로 열기`}
                   </button>
                 )}
@@ -2480,6 +2502,11 @@ function DramaPage({
       .then(setD)
       .catch((e) => setError(e.message));
   }, [id]);
+  useEffect(() => {
+    if (!d) return;
+    const t = takeResumePurchase(d.id);
+    if (t && !t.episode && !d.entitled && d.locked_count > 0 && d.status !== 'hidden') buy({ drama: d });
+  }, [d, buy]);
   if (error)
     return (
       <Empty
@@ -2497,6 +2524,15 @@ function DramaPage({
     );
   const history = lib.history.find((h) => h.drama_id === d.id);
   const firstLocked = d.episodes.find((e) => e.locked)?.number || d.free_episodes + 1;
+  // 공개된 마지막 화를 끝까지 봤다면 '12화 이어보기' 대신 처음부터 다시 보기를 권해요(2026-10-01 재점검).
+  const lastEp = [...d.episodes].sort((a, b) => b.number - a.number)[0];
+  const finished =
+    !!history &&
+    !!lastEp &&
+    lastEp.number === history.episode &&
+    Number(lastEp.duration) > 0 &&
+    history.progress >= Math.max(Number(lastEp.duration) * 0.95, Number(lastEp.duration) - 5);
+  const firstEp = [...d.episodes].sort((a, b) => a.number - b.number)[0]?.number || 1;
   return (
     <>
       <div className="detail-cover">
@@ -2547,10 +2583,10 @@ function DramaPage({
         <div className="detail-actions">
           <button
             className="primary"
-            onClick={() => navigate('watch/' + d.id + '/' + (history?.episode || 1))}
+            onClick={() => navigate('watch/' + d.id + '/' + (finished ? firstEp : history?.episode || firstEp))}
           >
             <Play size={17} fill="currentColor" />
-            {history ? `${history.episode}화 이어보기` : '1화 무료로 보기'}
+            {finished ? '처음부터 다시 보기' : history ? `${history.episode}화 이어보기` : `${firstEp}화 ${d.free || firstEp <= d.free_episodes ? '무료로 ' : ''}보기`}
           </button>
           <button
             className={'secondary ' + (lib.favorites.includes(d.id) ? 'lime' : '')}
@@ -2594,7 +2630,7 @@ function DramaPage({
                 aria-label={`${e.number}화${e.locked ? ' (잠김)' : e.owned ? ' (열림)' : ''}${status ? ' · ' + status : ''}`}
                 title={
                   status && e.review_status === 'scheduled' && e.publish_at
-                    ? `${new Date(e.publish_at).toLocaleString('ko-KR')} 공개 예정`
+                    ? `${new Date(e.publish_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} 공개 예정`
                     : undefined
                 }
                 onClick={() => navigate('watch/' + d.id + '/' + e.number)}
@@ -2609,6 +2645,14 @@ function DramaPage({
             );
           })}
         </div>
+        {d.status === 'hidden' ? (
+          // 숨김(판매 종료) 작품: 이미 연 회차만 볼 수 있어요. 구매 버튼은 눌러도 실패하니 안내로 바꿔요(2026-10-01 재점검).
+          <div className="purchase-options">
+            <p className="muted settings-note" role="status">
+              판매가 종료된 작품이에요. 이미 연 회차는 계속 볼 수 있어요.
+            </p>
+          </div>
+        ) : (
         <div className="purchase-options">
           {!d.entitled && d.locked_count > 0 && (
             <button onClick={() => buy({ drama: d, episode: firstLocked })}>
@@ -2641,15 +2685,18 @@ function DramaPage({
             </span>
             <ChevronRight size={18} />
           </button>
-          <button onClick={() => navigate('membership')}>
-            <Crown size={21} />
-            <span>
-              <strong>숏핑 패스로 무제한 정주행</strong>
-              <small>{won(pass)}으로 모든 이야기</small>
-            </span>
-            <ChevronRight size={18} />
-          </button>
+          {!lib.subscription && (
+            <button onClick={() => navigate('membership')}>
+              <Crown size={21} />
+              <span>
+                <strong>숏핑 패스로 무제한 정주행</strong>
+                <small>{won(pass)}으로 모든 이야기</small>
+              </span>
+              <ChevronRight size={18} />
+            </button>
+          )}
         </div>
+        )}
         {d.episodes.some((e) => !!e.is_demo) && (
           <p className="demo-footnote">
             개발용 데모 작품 · 생성형 포스터 사용
@@ -2737,6 +2784,12 @@ function WatchPage({
     void loadDetail();
   }, [loadDetail]);
   const current = d?.episodes.find((e) => e.number === number);
+  useEffect(() => {
+    if (!d || !current) return;
+    const t = takeResumePurchase(d.id);
+    // 자동 열기를 켠 사람은 아래 자동 열기가 처리해요(창을 겹쳐 띄우지 않게).
+    if (t?.episode === number && current.locked && d.status !== 'hidden' && !user?.auto_unlock) buy({ drama: d, episode: number });
+  }, [d, current, number, buy, user]);
   // 자동 열기: 사용자가 켜 두었고 핑이 충분하면 잠긴 회차를 바로 엽니다(화면마다 한 번만 시도).
   useEffect(() => {
     if (!d || !user?.auto_unlock || !current?.locked || autoTried.current) return;
@@ -2928,6 +2981,10 @@ function WatchPage({
             <div className="paywall">
               <LockKeyhole size={32} />
               <h2>{autoBusy ? '회차를 여는 중이에요' : '이야기는 계속돼요'}</h2>
+              {d.status === 'hidden' ? (
+                <p>판매가 종료된 작품이라 새로 열 수 없어요. 이미 연 회차는 계속 볼 수 있어요.</p>
+              ) : (
+                <>
               <p>
                 {number}화는 {pings(d.episode_pings)}으로 열 수 있어요.
                 <br />
@@ -2966,6 +3023,8 @@ function WatchPage({
                 </label>
               )}
               <small>연 회차와 핑 내역은 마이페이지에서 확인할 수 있어요.</small>
+                </>
+              )}
             </div>
           </>
         ) : (

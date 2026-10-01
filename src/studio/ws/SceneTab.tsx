@@ -570,7 +570,7 @@ function BgmSection({ ws, e }: { ws: WS; e: StudioEpisode }) {
   });
   const label = (url: string) => {
     const a = music.find((m) => m.url === url);
-    return a ? `${a.model_label || 'AI 음악'} · ${new Date(a.created_at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}` : '음악';
+    return a ? `${a.model_label || 'AI 음악'} · ${new Date(a.created_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric' })}` : '음악';
   };
   const upload = async (fl: File) => {
     setUploading(true);

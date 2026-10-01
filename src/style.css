@@ -8786,3 +8786,28 @@ input[type='number']::-webkit-outer-spin-button {
 .modal-backdrop.confirm-backdrop {
   z-index: 300;
 }
+/* 2026-10-01 재점검: 토스트는 아래 버튼을 가리지 않게 누름을 통과시키고, 작은 터치 영역을 넓혀요. */
+.toast {
+  pointer-events: none;
+}
+.watch-top > button {
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+}
+.watch-controls button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+}
+.hero-pagination > div {
+  gap: 0;
+}
+.hero-pagination > div button {
+  box-sizing: content-box;
+  padding: 12px 3px;
+  background-clip: content-box;
+}

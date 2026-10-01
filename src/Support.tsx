@@ -199,7 +199,7 @@ export default function Support({
               <div>
                 <strong>{t.title}</strong>
                 <small>
-                  {t.category} · {new Date(t.created_at).toLocaleDateString('ko-KR')}
+                  {t.category} · {new Date(t.created_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}
                   {managing ? ' · ' + t.name : ''}
                 </small>
               </div>
@@ -213,7 +213,7 @@ export default function Support({
                 <div className="ticket-reply">
                   <strong>숏핑 운영팀 답변</strong>
                   <p>{t.reply}</p>
-                  <small>{t.replied_at && new Date(t.replied_at).toLocaleString('ko-KR')}</small>
+                  <small>{t.replied_at && new Date(t.replied_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</small>
                 </div>
               )}
               {managing && (

@@ -452,7 +452,7 @@ export function Versions({
       <option value="">버전 {list.length}개</option>
       {list.map((a, i) => (
         <option key={a.id} value={a.id}>
-          v{list.length - i} · {a.model_label || 'AI'} · {new Date(a.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+          v{list.length - i} · {a.model_label || 'AI'} · {new Date(a.created_at).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}
         </option>
       ))}
     </select>

@@ -35,7 +35,7 @@ export function targetText(d: StudioProjectDetail, j: Pick<StudioJob, 'target_ty
   return '작품 전체';
 }
 const statusText: Record<string, string> = { queued: '대기 중', running: '만드는 중', succeeded: '완료', failed: '실패', canceled: '취소됨' };
-const when = (iso: string) => new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const when = (iso: string) => new Date(iso).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 export default function JobCenter({
   data,

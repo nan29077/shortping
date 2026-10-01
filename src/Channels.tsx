@@ -260,10 +260,10 @@ export function ChannelPage({
     setBusy(true);
     try {
       await api('/channels/' + channel.id + '/follow', 'POST', { active: !following });
-      await reloadLibrary();
-      // 팔로워 수·통계가 바로 반영되도록 방송국 정보를 다시 읽습니다.
-      setChannel(await api<ChannelDetail>('/channels/' + channel.id));
       notify(following ? '방송국 팔로우를 해제했어요.' : '방송국을 팔로우했어요.');
+      // 팔로워 수·통계가 바로 반영되도록 다시 읽어요. 다시 읽기가 실패해도 팔로우 자체는 된 거라 오류로 덮지 않아요.
+      await reloadLibrary().catch(() => {});
+      setChannel(await api<ChannelDetail>('/channels/' + channel.id).catch(() => channel));
     } catch (e) {
       notify((e as Error).message);
     } finally {

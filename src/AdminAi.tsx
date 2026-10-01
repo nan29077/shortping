@@ -385,7 +385,7 @@ function Providers({ data, busy, run }: { data: AdminAi; busy: boolean; run: Run
                     {p.cooldown_until ? (
                       <small className="danger">
                         연속 실패 {p.fail_streak}회 ·{' '}
-                        {new Date(p.cooldown_until).toLocaleTimeString('ko-KR', {
+                        {new Date(p.cooldown_until).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul',
                           hour: '2-digit',
                           minute: '2-digit',
                         })}

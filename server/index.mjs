@@ -737,11 +737,13 @@ app.get('/api/library', requireAuth, async (req, res) => {
   });
 });
 app.post('/api/favorites/:id', requireAuth, async (req, res) => {
-  const d = await db.get("SELECT id FROM dramas WHERE id=? AND status='published'", [
-    req.params.id,
-  ]);
-  if (!d) fail(404, '작품을 찾을 수 없습니다.');
   const active = z.boolean().parse(req.body.active);
+  // 찜 해제는 작품이 숨겨진 뒤에도 할 수 있어야 해요(찜하기는 공개 작품만, 2026-10-01 재점검).
+  const d = await db.get(
+    active ? "SELECT id FROM dramas WHERE id=? AND status='published'" : 'SELECT id FROM dramas WHERE id=?',
+    [req.params.id],
+  );
+  if (!d) fail(404, '작품을 찾을 수 없습니다.');
   if (active)
     await db.run('INSERT INTO favorites (user_id,drama_id) VALUES (?,?) ON CONFLICT DO NOTHING', [
       req.user.id,

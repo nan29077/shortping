@@ -587,7 +587,7 @@ export default function Studio({
                         {l.name} ·{' '}
                         {reviewStatus[l.action] || actionLabel(l.action)}
                       </span>
-                      <small>{new Date(l.created_at).toLocaleDateString('ko-KR')}</small>
+                      <small>{new Date(l.created_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</small>
                     </div>
                   ))
                 ) : (

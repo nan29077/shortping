@@ -288,7 +288,7 @@ export default function AiStudio({
                 <span>
                   <b>{i.title}</b>
                   <small>
-                    {i.owner_name}님 · {i.role_name}로 초대 · {new Date(i.expires_at).toLocaleDateString('ko-KR')}까지
+                    {i.owner_name}님 · {i.role_name}로 초대 · {new Date(i.expires_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}까지
                   </small>
                 </span>
                 <button className="primary compact" onClick={() => navigate('studio/ai/join/' + i.token)}>
@@ -373,7 +373,7 @@ export default function AiStudio({
                   </small>
                   <small>{p.logline}</small>
                   <small>
-                    최근 수정 {new Date(p.updated_at).toLocaleDateString('ko-KR')} · 클릭해서 이어
+                    최근 수정 {new Date(p.updated_at).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })} · 클릭해서 이어
                     만들기
                   </small>
                 </div>

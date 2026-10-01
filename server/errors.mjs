@@ -91,6 +91,7 @@ const LABELS = {
   logline: '한 줄 아이디어',
   instruction: '요청 사항',
   period: '마감 월',
+  progress: '시청 위치',
 };
 const hasHangul = (s) => /[가-힣]/.test(String(s || ''));
 // 받침에 맞는 조사(은/는, 을/를). 한글이 아니면 '은(는)'처럼 둘 다 적습니다.
@@ -101,7 +102,8 @@ const josa = (word, [withBatchim, without]) => {
 };
 const labelOf = (path) => {
   const key = [...(path || [])].reverse().find((p) => typeof p === 'string');
-  return key ? LABELS[key] || key : '';
+  // 모르는 영어 칸 이름은 그대로 보이면 'progress은(는)'처럼 어색해서 '입력한 값'으로 말해요.
+  return key && LABELS[key] ? LABELS[key] : '';
 };
 export function zodMessage(issue) {
   if (!issue) return '입력 내용을 확인해 주세요.';
@@ -109,6 +111,8 @@ export function zodMessage(issue) {
   const label = labelOf(issue.path);
   const subject = label ? `${label}` : '입력한 값';
   const n = (v) => (typeof v === 'bigint' ? Number(v) : v);
+  // '입력한 값 값을'처럼 겹치지 않게 해요.
+  const valueOf = label ? `${label} 값을` : '입력한 값을';
   switch (issue.code) {
     case 'too_small':
       if (issue.origin === 'string')
@@ -124,11 +128,11 @@ export function zodMessage(issue) {
       if (issue.format === 'url') return `${label || '주소'} 형식을 확인해 주세요.`;
       return `${subject} 형식을 확인해 주세요.`;
     case 'invalid_type':
-      return /received undefined/.test(String(issue.message)) ? `${josa(subject, ['을', '를'])} 입력해 주세요.` : `${subject} 값을 확인해 주세요.`;
+      return /received undefined/.test(String(issue.message)) ? `${josa(subject, ['을', '를'])} 입력해 주세요.` : `${valueOf} 확인해 주세요.`;
     case 'invalid_value':
       return `${subject}에 허용되지 않는 값이에요.`;
     case 'not_multiple_of':
-      return `${subject} 값을 확인해 주세요.`;
+      return `${valueOf} 확인해 주세요.`;
     default:
       return label ? `${label} 값을 확인해 주세요.` : '입력 내용을 확인해 주세요.';
   }

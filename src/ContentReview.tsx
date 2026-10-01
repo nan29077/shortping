@@ -461,7 +461,7 @@ export default function ContentReview({
                 <article key={r.id}>
                   <strong>{reviewStatus[r.status] || r.status}</strong>
                   <small>
-                    {r.name} · {new Date(r.created_at).toLocaleString('ko-KR')}
+                    {r.name} · {new Date(r.created_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
                   </small>
                   {r.note && <p>{r.note}</p>}
                 </article>

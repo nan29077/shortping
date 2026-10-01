@@ -15,7 +15,7 @@ import { Empty } from './App';
 import EpisodeReviewQueue from './serial/EpisodeReviewQueue';
 import type { StudioData } from './Studio';
 
-const date = (value: string) => new Date(value).toLocaleString('ko-KR');
+const date = (value: string) => new Date(value).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 // 작품이 없는 주문(충전·구독)의 이름. 라마 충전 주문은 충전량을 pings 칸에 담아 둡니다.
 const orderTitle = (o: Order) =>
   o.title ||

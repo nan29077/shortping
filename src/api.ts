@@ -586,9 +586,9 @@ export function uuid(): string {
 export const won = (n: number | string) => new Intl.NumberFormat('ko-KR').format(Number(n) || 0) + '원';
 export const pings = (n: number) => new Intl.NumberFormat('ko-KR').format(Number(n) || 0) + '핑';
 export const day = (value?: string | null) =>
-  value ? new Date(value).toLocaleDateString('ko-KR') : '-';
+  value ? new Date(value).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' }) : '-';
 export const moment = (value?: string | null) =>
-  value ? new Date(value).toLocaleString('ko-KR') : '-';
+  value ? new Date(value).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) : '-';
 // 정산 · 판매 집계는 서버가 한국 시간으로 묶어요. 브라우저 시간대가 달라도 같은 날짜가 나오게 합니다.
 export const kstDay = (d: Date) => {
   const k = new Date(d.getTime() + 9 * 3600000);
