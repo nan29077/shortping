@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, Suspense, lazy, useEffect, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -66,33 +66,34 @@ import {
   actionLabel,
 } from './StudioPanels';
 import Support from './Support';
-import AccountSettings, { Avatar } from './AccountSettings';
-import HomeAppearance from './HomeAppearance';
+import AccountSettings from './AccountSettings';
+import { Avatar } from './Avatar';
 import ChannelStudio from './ChannelStudio';
 import Settlement from './Settlement';
-import AdminMembers from './AdminMembers';
-import AdminPoints from './AdminPoints';
-import AdminAiPanel from './AdminAi';
-import AdminLamaPanel from './AdminLama';
-import AdminStorage from './AdminStorage';
 import LamaWalletPanel from './Lama';
-import AiStudio from './studio/AiStudio';
 import ProductionGuide from './studio/Guide';
 import './studio/creator.css';
 import { ActivityChip, StudioOverviewCard } from './studio/Activity';
 import NotificationBell from './viewer/NotificationBell';
-import {
-  AdminChannelsPanel,
-  AdminPricingPanel,
-  AdminSettingsPanel,
-  AdminSettlementPanel,
-  AdminTaxPanel,
-} from './AdminSettlement';
 import { asset } from './platform';
 import { MessagingPanel, ReadinessWarnings, SubscriptionRulesPanel } from './AdminOps';
 import { GENRES } from './genres';
 import NumberInput from './NumberInput';
 import { useConfirm } from './confirm';
+// 관리자 패널 · AI 스튜디오는 그 메뉴를 열 때 내려받아요(PD 첫 화면을 가볍게, 2026-10-01 재점검).
+const AdminMembers = lazy(() => import('./AdminMembers'));
+const AdminPoints = lazy(() => import('./AdminPoints'));
+const AdminAiPanel = lazy(() => import('./AdminAi'));
+const AdminLamaPanel = lazy(() => import('./AdminLama'));
+const AdminStorage = lazy(() => import('./AdminStorage'));
+const HomeAppearance = lazy(() => import('./HomeAppearance'));
+const AiStudio = lazy(() => import('./studio/AiStudio'));
+const AdminChannelsPanel = lazy(() => import('./AdminSettlement').then((m) => ({ default: m.AdminChannelsPanel })));
+const AdminPricingPanel = lazy(() => import('./AdminSettlement').then((m) => ({ default: m.AdminPricingPanel })));
+const AdminSettingsPanel = lazy(() => import('./AdminSettlement').then((m) => ({ default: m.AdminSettingsPanel })));
+const AdminSettlementPanel = lazy(() => import('./AdminSettlement').then((m) => ({ default: m.AdminSettlementPanel })));
+const AdminTaxPanel = lazy(() => import('./AdminSettlement').then((m) => ({ default: m.AdminTaxPanel })));
+
 
 export type StudioData = {
   dramas: Drama[];
@@ -749,6 +750,13 @@ export default function Studio({
             ) && <Empty title="해당 상태의 작품이 없어요" text="새로운 작품을 등록해 보세요." />}
           </>
         )}
+        <Suspense
+          fallback={
+            <div className="loading" role="status" aria-label="화면을 불러오는 중">
+              <span className="spinner" />
+            </div>
+          }
+        >
         <Fragment key={REFRESH_REMOUNT.has(tab) ? 'r' + refreshTick : 'stable'}>
         {tab === 'channel' && !admin && (
           <ChannelStudio user={user} notify={notify} reloadChannels={reloadChannels} />
@@ -826,6 +834,7 @@ export default function Studio({
           />
         )}
         </Fragment>
+        </Suspense>
         {chooser && (
           <Modal title="새 작품 만들기" close={() => setChooser(false)}>
             <p className="muted">어떤 방법으로 만들든 같은 심사 절차를 거쳐 공개돼요.</p>

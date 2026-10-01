@@ -11,6 +11,7 @@ import {
 } from './api';
 import { Modal, navigate } from './App';
 import { asset } from './platform';
+import { Avatar } from './Avatar';
 
 const roleName: Record<string, string> = {
   admin: '슈퍼관리자',
@@ -18,20 +19,8 @@ const roleName: Record<string, string> = {
   viewer: '시청자',
 };
 
-export function Avatar({ user }: { user: Pick<User, 'name' | 'avatar'> }) {
-  return (
-    <img
-      className="profile-image"
-      src={asset(user.avatar || '/avatars/block-01.webp')}
-      alt={user.name + ' 프로필'}
-      onError={(e) => {
-        e.currentTarget.onerror = null;
-        if (!e.currentTarget.src.endsWith('/avatars/block-01.webp'))
-          e.currentTarget.src = '/avatars/block-01.webp';
-      }}
-    />
-  );
-}
+// 프로필 이미지는 가벼운 별도 파일(Avatar.tsx)에 있어요. 예전 import 경로도 그대로 쓸 수 있게 다시 내보내요.
+export { Avatar };
 // 내 계정 첫 화면에 역할별 요약과 바로가기를 보여줍니다.
 type Tile = { label: string; value: string; hint?: string };
 function AccountOverview({ user }: { user: User }) {

@@ -74,9 +74,16 @@ import {
   ChannelLogo,
   FeaturedChannels,
 } from './Channels';
-import Support from './Support';
-import AccountSettings, { Avatar } from './AccountSettings';
-import PingsPage from './Pings';
+import { Avatar } from './Avatar';
+// 문의 · 계정 설정 · 핑 충전 화면은 열 때 내려받아요(첫 화면을 가볍게, 2026-10-01 재점검).
+const Support = lazy(() => import('./Support'));
+const AccountSettings = lazy(() => import('./AccountSettings'));
+const PingsPage = lazy(() => import('./Pings'));
+const pageFallback = (
+  <div className="loading" role="status" aria-label="화면을 불러오는 중">
+    <span className="spinner" />
+  </div>
+);
 import NotificationBell from './viewer/NotificationBell';
 import TrailerModal from './viewer/TrailerModal';
 import './viewer/viewer.css';
@@ -1169,13 +1176,15 @@ export default function App() {
               </div>
             )}
             {route.page === 'pings' && (
-              <PingsPage
-                user={user}
-                demo={config.demo}
-                returnTo={location.hash.replace(/^#\/?pings\/?/, '')}
-                notify={notify}
-                onCharged={reloadLibrary}
-              />
+              <Suspense fallback={pageFallback}>
+                <PingsPage
+                  user={user}
+                  demo={config.demo}
+                  returnTo={location.hash.replace(/^#\/?pings\/?/, '')}
+                  notify={notify}
+                  onCharged={reloadLibrary}
+                />
+              </Suspense>
             )}
             {route.page === 'drama' && (
               <DramaPage
@@ -1607,7 +1616,11 @@ export default function App() {
                 reloadLibrary={reloadLibrary}
               />
             )}
-            {route.page === 'support' && <Support user={user} notify={notify} />}
+            {route.page === 'support' && (
+              <Suspense fallback={pageFallback}>
+                <Support user={user} notify={notify} />
+              </Suspense>
+            )}
             {route.page === 'settings' && (
               <div className="page-content">
                 <button className="back-link" onClick={() => goBack('my')}>
@@ -1615,6 +1628,7 @@ export default function App() {
                   마이페이지
                 </button>
                 {user ? (
+                  <Suspense fallback={pageFallback}>
                   <AccountSettings
                     key={user.id}
                     user={user}
@@ -1628,6 +1642,7 @@ export default function App() {
                       navigate('home', { replace: true });
                     }}
                   />
+                  </Suspense>
                 ) : (
                   <Empty
                     title="로그인이 필요해요"

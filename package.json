@@ -13,7 +13,8 @@
     "mobile:android": "cap add android",
     "mobile:ios": "cap add ios",
     "worker": "node --env-file-if-exists=.env server/worker.mjs",
-    "test:pg": "node --test --test-concurrency=1 tests/*.test.mjs"
+    "test:pg": "node -e \"if(!process.env.TEST_PG_ADMIN_URL){console.error('TEST_PG_ADMIN_URL을 지정해 주세요. 예: postgres://postgres@127.0.0.1:5432/postgres');process.exit(1)}\" && node --test --test-concurrency=1 tests/*.test.mjs",
+    "typecheck": "tsc -b"
   },
   "dependencies": {
     "@capacitor/app": "^7.1.2",

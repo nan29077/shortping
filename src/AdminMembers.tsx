@@ -29,7 +29,7 @@ import {
   type User,
 } from './api';
 import { Empty, Modal, navigate } from './App';
-import { Avatar } from './AccountSettings';
+import { Avatar } from './Avatar';
 import { downloadCsv } from './StudioPanels';
 import { payoutStatus } from './Settlement';
 import { SubscriptionOverrideEditor } from './AdminOps';

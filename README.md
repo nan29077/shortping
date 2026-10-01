@@ -63,7 +63,11 @@ PowerShell `./scripts/start-local.ps1`로 숨김 창에서 실행할 수도 있�
 
 ```powershell
 npm run build             # TypeScript 검사 + 배포 빌드
-npm test                  # 별도 테스트 DB를 사용하는 API 통합 테스트
+npm run typecheck         # TypeScript 검사만
+npm test                  # 별도 테스트 DB(SQLite)를 사용하는 API 통합 테스트
+npm run test:pg           # 같은 테스트를 PostgreSQL로(TEST_PG_ADMIN_URL 필요, 실행마다 새 DB를 만들고 지움)
+npm run simulate          # 임시 서버를 띄워 시청자·PD·관리자 흐름을 처음부터 끝까지 점검
+npm run worker            # 합성 전용 작업 프로세스(COMPOSE_WORKER=external일 때)
 node scripts/prepare-assets.mjs # 프로젝트 원본 이미지 → WebP, 아이콘, 데모 티저 재생성
 npm run mobile:android    # Android Studio 프로젝트 생성
 npm run mobile:ios        # macOS/Xcode 환경에서 iOS 프로젝트 생성
@@ -98,6 +102,16 @@ server/settlement.mjs   정산 원장, 수수료·원천징수 계산, 출금 �
 server/settings.mjs     구독료·수수료율 등 운영 설정값
 server/db.mjs           SQLite/PostgreSQL 어댑터, 공통 스키마, 트랜잭션
 server/seed.mjs         개발용 계정·작품·회차·방송국
+server/routes-account.mjs 계정·비밀번호 재설정·휴대폰 인증·탈퇴·운영 점검
+server/routes-serial.mjs  회차 단위 심사·예약 공개·썸네일 A/B
+server/routes-upload.mjs  분할 업로드·자막·미사용 파일 정리
+server/routes-lama.mjs    라마(스튜디오 재화) 충전·지급·장부
+server/pings.mjs        핑(시청 재화) 지갑·로트·사용
+server/ai/              숏핑 스튜디오(AI 제작): 작업 엔진, 공급사 연결, 합성, 협업, AI 조수, 품질 시험
+server/worker.mjs       합성 전용 작업 프로세스
+src/studio/             숏핑 스튜디오 화면(작업실 · 대본 · 장면 · 완성)
+src/serial/             회차 심사 · 썸네일 A/B 화면
+src/viewer/             시청자 알림 · 예고편
 public/images/          실제 서비스 화면용 WebP 이미지
 public/demo/            권한 검사 후 API로 제공하는 시연 티저
 assets/source/          생성 이미지 원본

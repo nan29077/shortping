@@ -466,9 +466,10 @@ test('PD submission -> admin rejection -> revision -> approval -> public playbac
     (await request('/studio/dramas/' + created + '/episodes', { method: 'POST', cookie: pd, body: { number: 2, title: '또 수정', duration: 12, video: '/demo/preview.mp4' } })).status,
     409,
   );
-  // 예약 공개: 3화를 1초 뒤로 예약해 승인하면 예약 대기 후 공개된다.
+  // 예약 공개: 3화를 1시간 뒤로 예약해 승인하면 예약 대기(scheduled)가 되고 아직 보이지 않는다.
+  // (예전에는 1.5초 뒤로 잡아 느린 환경에서 승인 전에 시각이 지나 가끔 실패했어요.)
   await request('/studio/dramas/' + created + '/episodes', { method: 'POST', cookie: pd, body: { number: 3, title: '예약 회차', duration: 12, video: '/demo/preview.mp4' } });
-  const at = new Date(Date.now() + 1500).toISOString();
+  const at = new Date(Date.now() + 3600_000).toISOString();
   assert.equal((await request(`/studio/dramas/${created}/episodes/3/submit`, { method: 'POST', cookie: pd, body: { publish_at: at } })).status, 200);
   const third = (await request('/admin/episodes/review', { cookie: admin })).data.find((e) => e.drama_id === created && e.number === 3);
   assert.equal((await request('/admin/episodes/' + third.id + '/review', { method: 'POST', cookie: admin, body: { status: 'approved' } })).data.status, 'scheduled');
