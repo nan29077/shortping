@@ -173,7 +173,7 @@ function EpisodeScenes({ ws, e, openScript }: { ws: WS; e: StudioEpisode; openSc
         <button type="button" className={'chip' + (picking ? ' active' : '')} aria-pressed={picking} onClick={() => (setPicking(!picking), setPicked([]))}>
           <CheckSquare size={12} /> {picking ? '여러 컷 고르기 끝' : '여러 컷 고르기'}
         </button>
-        <small className="muted">{picking ? '컷을 눌러 고르세요.' : 'PC에서는 컷을 끌어 순서를 바꿀 수 있어요.'}</small>
+        <small className="muted">{picking ? '컷을 눌러 고르세요.' : <span className="desktop-only-hint">컷을 끌어 순서를 바꿀 수 있어요.</span>}</small>
       </div>
       <Timeline
         e={e}

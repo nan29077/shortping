@@ -125,7 +125,8 @@ export default function JobCenter({
   };
   return (
     <Modal title="작업 · 비용" close={close}>
-      <div className="jobc">
+      {/* 창을 열면 맨 위(예산 요약)부터 읽히게 해요 — 예산 입력칸으로 바로 가면 휴대폰 키보드가 올라와요. */}
+      <div className="jobc" tabIndex={-1} data-autofocus="">
         <section className="jobc-budget">
           <div className="jobc-budget-head">
             <Wallet size={15} />

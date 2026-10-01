@@ -380,3 +380,30 @@
   white-space: nowrap;
   font-size: 11px;
 }
+
+/* 휴대폰: 4개 탭이 레일 밖으로 밀리지 않게 4칸으로 나눠 모두 보이게(2026-10-01 재점검) */
+@media (max-width: 760px) {
+  .ws-rail .ws-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow: visible;
+  }
+  .ws-rail .ws-tabs button {
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 2px;
+    min-width: 0;
+  }
+  .ws-rail .ws-tabs button > span {
+    align-items: center;
+    max-width: 100%;
+  }
+  .ws-rail .ws-tabs strong {
+    font-size: 11px;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

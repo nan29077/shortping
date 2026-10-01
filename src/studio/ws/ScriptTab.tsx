@@ -51,6 +51,9 @@ function EpisodeScript({ ws, e }: { ws: WS; e: StudioEpisode }) {
   const total = e.shots.reduce((n, s) => n + Number(s.seconds), 0);
   const target = Number(data.project.episode_seconds);
   const scriptBusy = isBusy(data.jobs, e.id, 'script') || isBusy(data.jobs, e.id, 'rewrite_range');
+  // 이 회차 컷을 만드는 AI 작업이 진행 중이면 대본을 새로 쓸 수 없어요(서버도 409로 막아요).
+  const shotIds = new Set(e.shots.map((s) => s.id));
+  const shotJobsBusy = data.jobs.some((j) => j.target_type === 'shot' && j.kind !== 'translate' && shotIds.has(j.target_id) && (j.status === 'queued' || j.status === 'running'));
   // 구간 선택: 고른 컷 사이는 자동으로 모두 포함(연속된 구간만 다시 쓸 수 있어요)
   const range = useMemo(() => {
     if (!sel.length) return [] as StudioShot[];
@@ -95,7 +98,7 @@ function EpisodeScript({ ws, e }: { ws: WS; e: StudioEpisode }) {
         <ModelSettings ws={ws} caps={['text']} />
         <div className="ws-write">
           <input aria-label="대본 요청 사항" value={instruction} maxLength={300} placeholder="(선택) 요청 사항 · 예: 남주가 먼저 고백하게, 카페 장면으로 시작" onChange={(ev) => setInstruction(ev.target.value)} />
-          <button className="primary" disabled={scriptBusy || !data.characters.length} onClick={() => void write()}>
+          <button className="primary" disabled={scriptBusy || shotJobsBusy || !data.characters.length} title={shotJobsBusy ? '이 회차 컷을 만드는 AI 작업이 끝난 뒤 다시 쓸 수 있어요' : undefined} onClick={() => void write()}>
             <Wand2 size={15} /> {e.shots.length ? 'AI로 다시 쓰기' : 'AI로 대본 쓰기'}
           </button>
           <JobBadge jobs={data.jobs} targetId={e.id} kind="script" onRetry={() => void write()} />
@@ -124,7 +127,7 @@ function EpisodeScript({ ws, e }: { ws: WS; e: StudioEpisode }) {
               <input aria-label="구간 고칠 방향" value={rangeText} maxLength={300} placeholder="어떻게 고칠까요? 예: 이 부분을 더 빠르게" onChange={(ev) => setRangeText(ev.target.value)} />
               <button
                 className="primary compact"
-                disabled={!range.length || range.length > 20 || rangeText.trim().length < 2 || scriptBusy}
+                disabled={!range.length || range.length > 20 || rangeText.trim().length < 2 || scriptBusy || shotJobsBusy}
                 onClick={() => {
                   ws.run(`${range.length}개 컷 다시 쓰기`, 'rewrite_range', 'text', { targetId: e.id, instruction: rangeText.trim(), options: { shotIds: range.map((s) => s.id) } });
                   setSelecting(false);
@@ -282,7 +285,8 @@ function ShotLine({
       // 저장한 내용을 다시 불러와 다른 탭(장면)에서도 최신 값으로 보여요.
       void ws.load();
     },
-    { delay: 1200, enabled: f.seconds >= 2 && f.seconds <= 10 },
+    // 충돌 안내가 떠 있는 동안에는 자동 저장을 멈춰요(사용자가 '불러오기/덮어쓰기'를 고르기 전에 내 변경으로 저장되지 않게).
+    { delay: 1200, enabled: f.seconds >= 2 && f.seconds <= 10 && !conflict },
   );
   // 최신 내용을 불러온 뒤(수정 시각이 바뀐 뒤) 고른 처리를 이어서 해요.
   const serverRef = useRef(server);
@@ -376,7 +380,7 @@ function ShotLine({
             />
             초
           </label>
-          <SaveBadge state={save.state} error={save.error} hint={save.blocked ? '길이를 2~10초로 적으면 저장돼요' : undefined} />
+          <SaveBadge state={save.state} error={save.error} hint={conflict ? '충돌을 해결하면 저장돼요' : save.blocked ? '길이를 2~10초로 적으면 저장돼요' : undefined} />
         </div>
         <textarea className="ws-visual" aria-label="화면 묘사" disabled={!canEdit} rows={2} maxLength={800} value={f.visual} placeholder="화면에 보이는 것 · 인물의 행동 (한국어로 써도 돼요)" onChange={(e) => setF({ ...f, visual: e.target.value })} />
         <div className="ws-dialogue">

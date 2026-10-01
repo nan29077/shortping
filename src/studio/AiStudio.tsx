@@ -82,8 +82,12 @@ export default function AiStudio({
     // 첫 화면에서 뽑은 첫 컷(프로젝트를 만들 때 포스터 · 스타일 참고로 넣어요)
     [firstShot, setFirstShot] = useState<FirstShot | null>(null);
   const [ask, confirmUi] = useConfirm();
-  const pick = (t: Template | null) => {
-    setFirstShot(null);
+  const pick = async (t: Template | null) => {
+    // 라마를 쓴 첫 컷이 있으면 템플릿을 고르기 전에 물어요(첫 화면의 확인과 같게, 2026-10-01 재점검).
+    if (firstShot) {
+      const drop = await ask({ title: '만든 첫 컷을 어떻게 할까요?', text: '템플릿 내용으로 바꿔도 첫 컷은 포스터 · 스타일 참고로 그대로 쓸 수 있어요. 버리면 다시 볼 수 없어요.', ok: '첫 컷 버리기', danger: true });
+      if (drop) setFirstShot(null);
+    }
     setForm(
       t
         ? {
@@ -446,7 +450,7 @@ export default function AiStudio({
                     (templateGenre === '전체' || t.genre === templateGenre) &&
                     [t.name, t.hint, t.logline].join(' ').includes(templateQuery.trim()),
                 ).map((t) => (
-                  <button key={t.id} className="template-card" onClick={() => pick(t)}>
+                  <button key={t.id} className="template-card" onClick={() => void pick(t)}>
                     <TemplateIcon id={t.id} genre={t.genre} />
                     <strong>{t.name}</strong>
                     <small>{t.hint}</small>
@@ -455,7 +459,7 @@ export default function AiStudio({
                     </span>
                   </button>
                 ))}
-                <button className="template-card blank" onClick={() => pick(null)}>
+                <button className="template-card blank" onClick={() => void pick(null)}>
                   <TemplateIcon id="blank" />
                   <strong>직접 쓰기</strong>
                   <small>빈 프로젝트로 시작</small>

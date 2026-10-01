@@ -75,6 +75,12 @@ const EP_FIELDS = { title: (v) => String(v).slice(0, 70), summary: (v) => String
 const PROJECT_FIELDS = { tone: (v) => String(v).slice(0, 200), style: (v) => String(v).slice(0, 500) };
 
 export function assistantRoutes({ app, db, fail, now, roles, engine, project, requireTerms, plan, runSpecs, runSchema, estimateSpecs, charactersOf, episodesOf, shotsOf, locationsOf, queueTranslate, settingsOf }) {
+  // 이 회차 대본을 AI가 새로 쓰는 작업(대본 쓰기 · 구간 다시 쓰기 · 대본 나누기)이 진행 중인지
+  const scriptRewriting = async (projectId, episodeId) =>
+    !!(await db.get(
+      "SELECT id FROM ai_jobs WHERE project_id=? AND status IN ('queued','running') AND (kind='parse_script' OR (kind IN ('script','rewrite_range') AND target_type='episode' AND target_id=?)) LIMIT 1",
+      [projectId, episodeId],
+    ));
   const parse = (raw, fallback) => {
     try {
       return raw ? JSON.parse(raw) : fallback;
@@ -380,6 +386,8 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
           if (a.type === 'edit_shot') {
             const s = await db.get('SELECT s.*, e.project_id FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE s.id=?', [a.targetId]);
             if (!s || s.project_id !== p.id) throw new Error('컷이 지워졌어요.');
+            // 이 회차 대본을 AI가 다시 쓰는 중이면 고친 내용이 곧 덮이므로 고치지 않아요(2026-10-01 재점검).
+            if (await scriptRewriting(p.id, s.episode_id)) throw new Error('이 회차 대본을 AI가 다시 쓰는 중이에요. 끝난 뒤 다시 고쳐 주세요.');
             const before = { ...Object.fromEntries(Object.keys(a.fields).map((k) => [k, s[k]])), audio: s.audio, audio_seconds: s.audio_seconds, lipsync: s.lipsync };
             const audioReset = ['dialogue', 'emotion', 'speed', 'speaker_id', 'narration'].some((k) => k in a.fields && String(a.fields[k] ?? '') !== String(s[k] ?? ''));
             const sets = Object.keys(a.fields).map((k) => `${k}=?`);
@@ -400,7 +408,8 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
               const s = await db.get('SELECT s.*, e.project_id FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE s.id=?', [id]);
               if (!s || s.project_id !== p.id) continue;
               const before = Object.fromEntries(Object.keys(a.fields).map((k) => [k, s[k]]));
-              await db.run(`UPDATE studio_shots SET ${Object.keys(a.fields).map((k) => `${k}=?`).join(',')} WHERE id=?`, [...Object.values(a.fields), s.id]);
+              // 수정 시각 · 수정자를 남겨 같은 컷을 열어 둔 팀원의 충돌 확인(409)이 동작하게 해요.
+              await db.run(`UPDATE studio_shots SET ${Object.keys(a.fields).map((k) => `${k}=?`).join(',')},updated_at=?,updated_by=? WHERE id=?`, [...Object.values(a.fields), now(), req.user.id, s.id]);
               await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
               const after = await db.get(`SELECT ${Object.keys(before).join(',')} FROM studio_shots WHERE id=?`, [s.id]);
               undo.push({ table: 'studio_shots', id: s.id, values: before, after, need: 'scene', actor: req.user.id, episode: s.episode_id });

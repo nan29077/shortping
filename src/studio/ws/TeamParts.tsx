@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AtSign, Check, CheckCircle2, Copy, Link2, LogOut, Mail, MessageSquare, RefreshCw, Send, ShieldCheck, Trash2, UserPlus, Users, X } from 'lucide-react';
 import {
   api,
@@ -17,6 +17,7 @@ import {
 import { Modal, navigate } from '../../App';
 import { API_ORIGIN, asset } from '../../platform';
 import type { WS } from './shared';
+import { usePanelFocus } from '../hooks';
 import NumberInput from '../../NumberInput';
 
 // 협업(팀 제작, 2026-09-25): 공유(초대·링크) · 팀원 역할·결제 · 승인 · 댓글 · 지금 편집 중 · 활동 기록
@@ -80,7 +81,8 @@ export function TeamChips({ ws, tab, openShare, openComments }: { ws: WS; tab: s
           <small>{live.some((x) => x.target === tab) ? '같은 탭에서 편집 중' : '지금 접속 중'}</small>
         </span>
       )}
-      {shared && (
+      {/* 팀원이 모두 빠져도 남은(해결 안 된) 의견은 열어 볼 수 있어야 해요. */}
+      {(shared || !!team.comments_open) && (
         <button className={'ws-head-chip' + (team.comments_open ? ' note' : '')} onClick={openComments} title="의견">
           <MessageSquare size={14} /> 의견{team.comments_open ? ` ${team.comments_open}` : ''}
         </button>
@@ -496,6 +498,8 @@ export function CommentsPanel({ ws, target, close }: { ws: WS; target: CommentTa
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [hideDone, setHideDone] = useState(true);
+  const panelRef = useRef<HTMLElement>(null);
+  usePanelFocus(panelRef, close);
   const here: CommentTarget = target || { type: 'project', id: pid, label: '작품 전체' };
   const load = useCallback(async () => {
     const q = scope === 'target' && here.type !== 'project' ? `?target_type=${here.type}&target_id=${here.id}` : '';
@@ -540,7 +544,7 @@ export function CommentsPanel({ ws, target, close }: { ws: WS; target: CommentTa
   };
   const shown = (rows || []).filter((c) => !hideDone || !c.resolved);
   return (
-    <aside className="team-comments" aria-label="의견">
+    <aside className="team-comments" aria-label="의견" ref={panelRef} tabIndex={-1}>
       <header>
         <b>
           <MessageSquare size={15} /> 의견

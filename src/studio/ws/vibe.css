@@ -1222,3 +1222,18 @@ button.upgrade {
     padding-right: 12px;
   }
 }
+
+/* 좁은 화면에서 예산 '저장' 버튼이 '저/장'으로 줄바꿈되지 않게(2026-10-01) */
+.jobc-budget-form button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.jobc:focus {
+  outline: none;
+}
+/* 휴대폰에서는 끌어서 순서 바꾸기 안내를 숨겨요(터치로는 끌기가 안 됨) */
+@media (max-width: 760px) {
+  .desktop-only-hint {
+    display: none;
+  }
+}

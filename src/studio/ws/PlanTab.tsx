@@ -234,7 +234,8 @@ function BibleSection({ ws }: { ws: WS }) {
   const p = ws.data.project;
   const server = { ...emptyBible, ...parseJson<Partial<Bible>>(p.bible, {}) };
   const [f, setF] = useSyncedForm<Bible>(server);
-  const save = useAutosave(f, server, (v) => api(`/studio/ai/projects/${p.id}/bible`, 'PUT', v));
+  // 바뀐 칸만 보내요(팀원이 고친 다른 칸을 덮어쓰지 않게).
+  const save = useAutosave(f, server, (v, base) => api(`/studio/ai/projects/${p.id}/bible`, 'PUT', changedFields(v, base)));
   const empty = !p.bible;
   const go = async () => {
     if (!(await save.flush())) return;

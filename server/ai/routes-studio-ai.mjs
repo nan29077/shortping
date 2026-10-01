@@ -2468,6 +2468,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           await copyFile(path.join(subsDir, e.subtitles), path.join(subsDir, subtitles));
         }
         const previous = (await db.get('SELECT subtitles FROM episodes WHERE drama_id=? AND number=?', [drama.id, e.number]))?.subtitles || '';
+        // 스튜디오 회차에 자막이 없으면 공개 회차에 붙어 있던 자막(예: 자동 자막)을 그대로 둬요.
+        if (!subtitles && /^[a-f0-9-]+\.vtt$/.test(previous)) subtitles = previous;
         await db.run(
           "INSERT INTO episodes (id,drama_id,number,title,video,duration,source,subtitles,studio_episode_id,thumbnail,review_status) VALUES (?,?,?,?,?,?,'studio',?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration,source='studio',subtitles=excluded.subtitles,studio_episode_id=excluded.studio_episode_id,thumbnail=excluded.thumbnail",
           [randomUUID(), drama.id, e.number, e.title.slice(0, 100), e.video, Math.max(1, Number(e.duration)), subtitles, e.id, e.thumbnail || '', serial ? 'draft' : 'approved'],
@@ -2536,15 +2538,16 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   const autopilotSchema = z.object({
     choices: z
       .object({
-        text: choiceSchema.default({}),
-        image: choiceSchema.default({}),
-        tts: choiceSchema.default({}),
-        video: choiceSchema.default({ requested: 'auto', tier: 'draft' }),
-        music: choiceSchema.default({}),
-        sfx: choiceSchema.default({}),
-        lipsync: choiceSchema.default({}),
+        text: choiceSchema.prefault({}),
+        image: choiceSchema.prefault({}),
+        tts: choiceSchema.prefault({}),
+        video: choiceSchema.prefault({ requested: 'auto', tier: 'draft' }),
+        music: choiceSchema.prefault({}),
+        sfx: choiceSchema.prefault({}),
+        lipsync: choiceSchema.prefault({}),
       })
-      .default({}),
+      // prefault: choices를 보내지 않아도 안쪽 기본값(영상은 초안 등급 등)이 채워지게(zod 4의 default는 안쪽을 건너뜀).
+      .prefault({}),
     includeVideo: z.boolean().default(false),
     includeBible: z.boolean().default(false),
     includeLipsync: z.boolean().default(false),
@@ -2893,6 +2896,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   });
 
   // ── 업로드 영상용 AI 도구 ─────────────────────────────────────
+  const subtitleExtracting = new Set();
   app.post('/api/studio/ai/tools/subtitles', roles('pd', 'admin'), async (req, res) => {
     await requireTerms(req);
     const b = z.object({ dramaId: z.string().min(1).max(80), number: z.number().int().min(1), requested: z.string().max(80).default('auto') }).parse(req.body);
@@ -2903,10 +2907,20 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (!episodeEditable(d, e)) fail(409, '임시저장 · 반려 작품이나 공개 전 새 회차에서만 자막을 만들 수 있어요.');
     const src = e.video.startsWith('/demo/') ? path.resolve('public/demo/preview.mp4') : path.join(uploadDir, path.basename(e.video));
     const meta = await db.get('SELECT duration,has_audio FROM media_metadata WHERE url=?', [e.video]);
-    const probed = await probeMedia(src);
-    if (!probed.hasAudio || (meta && Number(meta.has_audio) === 0)) fail(400, '소리가 없는 영상이라 자막을 만들 수 없어요.');
+    // 음성을 뽑는 ffmpeg(최대 240초)를 돌리기 전에 AI 중단 · 이용 제한 · 한도 · 잔액부터 확인해요(2026-10-01 재점검).
+    await engine.preflight({ userId: req.user.id, capability: 'stt', requested: b.requested, tier: 'standard', input: { duration: Math.max(1, Math.round(Number(meta?.duration || e.duration || 60))) } });
+    // 같은 사람의 자막 뽑기는 한 번에 하나씩만 돌려요(반복 요청으로 서버 CPU를 묶지 않게).
+    if (subtitleExtracting.has(req.user.id)) fail(429, '자막용 음성을 뽑는 중이에요. 끝난 뒤 다시 시도해 주세요.');
+    subtitleExtracting.add(req.user.id);
+    let probed;
     const audio = randomUUID() + '.mp3';
-    await runFfmpeg(['-i', src, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '48k', path.join(uploadDir, audio)], 240000);
+    try {
+      probed = await probeMedia(src);
+      if (!probed.hasAudio || (meta && Number(meta.has_audio) === 0)) fail(400, '소리가 없는 영상이라 자막을 만들 수 없어요.');
+      await runFfmpeg(['-i', src, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '48k', path.join(uploadDir, audio)], 240000);
+    } finally {
+      subtitleExtracting.delete(req.user.id);
+    }
     await db.run('INSERT INTO media_files (url,owner_id,mime,created_at) VALUES (?,?,?,?)', ['/uploads/' + audio, req.user.id, 'audio/mpeg', now()]);
     const duration = Math.max(1, Math.round(probed.duration || Number(meta?.duration || e.duration || 60)));
     let job;

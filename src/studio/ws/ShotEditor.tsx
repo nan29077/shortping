@@ -276,7 +276,8 @@ export default function ShotEditor({ ws, s, index, total, next, prev, go }: { ws
       if (r.audioReset && (s.audio || s.lipsync)) ws.notify(`${index + 1}번 컷 대사 · 목소리 설정이 바뀌어 음성을 다시 만들어야 해요.`);
       void ws.load();
     },
-    { delay: 1200, enabled: f.seconds >= 2 && f.seconds <= 10 },
+    // 충돌 안내가 떠 있는 동안에는 자동 저장을 멈춰요(사용자가 '불러오기/덮어쓰기'를 고르기 전에 내 변경으로 저장되지 않게).
+    { delay: 1200, enabled: f.seconds >= 2 && f.seconds <= 10 && !conflict },
   );
   // 최신 내용을 불러온 뒤(수정 시각이 바뀐 뒤) 고른 처리를 이어서 해요.
   const serverRef = useRef(server);
@@ -470,7 +471,7 @@ export default function ShotEditor({ ws, s, index, total, next, prev, go }: { ws
               <MessageSquare size={13} /> 의견
             </button>
           )}
-          <SaveBadge state={save.state} error={save.error} hint={save.blocked ? '길이를 2~10초로 적으면 저장돼요' : undefined} />
+          <SaveBadge state={save.state} error={save.error} hint={conflict ? '충돌을 해결하면 저장돼요' : save.blocked ? '길이를 2~10초로 적으면 저장돼요' : undefined} />
         </div>
       </div>
       {conflict && (

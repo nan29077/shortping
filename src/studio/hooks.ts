@@ -117,3 +117,27 @@ export function useSyncedForm<T>(server: T): [T, (v: T | ((p: T) => T)) => void]
 }
 
 export const hasHangul = (s: string) => /[가-힣]/.test(s || '');
+
+// 옆 패널(AI 조수 · 의견 등) 접근성: 열면 패널 안으로 초점을 옮기고, Esc로 닫고, 닫으면 연 버튼으로 초점을 돌려줘요.
+// 확인 창 · 다른 모달이 떠 있으면 Esc는 그쪽이 먼저 받아요.
+export function usePanelFocus(ref: { current: HTMLElement | null }, close: () => void) {
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    const box = ref.current;
+    const first = box?.querySelector<HTMLElement>('textarea, input, button:not([disabled])');
+    (first || box)?.focus();
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape' || document.querySelector('.modal-backdrop')) return;
+      ev.preventDefault();
+      closeRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (prev?.isConnected) prev.focus();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+}

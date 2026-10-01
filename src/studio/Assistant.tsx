@@ -3,6 +3,7 @@ import { Bot, Check, Loader2, RotateCcw, Send, Sparkles, Trash2, X } from 'lucid
 import { api, ApiError, lama, type StudioChat } from '../api';
 import type { WS } from './ws/shared';
 import { HUB_CAPS } from './ModelHub';
+import { usePanelFocus } from './hooks';
 
 // AI 조수(2026-09-24): 바이브 코딩처럼 말로 요청하면 실행 계획을 보여 주고, 승인하면 실행해요.
 // 대화는 무료이고, 계획 안의 AI 작업만 평소처럼 라마가 들어요. 직접 고친 내용은 되돌릴 수 있어요.
@@ -23,6 +24,8 @@ export default function Assistant({ ws, focus, close }: { ws: WS; focus: string;
   const [skip, setSkip] = useState<Record<string, number[]>>({});
   const [busy, setBusy] = useState('');
   const list = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  usePanelFocus(panelRef, close);
   const thinking = chat.some((m) => m.status === 'thinking');
   useEffect(() => {
     list.current?.scrollTo({ top: list.current.scrollHeight, behavior: 'smooth' });
@@ -92,7 +95,7 @@ export default function Assistant({ ws, focus, close }: { ws: WS; focus: string;
     return e && i >= 0 ? `${e.number}화 ${i + 1}번 컷` : e ? `${e.number}화` : '';
   })();
   return (
-    <aside className="asst" aria-label="AI 조수">
+    <aside className="asst" aria-label="AI 조수" ref={panelRef} tabIndex={-1}>
       <header className="asst-head">
         <Bot size={17} />
         <div>

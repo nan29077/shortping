@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, stat, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { loadSettings } from '../settings.mjs';
-import { LAMA_WON, captureLama, holdLama, releaseLama } from '../lama.mjs';
+import { LAMA_WON, captureLama, holdLama, lamaWalletOf, releaseLama } from '../lama.mjs';
 import { probeMedia } from '../media.mjs';
 import { adapters, unitOf, PRICE_REQUIRED, videoSeconds } from './providers.mjs';
 import { mockAdapter } from './mock.mjs';
@@ -350,6 +350,20 @@ export function createAiEngine({ db, uploadDir, demo }) {
         throw error(503, '이번 달 플랫폼 AI 예산을 모두 사용했어요. 관리자에게 문의해 주세요.', { code: 'monthly_budget' });
     }
     await checkProviderLimit(provider, costWon);
+  }
+  // 무거운 준비 작업(ffmpeg 등)을 하기 전에, 지금 이 작업을 등록할 수 있는지(AI 중단 · 이용 제한 · 한도 · 예산 · 잔액) 미리 확인해요.
+  async function preflight({ userId, capability, requested = 'auto', tier = 'standard', input = {}, bill = true }) {
+    const settings = await loadSettings(db);
+    const list = await candidates({ capability, requested, tier, seconds: input.seconds, input }, settings);
+    const model = list[0];
+    const u = unitsFor(capability, input, model);
+    const lama = bill ? lamaFor(model, settings, u) : 0;
+    await checkLimits(userId, lama, costWonFor(model, settings, u), settings, model);
+    if (lama > 0) {
+      const wallet = await lamaWalletOf(db, userId);
+      if (Number(wallet.total) < lama) throw error(400, `라마가 부족해요. 필요 ${lama.toLocaleString('ko-KR')}라마 · 보유 ${Number(wallet.total).toLocaleString('ko-KR')}라마`, { code: 'insufficient_lama', need: lama, balance: Number(wallet.total) });
+    }
+    return { lama, model };
   }
   // 작업 등록. 호출한 쪽 트랜잭션 안에서 실행되어야 대상(컷·캐릭터 등) 상태 변경과 함께 묶입니다.
   async function enqueue({ userId, kind, capability, requested = 'auto', tier = 'standard', tags = [], input, units, target = {}, projectId = null, idempotencyKey, bill = true, excludeCn = false, exclude = [], actorId = null }) {
@@ -833,6 +847,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
   return {
     registerHandler: (kind, handler) => handlers.set(kind, handler),
     enqueue,
+    preflight,
     screen,
     estimate,
     candidates,

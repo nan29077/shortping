@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Clapperboard, Eye, Film, ImageIcon, LayoutTemplate, Megaphone, Send, Sparkles, Tags, Trash2, Wand2 } from 'lucide-react';
 import { api, ApiError, jobKindLabel, lama, parseJson, studioMedia, won, type StudioEpisode } from '../../api';
 import { navigate } from '../../App';
@@ -25,6 +25,7 @@ export default function FinishTab({ ws }: { ws: WS }) {
   const { data } = ws;
   const p = data.project;
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   // 썸네일 A/B 비교 후보(대표 포스터 외 최대 3장). 이 화면에서 만든 썸네일도 후보에 더해요.
   const [variants, setVariants] = useState<string[]>([]);
   const [made, setMade] = useState<string[]>([]);
@@ -32,8 +33,17 @@ export default function FinishTab({ ws }: { ws: WS }) {
   // 썸네일 · 카드 만들기 창: Esc(안드로이드 뒤로 가기)로 닫기. 확인 창이 떠 있으면 확인 창이 먼저 닫혀요.
   useEffect(() => {
     if (!overlay) return;
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape' && !document.querySelector('.modal-backdrop')) setOverlay(null);
+    // Esc 한 번에 편집 내용이 사라지지 않도록 닫기 전에 물어요(2026-10-01 재점검). 열면 초점을 창 안으로 옮겨요.
+    const prev = document.activeElement as HTMLElement | null;
+    setTimeout(() => overlayRef.current?.focus(), 0);
+    let asking = false;
+    const onKey = async (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape' || asking || document.querySelector('.modal-backdrop')) return;
+      ev.preventDefault();
+      asking = true;
+      const ok = await ws.ask({ title: '편집 창을 닫을까요?', text: '저장하지 않은 썸네일 · 카드 편집 내용은 사라져요.', ok: '닫기', danger: true });
+      asking = false;
+      if (ok) setOverlay(null);
     };
     document.addEventListener('keydown', onKey);
     const old = document.body.style.overflow;
@@ -41,7 +51,9 @@ export default function FinishTab({ ws }: { ws: WS }) {
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = old;
+      if (prev?.isConnected) prev.focus();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlay]);
   const backgrounds = useMemo(() => {
     const list: { url: string; label: string }[] = [];
@@ -69,7 +81,7 @@ export default function FinishTab({ ws }: { ws: WS }) {
       )}
       <CostSection ws={ws} />
       {overlay && (
-        <div className="ws-overlay" role="dialog" aria-modal="true">
+        <div className="ws-overlay" role="dialog" aria-modal="true" aria-label={overlay.kind === 'card' ? '카드 만들기' : '썸네일 꾸미기'} tabIndex={-1} ref={overlayRef}>
           <div className="ws-overlay-inner">
             {overlay.kind === 'poster' && (
               <ThumbStudio

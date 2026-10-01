@@ -70,7 +70,13 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
   // ── 작품 설정집 ─────────────────────────────────────────────
   app.put('/api/studio/ai/projects/:id/bible', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, 'script');
-    const b = bibleSchema.parse(req.body);
+    // 보낸 칸만 바꿔요(팀원이 고친 다른 칸을 옛 값으로 덮지 않게, 2026-10-01 재점검). 전체를 보내도 그대로 동작해요.
+    const sent = bibleSchema.partial().parse(req.body);
+    let current = {};
+    try {
+      current = p.bible ? JSON.parse(p.bible) : {};
+    } catch {}
+    const b = bibleSchema.parse({ ...current, ...Object.fromEntries(Object.entries(sent).filter(([k]) => Object.hasOwn(req.body || {}, k))) });
     await db.run('UPDATE studio_projects SET bible=?,updated_at=? WHERE id=?', [JSON.stringify(b), now(), p.id]);
     res.json({ ok: true });
   });

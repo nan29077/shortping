@@ -69,6 +69,9 @@ export default function AutopilotPanel({
   const [est, setEst] = useState<AutopilotEstimate | null>(null);
   // 예상 비용을 계산한 설정: 설정을 바꾼 직후 옛(싼) 금액을 보고 비싼 설정으로 시작하지 않게, 지금 설정과 같을 때만 시작할 수 있어요.
   const [estKey, setEstKey] = useState('');
+  // 예상 비용 계산이 실패한 설정(다시 계산 버튼을 보여 줘요)
+  const [estError, setEstError] = useState('');
+  const [retryEst, setRetryEst] = useState(0);
   const [busy, setBusy] = useState(false);
   const [ask, confirmUi] = useConfirm();
   const body = () => ({ choices, includeVideo, ...opts, ...(cap ? { cap: Number(cap) } : {}) });
@@ -88,7 +91,10 @@ export default function AutopilotPanel({
           setEstKey(key);
         }
       } catch (e) {
-        if (alive) notify((e as Error).message);
+        if (alive) {
+          notify((e as Error).message);
+          setEstError(key);
+        }
       }
     }, 250);
     return () => {
@@ -96,7 +102,7 @@ export default function AutopilotPanel({
       clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, running, choices, includeVideo, JSON.stringify(opts), data.project.id, data.project.updated_at, data.characters.length, episodeSig]);
+  }, [open, running, choices, includeVideo, JSON.stringify(opts), data.project.id, data.project.updated_at, data.characters.length, episodeSig, retryEst]);
   const suggested = est ? Math.ceil(est.total * 1.3) + 10 : 0;
   const lacking = !!est && est.wallet.total < Math.min(cap ? Number(cap) : suggested, est.total);
   const stale = !est || estKey !== settingsKey;
@@ -284,6 +290,14 @@ export default function AutopilotPanel({
               </p>
             )}
             {!!est?.unavailable.length && <p className="danger settings-note">연결된 모델이 없는 단계가 있어요: {est.unavailable.join(', ')}</p>}
+            {estError === settingsKey && estKey !== settingsKey && (
+              <p className="danger settings-note">
+                예상 비용을 계산하지 못했어요.{' '}
+                <button type="button" className="text-link" onClick={() => (setEstError(''), setRetryEst((n) => n + 1))}>
+                  다시 계산
+                </button>
+              </p>
+            )}
             <div className="form-actions start">
               {lacking ? (
                 <button className="primary" onClick={goLama}>
