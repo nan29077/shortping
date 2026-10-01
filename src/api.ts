@@ -1189,7 +1189,7 @@ export type AdminLama = {
   };
   flows: { type: string; paid: number; bonus: number; count: number }[];
   products: LamaProduct[];
-  wallets: { id: string; name: string; email: string; role: string; paid: number; bonus: number; held: number }[];
+  wallets: { id: string; name: string; email: string; role: string; status?: string; paid: number; bonus: number; held: number }[];
   ledger: LamaLedgerRow[];
 };
 // 작업 종류 이름(작업 센터 · 공개 전 점검 · 관리자 화면이 모두 이 목록 하나를 써요)

@@ -115,7 +115,7 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
       flows,
       products: await db.all('SELECT p.*, (SELECT COUNT(*) FROM orders o WHERE o.product_id=p.id) AS sold FROM lama_products p ORDER BY p.sort_order, p.price'),
       wallets: await db.all(
-        "SELECT u.id,u.name,u.email,u.role,COALESCE(w.paid_balance,0) AS paid,COALESCE(w.bonus_balance,0) AS bonus,COALESCE(w.held_paid+w.held_bonus,0) AS held FROM users u LEFT JOIN lama_wallets w ON w.user_id=u.id WHERE u.role IN ('pd','admin') ORDER BY COALESCE(w.paid_balance,0)+COALESCE(w.bonus_balance,0) DESC, u.name",
+        "SELECT u.id,u.name,u.email,u.role,u.status,COALESCE(w.paid_balance,0) AS paid,COALESCE(w.bonus_balance,0) AS bonus,COALESCE(w.held_paid+w.held_bonus,0) AS held FROM users u LEFT JOIN lama_wallets w ON w.user_id=u.id WHERE u.role IN ('pd','admin') ORDER BY COALESCE(w.paid_balance,0)+COALESCE(w.bonus_balance,0) DESC, u.name",
       ),
       ledger: await db.all(
         'SELECT l.*, u.name AS user_name, u.email AS user_email, a.name AS actor_name FROM lama_ledger l JOIN users u ON u.id=l.user_id LEFT JOIN users a ON a.id=l.actor_id ORDER BY l.created_at DESC LIMIT 200',
@@ -170,8 +170,9 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
         memo: z.string().trim().min(2, '사유를 입력해 주세요.').max(200),
       })
       .parse(req.body);
-    const user = await db.get('SELECT id,role FROM users WHERE id=?', [b.userId]);
+    const user = await db.get('SELECT id,role,status FROM users WHERE id=?', [b.userId]);
     if (!user) fail(404, '회원을 찾을 수 없습니다.');
+    if (b.action === 'grant' && user.status === 'withdrawn') fail(400, '탈퇴한 회원에게는 지급할 수 없어요.');
     const wallet = await db.transaction(async () => {
       const w =
         b.action === 'grant'

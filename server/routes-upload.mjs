@@ -245,6 +245,8 @@ export function uploadRoutes({
     // AI 품질 시험(관리자): 기준 인물 이미지와 시험 결과(2026-10-01 점검에서 빠진 자리)
     'SELECT 1 FROM ai_benchmarks WHERE ref_image=m.url',
     'SELECT 1 FROM ai_benchmark_runs WHERE result_url=m.url',
+    // AI 비서 대화 기록에 남은 결과(이미지·영상 링크)도 지우지 않아요(2026-10-01 재점검).
+    "SELECT 1 FROM studio_chat WHERE result LIKE '%' || m.url || '%'",
   ];
   const orphanWhere = `m.created_at<? AND ${referenced.map((q) => `NOT EXISTS (${q})`).join(' AND ')}`;
   const cutoffFor = (days) => new Date(Date.now() - days * 86400000).toISOString();

@@ -109,6 +109,7 @@ export function AdminSettlementPanel({
                   .reduce((n, p) => n + p.payable, 0),
               )}{' '}
               지급 예정
+              {data.payoutStats?.waiting ? ` · 승인 완료분 포함 미지급 합계 ${won(data.payoutStats.waiting)}` : ''}
             </small>
           </div>
           <div className="stat-card">

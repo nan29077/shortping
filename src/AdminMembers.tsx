@@ -305,12 +305,14 @@ export default function AdminMembers({
                 <button
                   className="secondary compact"
                   disabled={busy || m.id === user.id}
-                  onClick={() =>
+                  onClick={async () => {
+                    if (!(await ask({ title: '모든 기기에서 로그아웃할까요?', text: `${m.name}님이 쓰던 모든 기기의 로그인이 바로 끊겨요. 다시 로그인하면 이용할 수 있어요.`, ok: '로그아웃 처리' })))
+                      return;
                     void act(
                       () => api('/admin/members/' + m.id + '/logout', 'POST'),
                       '모든 기기에서 로그아웃 처리했어요.',
-                    )
-                  }
+                    );
+                  }}
                 >
                   <LogOut size={13} />
                   세션 종료

@@ -221,7 +221,13 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (adjust.action !== 'grant' && !(await ask({ title: '라마를 회수할까요?', text: `${target?.name || 'PD'}님의 라마 ${lama(adjust.lama)}를 회수해요(보너스 라마부터). 되돌리려면 다시 지급해야 해요.`, ok: '회수', danger: true })))
+                if (
+                  !(await ask(
+                    adjust.action !== 'grant'
+                      ? { title: '라마를 회수할까요?', text: `${target?.name || 'PD'}님의 라마 ${lama(adjust.lama)}를 회수해요(보너스 라마부터). 되돌리려면 다시 지급해야 해요.`, ok: '회수', danger: true }
+                      : { title: '라마를 지급할까요?', text: `${target?.name || 'PD'}님에게 보너스 라마 ${lama(adjust.lama)}를 지급해요.`, ok: '지급' },
+                  ))
+                )
                   return;
                 void run(() => api('/admin/lama/adjust', 'POST', adjust), `${target?.name}님에게 ${lama(adjust.lama)}를 ${adjust.action === 'grant' ? '지급' : '회수'}했어요.`).then((ok) => ok && setAdjust({ ...adjust, memo: '' }));
               }}
@@ -230,7 +236,7 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
                 PD
                 <select value={adjust.userId} required onChange={(e) => setAdjust({ ...adjust, userId: e.target.value })}>
                   <option value="">선택</option>
-                  {data.wallets.map((w) => (
+                  {data.wallets.filter((w) => w.status !== 'withdrawn' || w.id === adjust.userId).map((w) => (
                     <option key={w.id} value={w.id}>
                       {w.name} ({w.email}) · {lama(n(w.paid) + n(w.bonus))}
                     </option>
@@ -317,7 +323,7 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
             <div className="form-columns">
               <label>
                 가격 (원)
-                <NumberInput min={1000} value={editing.price} onChange={(e) => setEditing({ ...editing, price: Number(e.target.value), lama: Math.floor(Number(e.target.value) / 10) })} />
+                <NumberInput min={1000} value={editing.price} onChange={(e) => setEditing({ ...editing, price: Number(e.target.value), ...(editing.id ? {} : { lama: Math.floor(Number(e.target.value) / 10) }) })} />
               </label>
               <label>
                 라마

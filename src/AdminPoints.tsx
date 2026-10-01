@@ -743,6 +743,7 @@ function Adjust({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
       .catch(() => setMembers([]));
   }, [data]);
   const matched = members
+    .filter((m) => m.status !== 'withdrawn')
     .filter((m) => `${m.name} ${m.email}`.toLowerCase().includes(query.toLowerCase()))
     .slice(0, 8);
   const target = members.find((m) => m.id === form.userId);
@@ -764,7 +765,13 @@ function Adjust({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
           onSubmit={async (e) => {
             e.preventDefault();
             if (!target) return;
-            if (form.action !== 'grant' && !(await ask({ title: '핑을 회수할까요?', text: `${target.name}님의 핑 ${pings(form.pings)}을 회수해요(보너스 핑부터). 되돌리려면 다시 지급해야 해요.`, ok: '회수', danger: true })))
+            if (
+              !(await ask(
+                form.action !== 'grant'
+                  ? { title: '핑을 회수할까요?', text: `${target.name}님의 핑 ${pings(form.pings)}을 회수해요(보너스 핑부터). 되돌리려면 다시 지급해야 해요.`, ok: '회수', danger: true }
+                  : { title: '핑을 지급할까요?', text: `${target.name}님에게 보너스 핑 ${pings(form.pings)}을 지급해요. 사용되면 PD 정산으로 넘어가요.`, ok: '지급' },
+              ))
+            )
               return;
             const ok = await run(
               () => api('/admin/pings/adjust', 'POST', form),

@@ -394,8 +394,9 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         memo: z.string().trim().min(2, '사유를 입력해 주세요.').max(200),
       })
       .parse(req.body);
-    if (!(await db.get('SELECT id FROM users WHERE id=?', [b.userId])))
-      fail(404, '회원을 찾을 수 없습니다.');
+    const who = await db.get('SELECT id,status FROM users WHERE id=?', [b.userId]);
+    if (!who) fail(404, '회원을 찾을 수 없습니다.');
+    if (b.action === 'grant' && who.status === 'withdrawn') fail(400, '탈퇴한 회원에게는 지급할 수 없어요.');
     const settings = await loadSettings(db);
     const result = await db.transaction(async () => {
       const done =
@@ -649,6 +650,15 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       await audit(req.user.id, `user:${b.role}:${b.status}${changed.length ? ':' + changed.join('+') : ''}`, req.params.id);
     });
     res.json({ ok: true });
+  });
+  // 운영 기록 더 보기: 화면 처음엔 최근 30건만 오고, 그보다 오래된 기록을 100건씩 이어서 받아요(2026-10-01 재점검).
+  app.get('/api/admin/audit', roles('admin'), async (req, res) => {
+    const before = typeof req.query.before === 'string' && req.query.before ? req.query.before : '9999';
+    const logs = await db.all(
+      'SELECT a.*,u.name FROM audit_logs a JOIN users u ON a.actor_id=u.id WHERE a.created_at<? ORDER BY a.created_at DESC LIMIT 100',
+      [before],
+    );
+    res.json({ logs, more: logs.length === 100 });
   });
   app.post('/api/admin/members/:id/notes', roles('admin'), async (req, res) => {
     const b = z.object({ note: z.string().trim().min(1).max(1000) }).parse(req.body);

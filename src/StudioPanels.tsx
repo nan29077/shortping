@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ArrowRight, CheckCircle2, Download, Search } from 'lucide-react';
 import {
+  api,
   isPingSpend,
   orderKindLabel,
   orderRevenue,
@@ -327,6 +328,9 @@ export const actionLabel = (action: string) => {
     // 개인정보(계좌) 열람은 감사 목적이 분명히 보이도록 따로 표시해요.
     'payout:account-revealed': '출금 계좌 전체 열람',
     'tax:account-revealed': '세무 계좌 전체 열람',
+    'user:note-added': '회원 메모 추가',
+    'lama-product:deactivated': '라마 충전 상품 판매 중지',
+    'ai-model:deactivated': 'AI 모델 비활성화',
   };
   if (exact[action]) return exact[action];
   const prefix: [string, string][] = [
@@ -359,9 +363,30 @@ export function StudioAudit({
   users: User[];
 }) {
   const [query, setQuery] = useState('');
+  // 처음엔 최근 30건, '이전 기록 더 보기'로 100건씩 이어서 받아요.
+  const [older, setOlder] = useState<StudioData['logs']>([]);
+  const [more, setMore] = useState(logs.length >= 30);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const all = [...logs, ...older.filter((o) => !logs.some((l) => l.id === o.id))];
+  const loadMore = async () => {
+    const last = all[all.length - 1];
+    if (!last || loading) return;
+    setLoading(true);
+    setLoadError('');
+    try {
+      const r = await api<{ logs: StudioData['logs']; more: boolean }>('/admin/audit?before=' + encodeURIComponent(last.created_at));
+      setOlder((o) => [...o, ...r.logs]);
+      setMore(r.more);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : '기록을 불러오지 못했어요.');
+    } finally {
+      setLoading(false);
+    }
+  };
   const target = (id: string) =>
     dramas.find((d) => d.id === id)?.title || users.find((u) => u.id === id)?.name || id;
-  const filtered = logs.filter((l) =>
+  const filtered = all.filter((l) =>
     `${l.name} ${actionLabel(l.action)} ${target(l.target_id)}`
       .toLowerCase()
       .includes(query.toLowerCase()),
@@ -371,7 +396,7 @@ export function StudioAudit({
       <div className="panel-heading">
         <div>
           <h3>운영 감사 기록</h3>
-          <p>최근 30건 · 서버에 저장된 변경 이력</p>
+          <p>최근 기록부터 · 서버에 저장된 변경 이력{query ? ' (불러온 기록 안에서 검색)' : ''}</p>
         </div>
       </div>
       <label className="management-search">
@@ -405,6 +430,14 @@ export function StudioAudit({
           title="표시할 운영 기록이 없어요"
           text="작품 심사, 회원 변경, 문의 답변이 이곳에 기록됩니다."
         />
+      )}
+      {more && (
+        <div className="panel-footnote">
+          <button type="button" className="secondary compact" disabled={loading} onClick={() => void loadMore()}>
+            {loading ? '불러오는 중…' : '이전 기록 더 보기'}
+          </button>
+          {loadError && <span role="alert"> {loadError}</span>}
+        </div>
       )}
     </section>
   );
