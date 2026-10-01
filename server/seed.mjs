@@ -1,7 +1,14 @@
-import { randomBytes, scryptSync } from 'node:crypto';
+import { randomBytes, scrypt, scryptSync } from 'node:crypto';
+import { promisify } from 'node:util';
 export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
   return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
+}
+// 요청 처리 중에는 비동기로 계산해요(scryptSync는 한 번에 약 50ms 동안 서버 전체를 멈춰 세웁니다).
+export const scryptAsync = promisify(scrypt);
+export async function hashPasswordAsync(password) {
+  const salt = randomBytes(16).toString('hex');
+  return `${salt}:${(await scryptAsync(password, salt, 64)).toString('hex')}`;
 }
 // 방송국(마이 방송국) demo data: two uploaders, each with their own station shelf.
 export const secondPd = 'demo-pd-2';

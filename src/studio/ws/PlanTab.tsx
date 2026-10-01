@@ -92,8 +92,10 @@ function StoryForm({ ws, genres }: { ws: WS; genres: string[] }) {
   };
   const [f, setF] = useSyncedForm(server);
   const valid = f.title.trim().length >= 1 && f.logline.trim().length >= 5 && f.episode_seconds >= 20 && f.episode_seconds <= 180;
-  const save = useAutosave(f, server, async (v) => {
-    await api('/studio/ai/projects/' + p.id, 'PATCH', v);
+  // 바뀐 칸만 보내요(팀원이 고친 칸이나 막 끝난 AI 기획 결과를 옛 값으로 덮어쓰지 않도록).
+  const save = useAutosave(f, server, async (v, base) => {
+    const diff = changedFields(v, base);
+    if (Object.keys(diff).length) await api('/studio/ai/projects/' + p.id, 'PATCH', diff);
     void ws.load();
   }, { enabled: valid });
   const planBusy = isBusy(ws.data.jobs, p.id, 'plan');
@@ -110,7 +112,7 @@ function StoryForm({ ws, genres }: { ws: WS; genres: string[] }) {
         return;
     }
     if (!(await save.flush()) && save.dirty) return;
-    await ws.act(() => api('/studio/ai/projects/' + p.id, 'PATCH', { ...f, episode_count: n }), `${n}화로 바꿨어요.`);
+    await ws.act(() => api('/studio/ai/projects/' + p.id, 'PATCH', { episode_count: n }), `${n}화로 바꿨어요.`);
   };
   const plan = async () => {
     if (!(await save.flush())) {

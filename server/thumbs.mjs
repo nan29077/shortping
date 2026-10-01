@@ -22,9 +22,17 @@ export async function applyThumbs(db, dramas, viewerKey) {
     shown.push(pick.id);
     return { ...d, image: pick.url, thumb_id: pick.id };
   });
-  // 노출 수는 한 번에 올립니다(실패해도 목록 응답에는 영향 없음).
-  if (shown.length)
-    await db.run(`UPDATE drama_thumbnails SET impressions=impressions+1 WHERE id IN (${shown.map(() => '?').join(',')})`, shown).catch(() => {});
+  // 노출은 같은 사람(로그인 회원 또는 IP)·후보마다 하루 한 번만 셉니다. 새로고침만 반복해 한 후보의
+  // 노출을 부풀려 클릭률(대표 포스터 결정)을 조작하지 못하게 해요(클릭과 같은 기준). 실패해도 목록 응답에는 영향 없음.
+  if (shown.length) {
+    const day = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+    const fresh = [];
+    for (const id of shown) {
+      const r = await db.run('INSERT INTO thumb_click_marks (viewer_key,thumb_id,day) VALUES (?,?,?) ON CONFLICT DO NOTHING', ['imp:' + viewerKey, id, day]).catch(() => null);
+      if (Number(r?.rowCount ?? r?.changes ?? 0) > 0) fresh.push(id);
+    }
+    if (fresh.length) await db.run(`UPDATE drama_thumbnails SET impressions=impressions+1 WHERE id IN (${fresh.map(() => '?').join(',')})`, fresh).catch(() => {});
+  }
   return out;
 }
 export async function thumbClick(db, dramaId, thumbId) {

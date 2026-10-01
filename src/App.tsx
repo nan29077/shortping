@@ -1,5 +1,5 @@
-import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { apiUrl, authHeaders, fetchCredentials, publicUrl } from './platform';
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { apiUrl, authHeaders, fetchCredentials, isNativeApp, publicUrl } from './platform';
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -61,6 +61,8 @@ import {
   type Library,
   type Role,
   type User,
+  ageBadge,
+  ageText,
 } from './api';
 import { genresIn } from './genres';
 import { asset } from './platform';
@@ -326,7 +328,15 @@ export default function App() {
     [busy, setBusy] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
   // 알림 띠: 오류 문구는 빨간 느낌표로 보여 줍니다. tone을 주지 않으면 문구로 짐작합니다.
+  const cancelTitle = config.demo ? '테스트 구독 종료' : '구독 해지';
   const notify = useCallback((s: string, tone?: ToastTone) => setToast({ text: s, tone: tone || toneOf(s) }), []);
+  // 화면을 떠나며 저장하지 못한 입력이 있으면 알려요(useAutosave가 사라질 때 보내는 신호).
+  // 작업 공간보다 오래 남는 여기서 들어야, 스튜디오 목록·다른 메뉴로 옮겨 갈 때의 실패도 놓치지 않아요.
+  useEffect(() => {
+    const on = (ev: Event) => notify(`저장하지 못한 내용이 있어요: ${(ev as CustomEvent<string>).detail || '잠시 후 다시 시도해 주세요.'}`, 'error');
+    window.addEventListener('sp:save-error', on);
+    return () => window.removeEventListener('sp:save-error', on);
+  }, [notify]);
   const reloadLibrary = useCallback(async () => {
     try {
       setLib(await api<Library>('/library'));
@@ -485,6 +495,12 @@ export default function App() {
         : '';
     navigate('pings' + (back ? '/' + back : ''));
   };
+  // 결제창 하나에 요청 키 하나: 응답이 중간에 끊겨 다시 눌러도 같은 키로 보내 두 번 결제되지 않아요.
+  const payKey = useRef<{ for: unknown; key: string } | null>(null);
+  const keyFor = (target: unknown) => {
+    if (!payKey.current || payKey.current.for !== target) payKey.current = { for: target, key: uuid() };
+    return payKey.current.key;
+  };
   const pay = async () => {
     if (!checkout || busy) return;
     setBusy(true);
@@ -492,11 +508,12 @@ export default function App() {
       if (checkout === 'subscription') {
         await api('/checkout', 'POST', {
           kind: 'subscription',
-          idempotencyKey: uuid(),
+          idempotencyKey: keyFor(checkout),
         });
+        payKey.current = null;
         await reloadLibrary();
         setCheckout(null);
-        notify('테스트 결제가 완료됐어요. 모든 작품을 마음껏 보세요!');
+        notify(config.demo ? '테스트 결제가 완료됐어요. 모든 작품을 마음껏 보세요!' : '숏핑 패스 결제가 완료됐어요. 모든 작품을 마음껏 보세요!');
       } else {
         const r = await api<{ pings: number; unlocked: number; wallet: { total: number } }>(
           '/pings/unlock',
@@ -505,9 +522,10 @@ export default function App() {
             dramaId: checkout.drama.id,
             episode: checkout.episode,
             all: !checkout.episode,
-            idempotencyKey: uuid(),
+            idempotencyKey: keyFor(checkout),
           },
         );
+        payKey.current = null;
         await reloadLibrary();
         setCheckout(null);
         notify(
@@ -799,7 +817,7 @@ export default function App() {
                       <span>
                         <Zap size={12} fill="currentColor" /> SHORTPING ORIGINAL
                       </span>
-                      <span className="hero-age">15</span>
+                      <span className="hero-age" aria-label={ageText(hero.age_rating)}>{ageBadge(hero.age_rating)}</span>
                     </div>
                     <div className="hero-content">
                       <span className="hero-kicker">{homeLayout.hero.kicker || '오늘의 발견 · 숏핑 독점 공개'}</span>
@@ -1228,13 +1246,15 @@ export default function App() {
                     이용 기간: {new Date(lib.subscription.expires_at).toLocaleDateString('ko-KR')}
                     까지
                     <br />
-                    테스트 구독은 자동 갱신되지 않아요.
+                    {config.demo ? '테스트 구독은 자동 갱신되지 않아요.' : '구독 해지는 마이페이지에서 할 수 있어요.'}
                     <button
                       className="text-link"
                       onClick={() =>
                         info(
                           '구독 관리',
-                          '마이페이지의 구매·구독 관리에서 테스트 구독을 종료할 수 있어요.',
+                          config.demo
+                            ? '마이페이지의 구매·구독 관리에서 테스트 구독을 종료할 수 있어요.'
+                            : '마이페이지의 구매·구독 관리에서 구독을 해지할 수 있어요. 이미 결제한 기간이 끝날 때까지는 계속 볼 수 있어요.',
                         )
                       }
                     >
@@ -1246,8 +1266,8 @@ export default function App() {
                   <h3>궁금한 점이 있나요?</h3>
                   {[
                     [
-                      '개별 구매와 구독은 어떻게 다른가요?',
-                      '개별 구매는 해당 작품 전체 회차를 소장하는 방식이고, 구독은 이용 기간 동안 모든 공개 작품을 시청하는 방식이에요.',
+                      '핑으로 회차 열기와 구독은 어떻게 다른가요?',
+                      '핑으로 연 회차는 기간 없이 계속 볼 수 있어요(작품 전체 열기는 그때 공개된 회차까지). 숏핑 패스(구독)는 이용 기간 동안 모든 공개 작품을 볼 수 있어요.',
                     ],
                     [
                       '무료로도 볼 수 있나요?',
@@ -1255,7 +1275,9 @@ export default function App() {
                     ],
                     [
                       '어디서 시청할 수 있나요?',
-                      '지금은 PC와 모바일 웹에서 시청할 수 있어요. Android와 iOS 앱도 준비 중이에요.',
+                      isNativeApp
+                        ? '이 앱과 PC · 모바일 웹에서 같은 계정으로 시청할 수 있어요.'
+                        : '지금은 PC와 모바일 웹에서 시청할 수 있어요. Android와 iOS 앱도 준비 중이에요.',
                     ],
                   ].map(([q, a]) => (
                     <details key={q}>
@@ -1502,7 +1524,9 @@ export default function App() {
                                 {new Date(o.created_at).toLocaleString('ko-KR')} ·{' '}
                                 {o.kind.startsWith('ping_') && o.kind !== 'ping_charge'
                                   ? '핑 사용'
-                                  : '테스트 결제'}{' '}
+                                  : config.demo
+                                    ? '테스트 결제'
+                                    : '결제'}{' '}
                                 · 주문번호 {o.id.slice(0, 8)}
                               </span>
                             </div>
@@ -1518,20 +1542,22 @@ export default function App() {
                       )}
                       <p className="order-note">
                         결제 취소·환불이 필요하면 문의하기로 알려 주세요. 사용하지 않은 충전 핑은
-                        환불 기준에 따라 처리됩니다. 현재는 개발용 테스트 결제라 실제 청구가
-                        발생하지 않습니다.
+                        환불 기준에 따라 처리됩니다.
+                        {config.demo && ' 현재는 개발용 테스트 결제라 실제 청구가 발생하지 않습니다.'}
                       </p>
                       {lib.subscription && (
                         <button
                           className="secondary full"
                           onClick={() =>
                             setModal({
-                              title: '테스트 구독 종료',
-                              text: '현재 테스트 구독을 즉시 종료하려면 아래 버튼을 눌러 주세요. 개별 구매한 작품의 시청 권한은 유지됩니다.',
+                              title: cancelTitle,
+                              text: config.demo
+                                ? '현재 테스트 구독을 즉시 종료하려면 아래 버튼을 눌러 주세요. 핑으로 연 회차의 시청 권한은 유지됩니다.'
+                                : '자동 갱신을 끄고, 이미 결제한 기간이 끝날 때까지 계속 볼 수 있어요. 핑으로 연 회차의 시청 권한은 유지됩니다.',
                             })
                           }
                         >
-                          테스트 구독 종료
+                          {cancelTitle}
                         </button>
                       )}
                     </details>
@@ -1818,7 +1844,7 @@ export default function App() {
       {modal && (
         <Modal title={modal.title} close={() => setModal(null)}>
           <p className="modal-text">{modal.text}</p>
-          {modal.title === '테스트 구독 종료' ? (
+          {modal.title === cancelTitle ? (
             <button
               className="primary full"
               disabled={busy}
@@ -1829,7 +1855,7 @@ export default function App() {
                   await api('/subscription/cancel', 'POST');
                   await reloadLibrary();
                   setModal(null);
-                  notify('테스트 구독을 종료했어요.');
+                  notify(config.demo ? '테스트 구독을 종료했어요.' : '구독을 해지했어요. 결제한 기간이 끝날 때까지 볼 수 있어요.');
                 } catch (e) {
                   notify((e as Error).message, 'error');
                 } finally {
@@ -1837,7 +1863,7 @@ export default function App() {
                 }
               }}
             >
-              {busy ? '처리 중…' : '테스트 구독 종료하기'}
+              {busy ? '처리 중…' : config.demo ? '테스트 구독 종료하기' : '구독 해지하기'}
             </button>
           ) : (
             <button className="primary full" onClick={() => setModal(null)}>
@@ -1867,7 +1893,7 @@ export default function App() {
                 : '실제 결제 연동을 준비하고 있어요.'}
             </div>
             <button className="primary full" disabled={busy || !config.demo} onClick={pay}>
-              {busy ? '처리 중…' : '테스트 결제하고 시청하기'}
+              {busy ? '처리 중…' : config.demo ? '테스트 결제하고 시청하기' : '결제하고 시청하기'}
             </button>
           </Modal>
         ) : (
@@ -2051,7 +2077,10 @@ export function Modal({
     // 처음 초점은 닫기 버튼이 아니라 내용 안의 첫 조작 요소(지정한 요소 → 입력칸 → 버튼)로 보냅니다. 없으면 닫기 버튼.
     const all = focusables();
     const inBody = all.filter((el) => !el.closest('.modal-heading'));
+    // data-autofocus는 탭 순서 밖 요소(tabIndex=-1인 제목 등)에도 붙일 수 있어요(창 맨 위부터 읽게 할 때).
+    const marked = ref.current?.querySelector<HTMLElement>('[data-autofocus]');
     const first =
+      (marked && !marked.closest('.modal-heading') ? marked : null) ||
       inBody.find((el) => el.hasAttribute('autofocus') || el.dataset.autofocus !== undefined) ||
       inBody.find((el) => /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) ||
       inBody[0] ||
@@ -2494,7 +2523,7 @@ function DramaPage({
         <div className="detail-meta">
           {d.genre}
           <i />
-          15세 이상
+          {ageText(d.age_rating)}
           <i />
           {d.episode_count}부작
           <i />
@@ -2683,6 +2712,18 @@ function WatchPage({
     saved = useRef<{ pos: number; reloaded: boolean } | null>(null),
     autoTried = useRef(false);
   const playSrc = '/api/play/' + id + '/' + number;
+  // 앱(미디어 토큰 ?mt=)에서는 asset()이 토큰이 바뀔 때마다(40분) 다른 주소를 돌려줘요. 렌더마다 새로 계산하면
+  // 찜·알림 같은 재렌더에 재생 중 영상이 처음부터 다시 불러와지므로, 회차를 열 때 한 번 정해 고정합니다.
+  // 재생 오류가 나면 새 토큰 주소로 한 번만 바꿔 다시 시도해요(보던 위치에서 이어서).
+  const [srcNonce, setSrcNonce] = useState(0);
+  const tokenRetried = useRef(false);
+  const resumeAt = useRef<number | null>(null);
+  const videoSrc = useMemo(() => asset(playSrc), [playSrc, srcNonce]);
+  const subtitleSrc = useMemo(() => asset(`/api/subtitles/${id}/${number}`), [id, number, srcNonce]);
+  useEffect(() => {
+    tokenRetried.current = false;
+    resumeAt.current = null;
+  }, [playSrc]);
   const loadDetail = useCallback(
     () =>
       api<ViewerDetail>('/dramas/' + id)
@@ -2901,7 +2942,7 @@ function WatchPage({
                   onClick={() => buy({ drama: d })}
                 >
                   <Ticket size={17} />
-                  남은 {d.locked_count}화 전체 열기 · {pings(d.title_pings)}
+                  남은 {d.locked_count}개 회차 전체 열기 · {pings(d.title_pings)}
                   {d.title_discount ? ` (${d.title_discount}%↓)` : ''}
                 </button>
               )}
@@ -2925,15 +2966,30 @@ function WatchPage({
           <>
             <video
               ref={video}
-              src={asset(playSrc)}
+              src={videoSrc}
               poster={asset(d.image)}
               controls
               playsInline
               preload="metadata"
-              onError={() => void diagnose()}
+              onError={() => {
+                // 앱: 미디어 토큰이 바뀌어 주소가 달라졌다면 새 주소로 한 번 다시 불러와요.
+                if (!tokenRetried.current && asset(playSrc) !== videoSrc) {
+                  tokenRetried.current = true;
+                  resumeAt.current = video.current?.currentTime || lastPos.current || null;
+                  setSrcNonce((n) => n + 1);
+                  return;
+                }
+                void diagnose();
+              }}
               onLoadedMetadata={() => {
                 const v = video.current;
                 if (!v) return;
+                if (resumeAt.current !== null) {
+                  v.currentTime = Math.min(resumeAt.current, Math.max(0, v.duration - 2));
+                  resumeAt.current = null;
+                  startPlayback();
+                  return;
+                }
                 const h = lib.history.find((x) => x.drama_id === id && x.episode === number);
                 if (h && h.progress < v.duration - 2) v.currentTime = h.progress;
                 // 앞 회차가 끝나서 넘어온 경우에만 이어서 재생합니다.
@@ -2964,7 +3020,7 @@ function WatchPage({
               }}
             >
               {ep.has_subtitles ? (
-                <track kind="subtitles" srcLang="ko" label="한국어" default src={asset(`/api/subtitles/${id}/${number}`)} />
+                <track kind="subtitles" srcLang="ko" label="한국어" default src={subtitleSrc} />
               ) : null}
             </video>
             {needTap && !videoError && (
@@ -3122,7 +3178,7 @@ function LibraryView({ lib, dramas }: { lib: Library; dramas: Drama[] }) {
       {tab === '연 회차' ? (
         <div className="owned-episodes">
           {ids.map((id) => {
-            const d = dramas.find((x) => x.id === id);
+            const d = dramas.find((x) => x.id === id) || lib.hidden_dramas?.find((x) => x.id === id);
             if (!d) return null;
             return (
               <div className="owned-row" key={id}>

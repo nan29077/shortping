@@ -231,6 +231,11 @@ test('subscription pool follows server-recorded plays by subscribers, not client
   assert.equal(byPd['demo-pd'].weight, 3);
   assert.equal(byPd['demo-pd-2'].weight, 1);
   assert.equal(byPd['demo-pd'].gross + byPd['demo-pd-2'].gross, Number(pool));
+  // 같은 달을 다시 마감하면(예: 배분 제외를 바꾼 뒤) 배분이 풀을 넘을 수 있어 막는다(2026-10-01).
+  const again = await request('/admin/settlements/close', { method: 'POST', cookie: admin, body: { period } });
+  assert.equal(again.status, 409);
+  const [{ n: distributed }] = await testDb.all("SELECT COALESCE(SUM(gross),0) AS n FROM settlement_entries WHERE kind='subscription' AND period=?", [period]);
+  assert.equal(Number(distributed), Number(pool));
   // 잘못된 기간 형식은 거절
   assert.equal((await request('/admin/settlements/close', { method: 'POST', cookie: admin, body: { period: '2025-13' } })).status, 400);
 });

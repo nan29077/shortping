@@ -119,6 +119,8 @@ export type Drama = {
   created_at: string;
   rights_confirmed?: number;
   likeness_confirmed?: number;
+  // 관람 등급(전체·12·15·19). 예전 데이터는 15세
+  age_rating?: AgeRating;
   ai_usage?: 'none' | 'partial' | 'full';
   studio_episodes?: number;
   ai_label?: boolean;
@@ -258,6 +260,8 @@ export type Library = {
   orders: Order[];
   wallet: Wallet;
   subscription: { expires_at: string; auto_renew: number } | null;
+  // 노출이 중단됐지만 연 회차가 있는 작품(보관함 '연 회차'에서 계속 볼 수 있게)
+  hidden_dramas?: { id: string; title: string; genre: string; image: string }[];
 };
 export const emptyLibrary: Library = {
   favorites: [],
@@ -1235,3 +1239,8 @@ export const jobStatusLabel: Record<string, string> = {
   failed: '실패',
   canceled: '취소',
 };
+
+// 관람 등급 표시
+export type AgeRating = 'all' | '12' | '15' | '19';
+export const ageText = (r?: string | null) => (r === 'all' ? '전체 관람가' : r === '19' ? '청소년 관람불가' : `${r === '12' ? 12 : 15}세 이상`);
+export const ageBadge = (r?: string | null) => (r === 'all' ? 'ALL' : r === '12' || r === '19' ? r : '15');

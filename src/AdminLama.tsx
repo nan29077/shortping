@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useConfirm } from './confirm';
 import { Gift, History, Package, Plus, Settings2, Sparkles, Trash2, Wallet } from 'lucide-react';
 import { api, lama, lamaTypeLabel, moment, won, type AdminLama, type LamaProduct } from './api';
 import { Empty, Modal } from './App';
@@ -17,6 +18,7 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
     [editing, setEditing] = useState<(typeof emptyProduct & { id?: string }) | null>(null),
     [adjust, setAdjust] = useState({ userId: '', action: 'grant', lama: 100, memo: '' }),
     [policy, setPolicy] = useState<{ lama_signup_bonus: number; lama_convert_min: number; lama_convert_bonus_rate: number } | null>(null);
+  const [ask, confirmUi] = useConfirm();
   const load = useCallback(async () => {
     try {
       const [d, s] = await Promise.all([api<AdminLama>('/admin/lama'), api<{ settings: Record<string, number> }>('/admin/settings')]);
@@ -55,6 +57,7 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
   const target = data.wallets.find((w) => w.id === adjust.userId);
   return (
     <div className="admin-points">
+      {confirmUi}
       <div className="member-tabs">
         {(
           [
@@ -192,7 +195,10 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
                       <button className="secondary compact" onClick={() => setEditing({ id: p.id, name: p.name, price: p.price, lama: p.lama, bonus_lama: p.bonus_lama, badge: p.badge, active: !!p.active, sort_order: n(p.sort_order) })}>
                         수정
                       </button>{' '}
-                      <button className="secondary compact" aria-label={p.name + ' 삭제'} disabled={busy} onClick={() => void run(() => api('/admin/lama/products/' + p.id, 'DELETE'), '상품을 정리했어요.')}>
+                      <button className="secondary compact" aria-label={p.name + ' 삭제'} disabled={busy} onClick={async () => {
+                        if (await ask({ title: `${p.name} 상품을 정리할까요?`, text: '판매 이력이 있으면 삭제하지 않고 판매 중지로 바꿔요.', ok: '정리', danger: true }))
+                          void run(() => api('/admin/lama/products/' + p.id, 'DELETE'), '상품을 정리했어요.');
+                      }}>
                         <Trash2 size={14} />
                       </button>
                     </td>
@@ -213,8 +219,10 @@ export default function AdminLamaPanel({ notify }: { notify: (s: string) => void
               </div>
             </div>
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
+                if (adjust.action !== 'grant' && !(await ask({ title: '라마를 회수할까요?', text: `${target?.name || 'PD'}님의 라마 ${lama(adjust.lama)}를 회수해요(보너스 라마부터). 되돌리려면 다시 지급해야 해요.`, ok: '회수', danger: true })))
+                  return;
                 void run(() => api('/admin/lama/adjust', 'POST', adjust), `${target?.name}님에게 ${lama(adjust.lama)}를 ${adjust.action === 'grant' ? '지급' : '회수'}했어요.`).then((ok) => ok && setAdjust({ ...adjust, memo: '' }));
               }}
             >

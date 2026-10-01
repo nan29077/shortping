@@ -165,12 +165,7 @@ export default function Workspace({
   useEffect(() => {
     void load();
   }, [load]);
-  // 화면을 떠나며 저장하지 못한 입력이 있으면 알려요(useAutosave가 unmount 때 보내는 신호).
-  useEffect(() => {
-    const on = (ev: Event) => notify(`저장하지 못한 내용이 있어요: ${(ev as CustomEvent<string>).detail || '잠시 후 다시 시도해 주세요.'}`);
-    window.addEventListener('sp:save-error', on);
-    return () => window.removeEventListener('sp:save-error', on);
-  }, [notify]);
+  // 저장 실패 신호(sp:save-error)는 App에서 받아 토스트로 알려요(작업 공간을 떠난 뒤에도 보이도록).
   // 주소에 탭이 없이 열었고 컷이 있으면 장면 편집으로(처음 한 번만).
   const landed = useRef(false);
   useEffect(() => {

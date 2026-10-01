@@ -196,6 +196,9 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     const p = await project(req, req.params.id, ['script', 'scene']);
     const l = await db.get('SELECT id FROM studio_locations WHERE id=? AND project_id=?', [req.params.lid, p.id]);
     if (!l) fail(404, '장소를 찾을 수 없어요.');
+    // 진행 중인 AI 작업(이미지 등)이 있으면 지우지 않아요(결과 갈 곳 없이 라마만 차감되지 않게).
+    if (await db.get("SELECT id FROM ai_jobs WHERE target_id=? AND status IN ('queued','running') AND kind<>'translate' LIMIT 1", [l.id]))
+      fail(409, '이 장소의 AI 작업이 진행 중이에요. 끝나거나 작업 센터에서 멈춘 뒤 지워 주세요.');
     await db.run('UPDATE studio_shots SET location_id=NULL WHERE location_id=?', [l.id]);
     await db.run('DELETE FROM studio_locations WHERE id=?', [l.id]);
     res.json({ ok: true });
@@ -227,6 +230,9 @@ export function studioPlusRoutes({ app, db, fail, now, roles, engine, renderer, 
     const p = await project(req, req.params.id, ['script', 'scene']);
     const x = await db.get('SELECT id FROM studio_props WHERE id=? AND project_id=?', [req.params.xid, p.id]);
     if (!x) fail(404, '소품을 찾을 수 없어요.');
+    // 진행 중인 AI 작업(이미지 등)이 있으면 지우지 않아요(결과 갈 곳 없이 라마만 차감되지 않게).
+    if (await db.get("SELECT id FROM ai_jobs WHERE target_id=? AND status IN ('queued','running') AND kind<>'translate' LIMIT 1", [x.id]))
+      fail(409, '이 소품의 AI 작업이 진행 중이에요. 끝나거나 작업 센터에서 멈춘 뒤 지워 주세요.');
     await db.transaction(async () => {
       // 컷에 연결된 이 소품을 뺍니다.
       const shots = await db.all("SELECT s.id, s.prop_ids FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=? AND s.prop_ids LIKE ?", [p.id, '%' + x.id + '%']);

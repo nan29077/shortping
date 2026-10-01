@@ -393,3 +393,23 @@
   align-items: flex-start;
   gap: 14px;
 }
+
+/* ── iPhone 앱 안전 영역 보강(2026-10-01) ─────────────────────
+   헤더가 상단 안전 영역만큼 길어지므로, 헤더 아래에 붙는 피드 탭도 그만큼 내려 가려지지 않게 합니다.
+   하단 메뉴는 홈 인디케이터 여백을 높이에 더해 아이콘·글자가 밀려 내려가지 않게 하고, 본문 아래 여백도 같이 늘립니다. */
+@media (max-width: 999px) {
+  .app-shell .feed-tabs {
+    top: calc(76px + env(safe-area-inset-top, 0px));
+  }
+  .app-shell > .bottom-nav {
+    height: calc(62px + max(11px, env(safe-area-inset-bottom, 0px)));
+  }
+  .site-layout > .app-shell {
+    padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (max-width: 620px) {
+  .app-shell .feed-tabs {
+    top: calc(66px + env(safe-area-inset-top, 0px));
+  }
+}

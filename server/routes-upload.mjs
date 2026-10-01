@@ -56,6 +56,7 @@ export function uploadRoutes({
   mediaPath,
   owned,
   canWatch,
+  canSeeDrama,
   registerMediaFile,
   episodeEditable,
 }) {
@@ -215,7 +216,8 @@ export function uploadRoutes({
     'SELECT 1 FROM studio_shots WHERE image=m.url OR audio=m.url OR video=m.url',
     'SELECT 1 FROM studio_episodes WHERE video=m.url',
     'SELECT 1 FROM studio_assets WHERE url=m.url',
-    'SELECT 1 FROM upload_sessions WHERE url=m.url',
+    // 분할 업로드 기록은 진행 중일 때만 보호합니다(끝난 업로드 파일은 회차·포스터 등 실제로 쓰인 자리가 지켜 줌).
+    "SELECT 1 FROM upload_sessions WHERE url=m.url AND status='open'",
     "SELECT 1 FROM ai_jobs WHERE status IN ('queued','running') AND input LIKE '%' || m.url || '%'",
     // 숏핑 스튜디오 고도화(2026-09-23)에서 생긴 자리: 오프닝/엔딩 카드·회차 썸네일·배경음악·예고편·장소·참고 이미지·입 모양·효과음
     'SELECT 1 FROM studio_episodes WHERE intro_card=m.url OR outro_card=m.url OR thumbnail=m.url OR bgm=m.url',
@@ -238,6 +240,9 @@ export function uploadRoutes({
     'SELECT 1 FROM studio_shots WHERE end_image=m.url',
     // 대본 버전 기록(되돌리기용): 예전 컷 목록(JSON)에 남은 이미지·영상·음성도 지우지 않습니다.
     "SELECT 1 FROM studio_script_versions WHERE shots LIKE '%' || m.url || '%'",
+    // AI 품질 시험(관리자): 기준 인물 이미지와 시험 결과(2026-10-01 점검에서 빠진 자리)
+    'SELECT 1 FROM ai_benchmarks WHERE ref_image=m.url',
+    'SELECT 1 FROM ai_benchmark_runs WHERE result_url=m.url',
   ];
   const orphanWhere = `m.created_at<? AND ${referenced.map((q) => `NOT EXISTS (${q})`).join(' AND ')}`;
   const cutoffFor = (days) => new Date(Date.now() - days * 86400000).toISOString();
@@ -418,8 +423,7 @@ export function uploadRoutes({
   // 시청 권한이 있는 사람만 자막을 받습니다(영상과 같은 기준).
   app.get('/api/subtitles/:id/:number', async (req, res) => {
     const d = await db.get('SELECT * FROM dramas WHERE id=?', [req.params.id]);
-    if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
-      fail(404, '작품을 찾을 수 없습니다.');
+    if (!d || !(await canSeeDrama(req.user, d))) fail(404, '작품을 찾을 수 없습니다.');
     const number = z.coerce.number().int().min(1).parse(req.params.number);
     if (!(await canWatch(req.user, d, number))) fail(403, '시청 권한이 없습니다.');
     const e = await db.get('SELECT subtitles,review_status FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);

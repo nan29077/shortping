@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, Check, Loader2, RotateCcw, Square, Wallet, X } from 'lucide-react';
-import { api, ApiError, jobKindLabel, lama, type AiModelOption, type Capability, type StudioJob, type StudioProjectDetail } from '../api';
+import { api, ApiError, jobKindLabel, lama, uuid, type AiModelOption, type Capability, type StudioJob, type StudioProjectDetail } from '../api';
 import { Modal } from '../App';
 import NumberInput from '../NumberInput';
 
@@ -80,7 +80,7 @@ export default function JobCenter({
           ok: `${lama(est.lama)}로 다시 시도`,
         });
         if (!ok) return;
-        key = crypto.randomUUID();
+        key = uuid();
       }
       await api(`/studio/ai/jobs/${j.id}/retry`, 'POST', { requested, idempotencyKey: key, ...(budgetOk ? { budgetOk: true } : {}), ...(payOwn ? { payOwn: true } : {}) });
       notify(requested === 'auto' ? '다른 모델로 다시 시작했어요.' : '고른 모델로 다시 시작했어요.');

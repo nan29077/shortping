@@ -31,6 +31,19 @@ export function createRenderWorker({ db, uploadDir }) {
   const subsDir = path.join(uploadDir, 'subtitles');
   const running = new Set();
   let timer = null;
+  let beat = null;
+  // 살아 있음 표시: 합성 중인 작업은 20초마다 heartbeat_at을 새로 적어요. 90초 넘게 소식이 없으면
+  // 그 처리기가 꺼진 것으로 보고 다시 대기열에 넣습니다(다른 처리기가 하던 합성은 건드리지 않아요).
+  const STALE_MS = 90 * 1000;
+  let lastReclaim = 0;
+  async function reclaimStale() {
+    const cutoff = new Date(Date.now() - STALE_MS).toISOString();
+    const stale = await db.all("SELECT id,kind,target_id FROM studio_renders WHERE status='running' AND (heartbeat_at IS NULL OR heartbeat_at<?)", [cutoff]);
+    for (const r of stale) {
+      const u = await db.run("UPDATE studio_renders SET status='queued',claimed_by=NULL,progress=0 WHERE id=? AND status='running' AND (heartbeat_at IS NULL OR heartbeat_at<?)", [r.id, cutoff]);
+      if (Number(u?.rowCount ?? u?.changes ?? 0) && r.kind === 'episode') await db.run("UPDATE studio_episodes SET compose_progress=0 WHERE id=? AND status='composing'", [r.target_id]);
+    }
+  }
   const concurrency = Math.max(1, Math.min(4, Number(process.env.COMPOSE_CONCURRENCY || 1)));
 
   async function renderEpisode(job, progress) {
@@ -161,10 +174,14 @@ export function createRenderWorker({ db, uploadDir }) {
     }
   }
   async function tick() {
+    if (Date.now() - lastReclaim > 30000) {
+      lastReclaim = Date.now();
+      await reclaimStale();
+    }
     if (running.size >= concurrency) return;
     const next = await db.all("SELECT * FROM studio_renders WHERE status='queued' AND claimed_by IS NULL ORDER BY created_at LIMIT ?", [concurrency - running.size]);
     for (const job of next) {
-      const r = await db.run("UPDATE studio_renders SET status='running',claimed_by=?,started_at=? WHERE id=? AND status='queued' AND claimed_by IS NULL", [workerId, iso(), job.id]);
+      const r = await db.run("UPDATE studio_renders SET status='running',claimed_by=?,started_at=?,heartbeat_at=? WHERE id=? AND status='queued' AND claimed_by IS NULL", [workerId, iso(), iso(), job.id]);
       if (Number(r?.rowCount ?? r?.changes ?? 0) === 0) continue;
       running.add(job.id);
       void run(job).finally(() => running.delete(job.id));
@@ -194,21 +211,31 @@ export function createRenderWorker({ db, uploadDir }) {
       });
     },
     // 서버가 합성 중에 꺼졌다면, 하던 합성을 처음부터 다시 대기열에 넣습니다.
+    // 다른 처리기가 아직 하고 있는 합성(살아 있음 표시가 최근)은 그대로 두고, 멈춘 것만 되돌려요.
     async recover() {
-      await db.run("UPDATE studio_renders SET status='queued',claimed_by=NULL,progress=0 WHERE status='running'");
-      await db.run("UPDATE studio_episodes SET compose_progress=0 WHERE status='composing'");
-      // 예전 방식으로 멈춘 회차(대기열에 없음)는 실패로 표시해 다시 합성할 수 있게 합니다.
+      lastReclaim = Date.now();
+      await reclaimStale();
+      // 예전 방식으로 멈춘 회차(대기열·진행 목록에 없음)는 실패로 표시해 다시 합성할 수 있게 합니다.
       await db.run(
-        "UPDATE studio_episodes SET status='compose_failed',compose_error='서버가 다시 시작돼 합성을 멈췄어요. 다시 합성해 주세요.' WHERE status='composing' AND NOT EXISTS (SELECT 1 FROM studio_renders r WHERE r.target_id=studio_episodes.id AND r.status='queued')",
+        "UPDATE studio_episodes SET status='compose_failed',compose_error='서버가 다시 시작돼 합성을 멈췄어요. 다시 합성해 주세요.' WHERE status='composing' AND NOT EXISTS (SELECT 1 FROM studio_renders r WHERE r.target_id=studio_episodes.id AND r.status IN ('queued','running'))",
       );
     },
     start() {
       if (timer) return;
       timer = setInterval(() => void tick().catch((e) => console.error('render tick', e.message)), 1000);
       timer.unref?.();
+      beat = setInterval(() => {
+        if (!running.size) return;
+        const ids = [...running];
+        void db.run(`UPDATE studio_renders SET heartbeat_at=? WHERE claimed_by=? AND status='running' AND id IN (${ids.map(() => '?').join(',')})`, [iso(), workerId, ...ids]).catch(() => {});
+      }, 20000);
+      beat.unref?.();
       void tick().catch(() => {});
     },
-    stop: () => timer && clearInterval(timer),
+    stop: () => {
+      if (timer) clearInterval(timer);
+      if (beat) clearInterval(beat);
+    },
     tick,
     // 테스트용: 대기열이 빌 때까지 처리
     async drain(timeout = 120000) {

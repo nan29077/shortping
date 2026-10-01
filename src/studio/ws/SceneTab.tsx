@@ -20,23 +20,25 @@ const defaultSub: SubStyle = { position: 'bottom', size: 'm', background: 'shado
 
 export default function SceneTab({ ws }: { ws: WS }) {
   const e = ws.episode;
+  // 대본 서랍은 회차가 바뀌어도(서랍 안 회차 고르기 포함) 열린 채로 둬요 — 회차별로 다시 그려지는 아래 화면 밖에 둡니다.
+  const [script, setScript] = useState(false);
   if (!e) return <Empty title="먼저 기획안을 만들어 주세요" text="기획 · 설정 탭에서 회차 구성을 만들면 장면을 편집할 수 있어요." action={() => ws.goTab('plan')} label="기획으로 이동" />;
   return (
     <>
       <EpisodeSwitcher ws={ws} />
-      <EpisodeScenes key={e.id} ws={ws} e={e} />
+      <EpisodeScenes key={e.id} ws={ws} e={e} openScript={() => setScript(true)} />
+      {script && <ScriptDrawer ws={ws} close={() => setScript(false)} />}
       <BgmSection ws={ws} e={e} />
       <SubtitleSection ws={ws} />
     </>
   );
 }
 
-function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
+function EpisodeScenes({ ws, e, openScript }: { ws: WS; e: StudioEpisode; openScript: () => void }) {
   const { data } = ws;
   const [selId, setSelId] = useState(ws.focus && e.shots.some((s) => s.id === ws.focus) ? ws.focus : e.shots[0]?.id || '');
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
-  const [script, setScript] = useState(false); // 대본 서랍(3단계)
   const index = Math.max(0, e.shots.findIndex((s) => s.id === selId));
   const shot = e.shots[index];
   const jobs = data.jobs;
@@ -115,7 +117,7 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
           </p>
         </div>
         <div className="ws-head-actions">
-          <button className="secondary compact" onClick={() => setScript(true)} title="이 회차 대본을 옆 서랍에서 보고 고쳐요">
+          <button className="secondary compact" onClick={openScript} title="이 회차 대본을 옆 서랍에서 보고 고쳐요" data-script-opener="">
             <FileText size={14} /> 대본
           </button>
           <button className="secondary compact" disabled={!e.shots.some((s) => s.image || s.video)} title={!e.shots.some((s) => s.image || s.video) ? '이미지나 영상이 있는 컷이 생기면 볼 수 있어요' : ''} onClick={() => ws.preview(e)}>
@@ -123,7 +125,6 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
           </button>
         </div>
       </div>
-      {script && <ScriptDrawer ws={ws} close={() => setScript(false)} />}
       <ModelSettings ws={ws} caps={['image', 'tts', 'video', 'lipsync', 'sfx']} />
       <div className="ws-batch" aria-label="비어 있는 컷 한 번에 채우기">
         <span>한 번에 채우기</span>
@@ -206,20 +207,45 @@ function EpisodeScenes({ ws, e }: { ws: WS; e: StudioEpisode }) {
 function ScriptDrawer({ ws, close }: { ws: WS; close: () => void }) {
   const closeRef = useRef(close);
   closeRef.current = close;
+  const box = useRef<HTMLElement>(null);
   useEffect(() => {
-    const onKey = (ev: KeyboardEvent) => ev.key === 'Escape' && !document.querySelector('.modal-backdrop, .ws-overlay, .preview-overlay') && closeRef.current();
+    // 열면 서랍 안으로 초점을 옮기고, Tab은 서랍 안에서만 돌아요. 닫으면 연 버튼으로 초점을 돌려줘요.
+    const prev = document.activeElement as HTMLElement | null;
+    box.current?.querySelector<HTMLElement>('.ws-drawer-head button')?.focus();
+    const onKey = (ev: KeyboardEvent) => {
+      if (document.querySelector('.modal-backdrop, .ws-overlay, .preview-overlay')) return;
+      if (ev.key === 'Escape') return closeRef.current();
+      if (ev.key !== 'Tab' || !box.current) return;
+      const f = [...box.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter((el) => el.getClientRects().length > 0);
+      if (!f.length) return;
+      const first = f[0],
+        last = f[f.length - 1];
+      if (!box.current.contains(document.activeElement)) {
+        ev.preventDefault();
+        first.focus();
+      } else if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus();
+      }
+    };
     document.addEventListener('keydown', onKey);
     const old = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = old;
+      // 서랍 안에서 회차를 바꾸면 연 버튼이 새로 그려져요. 그때는 지금 화면의 '대본' 버튼으로 돌려줘요.
+      if (prev?.isConnected) prev.focus();
+      else document.querySelector<HTMLElement>('[data-script-opener]')?.focus();
     };
   }, []);
   return (
     <>
       <div className="ws-drawer-backdrop" onClick={close} />
-      <aside className="ws-drawer" role="dialog" aria-label="대본 서랍">
+      <aside ref={box} className="ws-drawer" role="dialog" aria-modal="true" aria-label="대본 서랍">
         <div className="ws-drawer-head">
           <strong>
             <FileText size={15} /> 대본 · {ws.episode?.number}화

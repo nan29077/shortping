@@ -1,3 +1,4 @@
+import { useConfirm } from '../confirm';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, BookOpen, Bot, Check, ChevronDown, Clapperboard, Footprints, Loader2, RefreshCw, Sparkles, Upload, Wand2, X } from 'lucide-react';
 import { api, lama, type AiModelOption, type LamaWallet } from '../api';
@@ -23,7 +24,8 @@ export type StartForm = {
   style: string;
   exclude_cn: boolean;
 };
-export type FirstShot = { url: string; lama: number; model?: string; seed: number };
+// idea: 이 컷을 만든 아이디어(그 뒤 아이디어를 고치면 '바뀌었어요'만 알려요 — 라마를 쓴 결과를 버리지 않아요)
+export type FirstShot = { url: string; lama: number; model?: string; seed: number; idea?: string };
 
 type Est = { lama: number; model: string; wallet: LamaWallet };
 
@@ -105,20 +107,21 @@ export default function StartHero({
   const [tier, setTier] = useState<'draft' | 'standard' | 'premium'>('standard');
   // 만드는 중인 첫 컷은 이 탭에 기억해 두어, 잠깐 다른 화면에 갔다 와도 결과를 받아요.
   const JOB_KEY = 'shortping.firstShot.job';
-  const [job, setJobState] = useState<{ id: string; lama: number; seed: number; model?: string } | null>(() => {
+  const [job, setJobState] = useState<{ id: string; lama: number; seed: number; model?: string; idea?: string } | null>(() => {
     try {
       return JSON.parse(sessionStorage.getItem(JOB_KEY) || 'null');
     } catch {
       return null;
     }
   });
-  const setJob = (j: { id: string; lama: number; seed: number; model?: string } | null) => {
+  const setJob = (j: { id: string; lama: number; seed: number; model?: string; idea?: string } | null) => {
     setJobState(j);
     try {
       if (j) sessionStorage.setItem(JOB_KEY, JSON.stringify(j));
       else sessionStorage.removeItem(JOB_KEY);
     } catch {}
   };
+  const [ask, confirmUi] = useConfirm();
   const [error, setError] = useState('');
   const inflight = useRef(false); // 더블클릭 · Ctrl+Enter 연타로 두 번 결제되지 않게
   const formRef = useRef(form);
@@ -157,7 +160,7 @@ export default function StartHero({
         if (!alive) return;
         misses = 0;
         if (j.status === 'succeeded' && j.output?.url) {
-          setFirstShot({ url: j.output.url, lama: Number(j.charged_lama || j.estimate_lama), model: job.model, seed: job.seed });
+          setFirstShot({ url: j.output.url, lama: Number(j.charged_lama || j.estimate_lama), model: job.model, seed: job.seed, idea: job.idea });
           setJob(null);
           onSpent?.();
           return;
@@ -207,7 +210,7 @@ export default function StartHero({
     const seed = Math.floor(Math.random() * 1000000) + 1;
     try {
       const r = await api<{ id: string; lama: number }>('/studio/ai/tools/first-shot', 'POST', { logline: cur.logline.trim(), genre: cur.genre, tone: cur.tone, style: cur.style, tier, seed });
-      setJob({ ...r, seed, model: est?.model });
+      setJob({ ...r, seed, model: est?.model, idea: cur.logline.trim() });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -215,8 +218,8 @@ export default function StartHero({
     }
   };
   const applyTemplate = (t: Template) => {
+    // 만든 첫 컷(라마 사용)은 지우지 않아요. 아이디어가 바뀌었다고만 알리고, 버리기는 직접 고르게 해요.
     setForm({ ...form, title: t.title, logline: t.logline, genre: t.genre, tone: t.tone, episode_count: t.episode_count, episode_seconds: t.episode_seconds, style: t.style });
-    setFirstShot(null);
     setError('');
     box.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setTimeout(() => box.current?.focus(), 350);
@@ -226,6 +229,7 @@ export default function StartHero({
   const templateGenres = ['전체', ...genres.filter((g) => TEMPLATES.some((t) => t.genre === g))];
   return (
     <section className="ai-home" aria-label="새 드라마 시작">
+      {confirmUi}
       <div className="ai-hero">
         <span className="eyebrow">SHORTPING STUDIO</span>
         <h2>당신의 이야기를 숏폼 드라마로</h2>
@@ -247,7 +251,6 @@ export default function StartHero({
             placeholder="어떤 이야기를 만들까요? 예: 계약 결혼한 두 사람이 서로의 비밀을 하나씩 알게 된다"
             onChange={(e) => {
               setForm({ ...form, logline: e.target.value });
-              if (firstShot) setFirstShot(null);
             }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void shoot();
@@ -365,6 +368,11 @@ export default function StartHero({
               <div className="ai-shot-side">
                 <strong>이 느낌이면 될까요?</strong>
                 <small className="muted">{lama(firstShot.lama)} 사용{firstShot.model ? ` · ${firstShot.model}` : ''}. 이어 만들면 이 컷이 포스터와 스타일 참고가 돼요.</small>
+                {firstShot.idea && firstShot.idea !== form.logline.trim() && (
+                  <small className="ai-start-note" role="status">
+                    아이디어를 바꿨어요. 이 컷을 그대로 쓰거나 ‘다시 뽑기’로 새로 만들 수 있어요.
+                  </small>
+                )}
                 <button type="button" className="primary" disabled={!enabled} onClick={() => onContinue('quick')}>
                   <Bot size={14} /> 이 느낌으로 빠른 제작
                 </button>
@@ -382,7 +390,13 @@ export default function StartHero({
                         {s.name}로
                       </button>
                     ))}
-                  <button type="button" className="chip" onClick={() => setFirstShot(null)}>
+                  <button
+                    type="button"
+                    className="chip"
+                    onClick={async () => {
+                      if (await ask({ title: '첫 컷을 버릴까요?', text: `${lama(firstShot.lama)}를 쓴 이미지예요. 버리면 이 화면에서 다시 볼 수 없어요.`, ok: '버리기', danger: true })) setFirstShot(null);
+                    }}
+                  >
                     <X size={12} /> 버리기
                   </button>
                 </div>

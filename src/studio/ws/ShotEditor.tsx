@@ -254,12 +254,17 @@ export default function ShotEditor({ ws, s, index, total, next, prev, go }: { ws
   // 협업: 다른 팀원이 먼저 고친 경우(409) — 최신 내용으로 바꾸거나 내 변경으로 덮어쓸 수 있게 알려요.
   const [conflict, setConflict] = useState(false);
   const after = useRef<'' | 'reset' | 'overwrite'>('');
+  const mine = useRef<Record<string, unknown>>({});
   const save = useAutosave(
     f,
     server,
     async (v, base) => {
       const r = await api<{ audioReset: boolean }>(`/studio/ai/shots/${s.id}`, 'PATCH', { ...changedFields(v, base), base_updated_at: s.updated_at ?? null }).catch((e) => {
-        if (e instanceof ApiError && e.code === 'edit_conflict') setConflict(true);
+        if (e instanceof ApiError && e.code === 'edit_conflict') {
+          // 덮어쓸 때는 내가 바꾼 칸만 보내요(팀원이 고친 다른 칸은 그대로 두도록).
+          mine.current = changedFields(v, base);
+          setConflict(true);
+        }
         // 고른 끝 장면 이미지를 쓸 수 없다는 오류일 때만 그 값을 되돌려 다른 수정은 계속 저장되게 해요.
         else if (v.end_image !== (s.end_image || '') && /이미지만 고를 수/.test((e as Error).message)) {
           setF((cur) => ({ ...cur, end_image: s.end_image || '' }));
@@ -281,8 +286,15 @@ export default function ShotEditor({ ws, s, index, total, next, prev, go }: { ws
     const mode = after.current;
     after.current = '';
     setConflict(false);
-    if (mode === 'reset') setF(serverRef.current);
-    else void save.flush();
+    if (mode === 'reset') {
+      setF(serverRef.current);
+      return;
+    }
+    // 내 변경: 최신 내용 위에 내가 바꾼 칸만 얹어요. 자동 저장이 새 기준(최신 내용 · 수정 시각)과 비교해
+    // 내가 바꾼 칸만 보내므로, 팀원이 고친 다른 칸은 되돌리지 않아요.
+    const changes = mine.current;
+    mine.current = {};
+    setF({ ...serverRef.current, ...changes } as typeof serverRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.updated_at]);
   const resolve = (mode: 'reset' | 'overwrite') => {

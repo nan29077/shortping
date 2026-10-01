@@ -75,13 +75,17 @@ const numeric = new Set(
     .map(([k]) => k),
 );
 let cache = null;
+let cachedAt = 0;
+// PostgreSQL(서버 여러 대)에서는 다른 서버가 바꾼 설정(구독료·수수료 등)이 30초 안에 반영되도록 캐시를 짧게 둡니다.
+const CACHE_MS = 30 * 1000;
 export async function loadSettings(db) {
-  if (cache) return cache;
+  if (cache && (db.engine !== 'postgresql' || Date.now() - cachedAt < CACHE_MS)) return cache;
   const rows = await db.all('SELECT key,value FROM platform_settings');
   const values = { ...settingDefaults };
   for (const row of rows)
     if (row.key in values) values[row.key] = numeric.has(row.key) ? Number(row.value) : row.value;
   cache = values;
+  cachedAt = Date.now();
   return values;
 }
 export async function saveSettings(db, patch, actorId) {

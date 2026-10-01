@@ -75,7 +75,8 @@ export function asset(url?: string | null): string {
   if (!url) return '';
   if (!API_ORIGIN || !url.startsWith('/') || url.startsWith('//')) return url;
   if (url.startsWith('/api/')) return API_ORIGIN + url + (mediaToken ? (url.includes('?') ? '&' : '?') + 'mt=' + encodeURIComponent(mediaToken) : '');
-  if (url.startsWith('/uploads/')) return API_ORIGIN + url;
+  // 스튜디오 비공개 결과물(/uploads)도 앱에서는 머리글을 못 붙이니 미디어 토큰을 함께 보냅니다(공개 파일은 서버가 무시).
+  if (url.startsWith('/uploads/')) return API_ORIGIN + url + (mediaToken ? '?mt=' + encodeURIComponent(mediaToken) : '');
   // /images, /avatars, /demo 처럼 앱에 함께 들어 있는 파일은 그대로
   return url;
 }

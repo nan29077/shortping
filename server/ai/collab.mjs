@@ -241,12 +241,17 @@ export function collabRoutes({ app, db, fail, now, roles, project, memberOf, set
       const p = await db.get('SELECT * FROM studio_projects WHERE id=?' + (db.engine === 'postgresql' ? ' FOR UPDATE' : ''), [i.project_id]);
       if (!p) fail(404, '프로젝트가 지워졌어요.');
       if (p.owner_id === req.user.id) return { project_id: p.id, already: true };
+      if ((await db.get('SELECT status FROM users WHERE id=?', [p.owner_id]))?.status !== 'active') fail(409, '프로젝트 소유자 계정을 지금 이용할 수 없어 참여할 수 없어요.');
       if (await db.get('SELECT 1 AS ok FROM studio_members WHERE project_id=? AND user_id=?', [p.id, req.user.id])) return { project_id: p.id, already: true };
       const problem = inviteProblem(i, req.user);
       if (problem) fail(409, problem);
+      // 소유자가 뺀 팀원은 빼기 전에 만든 초대(링크)로 다시 들어올 수 없어요. 새 초대는 괜찮아요.
+      const removed = await db.get('SELECT removed_at FROM studio_removed_members WHERE project_id=? AND user_id=?', [p.id, req.user.id]);
+      if (removed && String(i.created_at) <= String(removed.removed_at)) fail(409, '소유자가 팀에서 뺀 계정이에요. 다시 참여하려면 소유자에게 새 초대를 요청해 주세요.');
       if ((await memberCount(p.id)) >= (await maxMembers())) fail(409, `팀 인원(최대 ${await maxMembers()}명)이 다 찼어요.`);
       await db.run('INSERT INTO studio_members (project_id,user_id,role,pay_mode,sponsor_limit,invited_by,created_at) VALUES (?,?,?,?,?,?,?)', [p.id, req.user.id, i.role, i.pay_mode, i.sponsor_limit, i.created_by, now()]);
       await db.run('UPDATE studio_invites SET uses=uses+1 WHERE id=?', [i.id]);
+      await db.run('DELETE FROM studio_removed_members WHERE project_id=? AND user_id=?', [p.id, req.user.id]);
       await log(p.id, req.user.id, 'join', ROLE_NAME[i.role]);
       return { project_id: p.id, p, role: i.role };
     });
@@ -274,6 +279,15 @@ export function collabRoutes({ app, db, fail, now, roles, project, memberOf, set
     const m = await db.get('SELECT * FROM studio_members WHERE project_id=? AND user_id=?', [p.id, req.params.uid]);
     if (!m) fail(404, '팀원을 찾을 수 없어요.');
     await db.run('DELETE FROM studio_members WHERE project_id=? AND user_id=?', [p.id, m.user_id]);
+    // 소유자가 뺀 경우: 그 사람에게 보낸 이메일 초대는 닫고, 예전 링크로 다시 들어오지 못하게 기록해 둬요.
+    if (!self) {
+      const who = await db.get('SELECT email FROM users WHERE id=?', [m.user_id]);
+      if (who?.email) await db.run('UPDATE studio_invites SET active=0 WHERE project_id=? AND LOWER(email)=?', [p.id, String(who.email).toLowerCase()]);
+      await db.run(
+        'INSERT INTO studio_removed_members (project_id,user_id,removed_at) VALUES (?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET removed_at=excluded.removed_at',
+        [p.id, m.user_id, now()],
+      );
+    }
     presence.get(p.id)?.delete(m.user_id);
     const u = await db.get('SELECT name FROM users WHERE id=?', [m.user_id]);
     await log(p.id, req.user.id, self ? 'leave' : 'remove', u?.name || '');

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useConfirm } from './confirm';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Ban,
   Crown,
@@ -54,9 +55,11 @@ const tabs = [
 export default function AdminMembers({
   user,
   notify,
+  demo = true,
 }: {
   user: User;
   notify: (s: string) => void;
+  demo?: boolean;
 }) {
   const [members, setMembers] = useState<Member[] | null>(null),
     [error, setError] = useState(''),
@@ -67,6 +70,7 @@ export default function AdminMembers({
     [editing, setEditing] = useState<Member | null>(null),
     [note, setNote] = useState(''),
     [busy, setBusy] = useState(false);
+  const [ask, confirmUi] = useConfirm();
   const load = useCallback(async () => {
     try {
       const r = await api<{ members: Member[] }>('/admin/members');
@@ -79,9 +83,14 @@ export default function AdminMembers({
   useEffect(() => {
     void load();
   }, [load]);
+  const detailId = useRef('');
   const openDetail = async (id: string) => {
     try {
-      setDetail(await api<MemberDetail>('/admin/members/' + id));
+      const next = await api<MemberDetail>('/admin/members/' + id);
+      // 다른 회원을 열면 쓰던 운영 메모를 비워요(엉뚱한 회원에게 저장되지 않게).
+      if (detailId.current !== id) setNote('');
+      detailId.current = id;
+      setDetail(next);
     } catch (e) {
       notify((e as Error).message);
     }
@@ -129,6 +138,7 @@ export default function AdminMembers({
       : id === 'suspended'
         ? members.filter((m) => m.status !== 'active').length
         : members.filter((m) => m.role === id && m.status === 'active').length;
+  const original = editing ? members.find((m) => m.id === editing.id) : undefined;
   return (
     <>
       <div className="stats-grid">
@@ -161,7 +171,7 @@ export default function AdminMembers({
             <span>누적 결제</span>
           </div>
           <strong>{won(members.reduce((n, m) => n + m.spend, 0))}</strong>
-          <small>테스트 결제 합계</small>
+          <small>{demo ? '테스트 결제 합계' : '결제 합계'}</small>
         </div>
         <div className="stat-card">
           <div>
@@ -324,7 +334,8 @@ export default function AdminMembers({
               <Avatar user={detail.member} />
             </span>
             <div>
-              <h3>
+              {/* 창을 열면 맨 위(이름)부터 보이게 초점을 제목에 둬요(입력칸으로 가면 가운데로 스크롤되고 키보드가 떠요). */}
+              <h3 tabIndex={-1} data-autofocus="">
                 {detail.member.name}
                 <span className={'role-chip ' + detail.member.role}>
                   {roleLabel[detail.member.role]}
@@ -611,6 +622,7 @@ export default function AdminMembers({
 
       {editing && (
         <Modal title="회원 정보 관리" close={() => !busy && setEditing(null)}>
+          {confirmUi}
           <h3>{editing.name}</h3>
           <p className="muted">{editing.email}</p>
           <label>
@@ -649,20 +661,26 @@ export default function AdminMembers({
                 value={editing.status}
                 onChange={(e) => setEditing({ ...editing, status: e.target.value })}
               >
-                <option value="active">정상</option>
-                <option value="suspended">이용 제한</option>
-                <option value="withdrawn">탈퇴 처리</option>
+                <option value="active" disabled={original?.status === 'withdrawn'}>정상</option>
+                <option value="suspended" disabled={original?.status === 'withdrawn'}>이용 제한</option>
+                {/* 탈퇴는 회원 본인의 탈퇴 절차(출금 대기 확인 · 개인정보 정리)로만 해요. 탈퇴한 계정은 되살릴 수 없어요. */}
+                {original?.status === 'withdrawn' && <option value="withdrawn">탈퇴</option>}
               </select>
             </label>
           </div>
           <div className="info-box">
-            이용 제한 또는 탈퇴로 변경하면 모든 로그인 세션이 즉시 종료됩니다. 구매 내역과 정산
-            기록은 보존됩니다. 변경 이력은 운영 기록에 남습니다.
+            이용 제한으로 변경하면 모든 로그인 세션이 즉시 종료됩니다. 구매 내역과 정산 기록은
+            보존됩니다. 탈퇴는 회원 본인의 탈퇴 절차로만 할 수 있어요. 변경 이력은 운영 기록에 남습니다.
           </div>
           <button
             className="primary full"
             disabled={busy}
-            onClick={() =>
+            onClick={async () => {
+              // 슈퍼관리자로 올리기 · 이용 제한은 영향이 커서 한 번 더 물어요.
+              if (editing.role === 'admin' && original?.role !== 'admin' && !(await ask({ title: '슈퍼관리자로 바꿀까요?', text: `${editing.name}님이 모든 회원 · 정산 · 운영 설정을 바꿀 수 있게 돼요.`, ok: '슈퍼관리자로 변경', danger: true })))
+                return;
+              if (editing.status === 'suspended' && original?.status !== 'suspended' && !(await ask({ title: '이용을 제한할까요?', text: `${editing.name}님의 모든 로그인이 바로 끊기고 다시 로그인할 수 없어요.`, ok: '이용 제한', danger: true })))
+                return;
               void act(async () => {
                 await api('/admin/members/' + editing.id, 'PATCH', {
                   role: editing.role,
@@ -671,8 +689,8 @@ export default function AdminMembers({
                   phone: editing.phone || '',
                 });
                 setEditing(null);
-              }, '회원 정보를 변경했어요.')
-            }
+              }, '회원 정보를 변경했어요.');
+            }}
           >
             {busy ? '저장 중…' : '변경 저장'}
           </button>

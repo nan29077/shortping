@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -47,6 +47,7 @@ import {
   count,
   orderRevenue,
   won,
+  type AgeRating,
   type Drama,
   type HomeAppearance as Appearance,
   type Order,
@@ -119,6 +120,8 @@ const statusLabel: Record<string, string> = {
   rejected: '반려',
   hidden: '노출 중단',
 };
+// 상단 '새로고침'을 누르면 다시 그려서 목록을 새로 받는 화면(입력 중인 폼이 거의 없는 목록 화면만)
+const REFRESH_REMOUNT = new Set(['settlement', 'payouts', 'tax', 'members', 'channels', 'points', 'lama', 'lama-admin', 'storage', 'support']);
 const initialForm = {
   title: '',
   tagline: '',
@@ -131,6 +134,7 @@ const initialForm = {
   rights_confirmed: false,
   likeness_confirmed: false,
   ai_usage: 'none' as 'none' | 'partial' | 'full',
+  age_rating: '15' as AgeRating,
 };
 export default function Studio({
   user,
@@ -334,6 +338,7 @@ export default function Studio({
   useEffect(() => {
     void reload();
   }, [user.id, section]);
+  const [refreshTick, setRefreshTick] = useState(0);
   async function act(fn: () => Promise<unknown>, message: string) {
     setBusy(true);
     try {
@@ -460,7 +465,15 @@ export default function Studio({
           {groups.find((g) => g.items.some((t) => t.id === tab))?.name}
           <ChevronRight size={13} />
           {tabs.find((t) => t.id === tab)?.name}
-          <button disabled={busy} onClick={() => act(async () => {}, '최신 데이터를 불러왔어요.')}>
+          <button
+            disabled={busy}
+            onClick={() =>
+              act(async () => {
+                // 각 화면이 따로 불러오는 목록(정산 · 회원 · 핑 등)도 다시 불러오도록 화면을 새로 그려요.
+                if (REFRESH_REMOUNT.has(tab)) setRefreshTick((n) => n + 1);
+              }, '최신 데이터를 불러왔어요.')
+            }
+          >
             <RefreshCw size={15} />
             새로고침
           </button>
@@ -499,13 +512,13 @@ export default function Studio({
                 icon={<Eye size={18} />}
                 label="콘텐츠 조회"
                 value={count(data.dramas.reduce((n, d) => n + d.views, 0))}
-                detail="데모 초기 데이터 포함"
+                detail={demo ? '데모 초기 데이터 포함' : '누적 조회'}
               />
               <Stat
                 icon={<Wallet size={18} />}
-                label={admin ? '테스트 결제액' : '테스트 판매액'}
+                label={demo ? (admin ? '테스트 결제액' : '테스트 판매액') : admin ? '결제액' : '판매액'}
                 value={won(revenue)}
-                detail="실제 청구 금액 아님"
+                detail={demo ? '실제 청구 금액 아님' : '누적 합계'}
               />
               <Stat
                 icon={<Clock3 size={18} />}
@@ -514,7 +527,7 @@ export default function Studio({
                 detail={`새 작품 ${pending.length}편 · 추가 회차 ${pendingEpisodes}화`}
               />
             </div>
-            <StudioInsights data={data} admin={admin} />
+            <StudioInsights data={data} admin={admin} demo={demo} />
             {!admin && <StudioOverviewCard go={() => setTab('ai')} />}
             <div className="studio-callout">
               <Clapperboard size={30} />
@@ -713,6 +726,7 @@ export default function Studio({
             ) && <Empty title="해당 상태의 작품이 없어요" text="새로운 작품을 등록해 보세요." />}
           </>
         )}
+        <Fragment key={REFRESH_REMOUNT.has(tab) ? 'r' + refreshTick : 'stable'}>
         {tab === 'channel' && !admin && (
           <ChannelStudio user={user} notify={notify} reloadChannels={reloadChannels} />
         )}
@@ -734,7 +748,7 @@ export default function Studio({
           ) : (
             <Settlement user={user} section="tax" notify={notify} />
           ))}
-        {tab === 'members' && admin && <AdminMembers user={user} notify={notify} />}
+        {tab === 'members' && admin && <AdminMembers user={user} notify={notify} demo={demo} />}
         {tab === 'channels' && admin && (
           <AdminChannelsPanel notify={notify} reloadChannels={reloadChannels} />
         )}
@@ -762,10 +776,10 @@ export default function Studio({
         {tab === 'ai-admin' && admin && <AdminAiPanel notify={notify} />}
         {tab === 'lama-admin' && admin && <AdminLamaPanel notify={notify} />}
         {tab === 'storage' && admin && <AdminStorage notify={notify} />}
-        {tab === 'orders' && <StudioOrders orders={data.orders} admin={admin} />}
+        {tab === 'orders' && <StudioOrders orders={data.orders} admin={admin} demo={demo} />}
         {tab === 'support' && admin && <Support user={user} managing notify={notify} />}
         {tab === 'subscriptions' && admin && (
-          <StudioSubscriptions subscriptions={data.subscriptions} />
+          <StudioSubscriptions subscriptions={data.subscriptions} demo={demo} />
         )}
         {tab === 'audit' && admin && (
           <StudioAudit logs={data.logs} dramas={data.dramas} users={data.users} />
@@ -788,6 +802,7 @@ export default function Studio({
             onWithdrawn={() => void logout()}
           />
         )}
+        </Fragment>
         {chooser && (
           <Modal title="새 작품 만들기" close={() => setChooser(false)}>
             <p className="muted">어떤 방법으로 만들든 같은 심사 절차를 거쳐 공개돼요.</p>
@@ -925,6 +940,7 @@ function DramaEditor({
             rights_confirmed: Number(drama.rights_confirmed) === 1,
             likeness_confirmed: Number(drama.likeness_confirmed) === 1,
             ai_usage: drama.ai_usage || 'none',
+            age_rating: (drama.age_rating || '15') as AgeRating,
           },
     ),
     [busy, setBusy] = useState(false),
@@ -1098,6 +1114,15 @@ function DramaEditor({
               onChange={(e) => setF({ ...f, likeness_confirmed: e.target.checked })}
             />
             <span>출연자가 있다면 얼굴·목소리 사용에 대한 동의를 받았습니다. (출연자 없음 포함)</span>
+          </label>
+          <label>
+            관람 등급
+            <select value={f.age_rating} onChange={(e) => setF({ ...f, age_rating: e.target.value as AgeRating })}>
+              <option value="all">전체 관람가</option>
+              <option value="12">12세 이상</option>
+              <option value="15">15세 이상</option>
+              <option value="19">청소년 관람불가(19세)</option>
+            </select>
           </label>
           <label>
             생성형 AI 사용

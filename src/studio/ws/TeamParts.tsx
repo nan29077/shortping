@@ -712,6 +712,8 @@ export function JoinInvite({ token, notify, done }: { token: string; notify: (s:
   const [data, setData] = useState<InvitePreview | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // 비공개 포스터는 팀에 들어오기 전에는 받을 수 없을 수 있어요. 그때는 빈 포스터 자리로 보여요.
+  const [posterFailed, setPosterFailed] = useState(false);
   useEffect(() => {
     api<InvitePreview>('/studio/ai/invites/' + encodeURIComponent(token))
       .then(setData)
@@ -738,7 +740,7 @@ export function JoinInvite({ token, notify, done }: { token: string; notify: (s:
     <section className="management-panel team-join">
       <span className="eyebrow">숏핑 스튜디오 · 함께 만들기</span>
       <div className="team-join-card">
-        {p.poster ? <img src={asset(p.poster)} alt="" /> : <span className="team-join-poster" aria-hidden="true" />}
+        {p.poster && !posterFailed ? <img src={asset(p.poster)} alt="" onError={() => setPosterFailed(true)} /> : <span className="team-join-poster" aria-hidden="true" />}
         <div>
           <h3>{p.title}</h3>
           <p>

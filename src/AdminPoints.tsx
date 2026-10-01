@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useConfirm } from './confirm';
 import {
   Calculator,
   Coins,
@@ -262,11 +263,13 @@ function Ledger({ rows }: { rows: AdminPings['ledger'] }) {
 function Products({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run }) {
   const [channel, setChannel] = useState<PingProduct['channel']>('web'),
     [editing, setEditing] = useState<(typeof emptyProduct & { id?: string }) | null>(null);
+  const [ask, confirmUi] = useConfirm();
   const list = data.products.filter((p) => p.channel === channel);
   const fee = data.channels.find((c) => c.id === channel)?.fee_rate ?? 0;
   const unit = data.settings.ping_unit_won;
   return (
     <section className="management-panel">
+      {confirmUi}
       <div className="panel-heading">
         <div>
           <h3>충전 상품</h3>
@@ -360,12 +363,21 @@ function Products({ data, busy, run }: { data: AdminPings; busy: boolean; run: R
                         className="secondary compact"
                         aria-label={p.name + ' 삭제'}
                         disabled={busy}
-                        onClick={() =>
+                        onClick={async () => {
+                          if (
+                            !(await ask({
+                              title: `${p.name} 상품을 정리할까요?`,
+                              text: n(p.sold) ? '판매 이력이 있어 삭제하지 않고 판매 중지로 바꿔요.' : '이 충전 상품을 삭제해요.',
+                              ok: n(p.sold) ? '판매 중지' : '삭제',
+                              danger: true,
+                            }))
+                          )
+                            return;
                           void run(
                             () => api('/admin/pings/products/' + p.id, 'DELETE'),
                             n(p.sold) ? '판매 이력이 있어 판매 중지로 바꿨어요.' : '상품을 삭제했어요.',
-                          )
-                        }
+                          );
+                        }}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -734,8 +746,10 @@ function Adjust({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
     .filter((m) => `${m.name} ${m.email}`.toLowerCase().includes(query.toLowerCase()))
     .slice(0, 8);
   const target = members.find((m) => m.id === form.userId);
+  const [ask, confirmUi] = useConfirm();
   return (
     <>
+      {confirmUi}
       <section className="management-panel">
         <div className="panel-heading">
           <div>
@@ -750,6 +764,8 @@ function Adjust({ data, busy, run }: { data: AdminPings; busy: boolean; run: Run
           onSubmit={async (e) => {
             e.preventDefault();
             if (!target) return;
+            if (form.action !== 'grant' && !(await ask({ title: '핑을 회수할까요?', text: `${target.name}님의 핑 ${pings(form.pings)}을 회수해요(보너스 핑부터). 되돌리려면 다시 지급해야 해요.`, ok: '회수', danger: true })))
+              return;
             const ok = await run(
               () => api('/admin/pings/adjust', 'POST', form),
               `${target.name}님에게 ${pings(form.pings)}을 ${form.action === 'grant' ? '지급' : '회수'}했어요.`,

@@ -1,5 +1,5 @@
 import { ReviewBar } from './TeamParts';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, History, ListChecks, Plus, RotateCcw, Sparkles, Stethoscope, Trash2, Wand2, X } from 'lucide-react';
 import { api, ApiError, parseJson, type StudioEpisode, type StudioShot, type StudioVersion } from '../../api';
 import { Empty, Modal } from '../../App';
@@ -260,25 +260,53 @@ function ShotLine({
   const canEdit = ws.can(['script', 'scene']);
   const server = shotBase(s);
   const [f, setF] = useSyncedForm(server);
+  // 협업: 다른 사람이 먼저 고친 컷이면 서버가 409로 알려 줘요. 내 입력을 바로 버리지 않고, 컷 에디터와 같이
+  // '최신 내용 불러오기 / 내 변경으로 덮어쓰기' 중에서 고르게 해요(2026-10-01 점검).
+  const [conflict, setConflict] = useState(false);
+  const after = useRef<'' | 'reset' | 'overwrite'>('');
+  const mine = useRef<Record<string, unknown>>({});
   const save = useAutosave(
     f,
     server,
     async (v, base) => {
-      // 협업: 다른 사람이 먼저 고친 컷이면 서버가 409로 알려 줘요. 최신 내용을 불러와 다시 고치게 해요.
       const r = await api<{ audioReset: boolean }>(`/studio/ai/shots/${s.id}`, 'PATCH', { ...changedFields(v, base), base_updated_at: s.updated_at ?? null }).catch((e) => {
         if (e instanceof ApiError && e.code === 'edit_conflict') {
-          ws.notify(`${index + 1}번 컷: ${e.message}`);
-          setF(server);
-          void ws.load();
+          // 덮어쓸 때는 내가 바꾼 칸만 보내요(팀원이 고친 다른 칸은 그대로 두도록).
+          mine.current = changedFields(v, base);
+          setConflict(true);
         }
         throw e;
       });
+      setConflict(false);
       if (r.audioReset && (s.audio || s.lipsync)) ws.notify(`${index + 1}번 컷 대사가 바뀌어 음성을 다시 만들어야 해요.`);
       // 저장한 내용을 다시 불러와 다른 탭(장면)에서도 최신 값으로 보여요.
       void ws.load();
     },
     { delay: 1200, enabled: f.seconds >= 2 && f.seconds <= 10 },
   );
+  // 최신 내용을 불러온 뒤(수정 시각이 바뀐 뒤) 고른 처리를 이어서 해요.
+  const serverRef = useRef(server);
+  serverRef.current = server;
+  useEffect(() => {
+    if (!after.current) return;
+    const mode = after.current;
+    after.current = '';
+    setConflict(false);
+    if (mode === 'reset') {
+      setF(serverRef.current);
+      return;
+    }
+    // 내 변경: 최신 내용 위에 내가 바꾼 칸만 얹어요. 자동 저장이 새 기준(최신 내용 · 수정 시각)과 비교해
+    // 내가 바꾼 칸만 보내므로, 팀원이 고친 다른 칸은 되돌리지 않아요.
+    const changes = mine.current;
+    mine.current = {};
+    setF({ ...serverRef.current, ...changes } as typeof serverRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.updated_at]);
+  const resolveConflict = (mode: 'reset' | 'overwrite') => {
+    after.current = mode;
+    void ws.load();
+  };
   const [ask, setAsk] = useState<string | null>(null);
   useEffect(() => {
     if (rewriteText !== undefined) {
@@ -293,7 +321,18 @@ function ShotLine({
   };
   const remove = async () => {
     const has = s.image || s.audio || s.video;
-    if (has && !(await ws.ask({ title: `${index + 1}번 컷 지우기`, text: '이 컷의 이미지 · 음성 · 영상도 함께 빠져요. 대본 버전 기록에서 되돌릴 수 있어요.', ok: '지우기', danger: true }))) return;
+    const filled = has || String(s.dialogue || '').trim() || String(s.visual || '').trim();
+    // 내용이 있는 컷은 항상 한 번 더 물어요. 지우기 전 대본은 버전 기록에 남아 되돌릴 수 있어요.
+    if (
+      filled &&
+      !(await ws.ask({
+        title: `${index + 1}번 컷 지우기`,
+        text: `${has ? '이 컷의 이미지 · 음성 · 영상도 함께 빠져요. ' : ''}지우기 전 대본은 버전 기록에 남아 되돌릴 수 있어요.`,
+        ok: '지우기',
+        danger: true,
+      }))
+    )
+      return;
     await ws.act(() => api(`/studio/ai/shots/${s.id}`, 'DELETE'), '컷을 지웠어요.');
   };
   const busyRewrite = isBusy(data.jobs, s.id, 'rewrite_shot');
@@ -402,6 +441,17 @@ function ShotLine({
             </div>
           </form>
         )}
+        {conflict && (
+          <div className="ws-conflict" role="alert">
+            <span>다른 팀원이 이 컷을 먼저 고쳤어요. 어떻게 할까요?</span>
+            <button type="button" className="secondary compact" onClick={() => resolveConflict('reset')}>
+              최신 내용 불러오기(내 변경 버림)
+            </button>
+            <button type="button" className="secondary compact" onClick={() => resolveConflict('overwrite')}>
+              내 변경으로 덮어쓰기
+            </button>
+          </div>
+        )}
       </div>
     </li>
   );
@@ -430,7 +480,7 @@ function VersionsModal({ ws, e, close }: { ws: WS; e: StudioEpisode; close: () =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, e.id]);
   const name = (id?: string | null) => ws.data.characters.find((c) => c.id === id)?.name || '';
-  const sourceName: Record<string, string> = { before_ai: 'AI 수정 전', before_restore: '되돌리기 전', manual: '직접 저장', variant: 'AI 변형', before_import: '대본 붙여 넣기 전', before_bridge: '사이 컷 넣기 전' };
+  const sourceName: Record<string, string> = { before_ai: 'AI 수정 전', before_restore: '되돌리기 전', manual: '직접 저장', variant: 'AI 변형', before_import: '대본 붙여 넣기 전', before_bridge: '사이 컷 넣기 전', before_delete: '컷 지우기 전' };
   return (
     <Modal title={`${e.number}화 대본 버전 기록`} close={close} className="wide">
       {!list ? (

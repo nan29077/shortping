@@ -107,6 +107,9 @@
   color: #ff9d9d;
 }
 .mode-pill {
+  /* 좁은 화면에서 '자/동'으로 세로로 깨지지 않게(2026-10-01) */
+  white-space: nowrap;
+  flex-shrink: 0;
   display: inline-block;
   padding: 1px 7px;
   border-radius: 999px;

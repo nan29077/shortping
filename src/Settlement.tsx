@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Banknote,
@@ -212,15 +212,19 @@ export default function Settlement({
     [busy, setBusy] = useState(false),
     [form, setForm] = useState<TaxProfile | null>(null),
     [confirming, setConfirming] = useState(false);
+  // 달을 빠르게 넘길 때 늦게 도착한 이전 달 응답이 지금 달 화면을 덮지 않도록 마지막 요청만 반영해요.
+  const latest = useRef(0);
   const load = useCallback(async (resetForm = false) => {
+    const ticket = ++latest.current;
     try {
       const r = await api<StudioSettlement>('/studio/settlement?month=' + month);
+      if (ticket !== latest.current) return;
       setData(r);
       // 계좌·세무 입력 중에는 달을 바꿔도 입력한 값을 지우지 않습니다(저장 직후에만 서버 값으로 맞춤).
       setForm((prev) => (resetForm || !prev ? r.profile : prev));
       setError('');
     } catch (e) {
-      setError((e as Error).message);
+      if (ticket === latest.current) setError((e as Error).message);
     }
   }, [month]);
   useEffect(() => {

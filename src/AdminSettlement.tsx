@@ -28,6 +28,7 @@ import {
   type Payout,
 } from './api';
 import { Empty, Modal, navigate } from './App';
+import { useConfirm } from './confirm';
 import { downloadCsv } from './StudioPanels';
 import { entryStatus, payoutStatus } from './Settlement';
 import { RevealAccount } from './AdminOps';
@@ -55,6 +56,7 @@ export function AdminSettlementPanel({
     [payout, setPayout] = useState<Payout | null>(null),
     [memo, setMemo] = useState(''),
     [filter, setFilter] = useState('requested');
+  const [ask, confirmUi] = useConfirm();
   const load = useCallback(async (key: string) => {
     try {
       setData(await api<AdminSettlementData>('/admin/settlements' + (key ? '?month=' + key : '')));
@@ -66,12 +68,13 @@ export function AdminSettlementPanel({
   useEffect(() => {
     void load(month);
   }, [load, month]);
+  // fn이 문구를 돌려주면 그 문구로 알려요(예: 월 마감 배분 결과).
   async function act(fn: () => Promise<unknown>, message: string) {
     setBusy(true);
     try {
-      await fn();
+      const result = await fn();
       await load(month);
-      notify(message);
+      notify(typeof result === 'string' && result ? result : message);
     } catch (e) {
       notify((e as Error).message);
     } finally {
@@ -91,6 +94,7 @@ export function AdminSettlementPanel({
     const payouts = data.payouts.filter((p) => filter === 'all' || p.status === filter);
     return (
       <>
+        {confirmUi}
         <div className="stats-grid two">
           <div className="stat-card">
             <div>
@@ -289,28 +293,47 @@ export function AdminSettlementPanel({
                 <>
                   <button
                     className="secondary"
-                    disabled={busy}
-                    onClick={() =>
+                    disabled={busy || !memo.trim()}
+                    title={memo.trim() ? undefined : '반려 사유를 처리 메모에 적어 주세요.'}
+                    onClick={async () => {
+                      if (
+                        !(await ask({
+                          title: '출금을 반려할까요?',
+                          text: `${payout.pd_name || 'PD'}님의 출금 ${won(payout.payable)}을 반려해요. 정산 금액은 출금 가능으로 돌아가요.`,
+                          ok: '반려',
+                          danger: true,
+                        }))
+                      )
+                        return;
                       void act(async () => {
                         await api('/admin/payouts/' + payout.id, 'POST', {
                           action: 'rejected',
                           memo,
                         });
                         setPayout(null);
-                      }, '출금을 반려했어요. 정산 금액이 복구됩니다.')
-                    }
+                      }, '출금을 반려했어요. 정산 금액이 복구됩니다.');
+                    }}
                   >
                     반려
                   </button>
                   <button
                     className="primary"
                     disabled={busy}
-                    onClick={() =>
+                    onClick={async () => {
+                      if (
+                        !(await ask({
+                          title: '지급 완료로 처리할까요?',
+                          text: `${payout.pd_name || 'PD'}님(${payout.bank_name} · 예금주 ${payout.account_holder})에게 실지급액 ${won(payout.payable)} 이체를 마친 뒤에 눌러 주세요. 지급 완료는 되돌릴 수 없어요.`,
+                          ok: '지급 완료',
+                          danger: true,
+                        }))
+                      )
+                        return;
                       void act(async () => {
                         await api('/admin/payouts/' + payout.id, 'POST', { action: 'paid', memo });
                         setPayout(null);
-                      }, '지급 완료로 처리했어요.')
-                    }
+                      }, '지급 완료로 처리했어요.');
+                    }}
                   >
                     지급 완료
                   </button>
@@ -325,6 +348,7 @@ export function AdminSettlementPanel({
 
   return (
     <>
+      {confirmUi}
       <div className="stats-grid">
         <div className="stat-card">
           <div>
@@ -364,8 +388,8 @@ export function AdminSettlementPanel({
           <div>
             <h3>구독 매출 월 마감</h3>
             <p>
-              숏핑 패스 매출을 해당 월 시청 회차 비중으로 PD에게 배분합니다. 같은 달을 다시 마감해도
-              중복 정산되지 않습니다.
+              숏핑 패스 매출을 해당 월 시청 회차 비중으로 PD에게 배분합니다. 한 달은 한 번만 마감할 수
+              있으니 배분 제외·가중치 설정을 먼저 확인해 주세요.
             </p>
           </div>
         </div>
@@ -380,20 +404,28 @@ export function AdminSettlementPanel({
           <button
             className="primary compact"
             disabled={busy}
-            onClick={() =>
+            onClick={async () => {
+              if (!closing) return;
+              if (
+                !(await ask({
+                  title: `${closing} 구독 정산을 마감할까요?`,
+                  text: '시청 회차 비중으로 PD에게 배분하고 정산 항목을 만들어요. 한 번 마감한 달은 다시 마감할 수 없어요.',
+                  ok: '월 마감 실행',
+                  danger: true,
+                }))
+              )
+                return;
               void act(async () => {
-                const r = await api<{ pool: number; shares: unknown[] }>(
+                const r = await api<{ pool: number; shares: unknown[]; reason?: string }>(
                   '/admin/settlements/close',
                   'POST',
                   { period: closing },
                 );
-                notify(
-                  r.shares.length
-                    ? `${closing} 구독 매출 ${won(r.pool)}을 ${r.shares.length}개 방송국에 배분했어요.`
-                    : `${closing}에는 배분할 구독 매출이 없어요.`,
-                );
-              }, '구독 정산을 마감했어요.')
-            }
+                return r.shares.length
+                  ? `${closing} 구독 매출 ${won(r.pool)}을 ${r.shares.length}개 방송국에 배분했어요.`
+                  : `${closing} 마감 완료 — 배분 없음${r.reason ? `(${r.reason})` : ''}.`;
+              }, '구독 정산을 마감했어요.');
+            }}
           >
             <RefreshCw size={15} />월 마감 실행
           </button>
@@ -1117,8 +1149,8 @@ export function AdminPricingPanel({
             </label>
           </div>
           <div className="info-box">
-            가격을 0원으로 설정하면 모든 회차가 무료로 공개됩니다. 회차 구매 가격을 0원으로 두면
-            요금 정책의 기본 회차 가격이 적용됩니다. 이미 구매한 시청자의 권한은 유지됩니다.
+            ‘전 회차 무료’를 켜면 모든 회차를 무료로 공개해요. 회차 가격을 0핑으로 두면 요금 정책의 기본
+            회차 가격이 적용돼요. 노출을 중단해도 이미 핑으로 연 회차는 그 시청자가 계속 볼 수 있어요.
           </div>
           <button
             className="primary full"

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { createHash, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { hashPassword } from './seed.mjs';
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { hashPasswordAsync, scryptAsync } from './seed.mjs';
 import { loadSettings } from './settings.mjs';
 import { walletOf } from './pings.mjs';
 import { lamaWalletOf } from './lama.mjs';
@@ -59,11 +59,11 @@ export function accountRoutes({
       targetId,
       now(),
     ]);
-  const passwordMatches = (stored, password) => {
+  const passwordMatches = async (stored, password) => {
     const [salt, hash] = String(stored || '').split(':');
     if (!salt || !hash) return false;
     const want = Buffer.from(hash, 'hex');
-    const got = scryptSync(password, salt, 64);
+    const got = await scryptAsync(password, salt, 64);
     return want.length === got.length && timingSafeEqual(want, got);
   };
 
@@ -113,6 +113,7 @@ export function accountRoutes({
       })
       .parse(req.body);
     const expired = '재설정 링크가 만료되었거나 이미 사용되었어요. 비밀번호 찾기를 다시 요청해 주세요.';
+    const passwordHash = await hashPasswordAsync(b.password);
     await db.transaction(async () => {
       const row = await db.get('SELECT * FROM password_resets WHERE token_hash=?', [sha256(b.token)]);
       if (!row || row.used_at || row.expires_at <= now()) fail(400, expired);
@@ -122,7 +123,7 @@ export function accountRoutes({
         fail(400, expired);
       const user = await db.get('SELECT id,status FROM users WHERE id=?', [row.user_id]);
       if (!user || user.status !== 'active') fail(400, expired);
-      await db.run('UPDATE users SET password=? WHERE id=?', [hashPassword(b.password), user.id]);
+      await db.run('UPDATE users SET password=? WHERE id=?', [passwordHash, user.id]);
       // 다른 재설정 링크와 모든 로그인(이 기기 포함)을 끊습니다.
       await db.run('UPDATE password_resets SET used_at=? WHERE user_id=? AND used_at IS NULL', [now(), user.id]);
       await db.run('DELETE FROM sessions WHERE user_id=?', [user.id]);
@@ -138,7 +139,7 @@ export function accountRoutes({
     if (!phone) fail(400, '휴대폰 번호를 확인해 주세요. 예) 010-1234-5678');
     if (!(await channelReady(db, 'sms'))) fail(503, disabledMessage('sms'));
     const taken = await db.get(
-      "SELECT id FROM users WHERE phone=? AND phone_verified_at IS NOT NULL AND id<>? AND status='active'",
+      "SELECT id FROM users WHERE phone=? AND phone_verified_at IS NOT NULL AND id<>? AND status<>'withdrawn'",
       [phone, req.user.id],
     );
     if (taken) fail(409, '이미 다른 계정에서 인증한 번호예요.');
@@ -196,6 +197,10 @@ export function accountRoutes({
     }
     const stamp = now();
     await db.transaction(async () => {
+      // 인증 확정 순간에도 다시 확인해요(두 계정이 같은 번호로 동시에 인증하지 못하게). 이용 제한 계정도 번호를 쥐고 있어요.
+      if (db.engine === 'postgresql') await db.get('SELECT pg_advisory_xact_lock(hashtext(?)) AS locked', ['phone:' + phone]);
+      if (await db.get("SELECT id FROM users WHERE phone=? AND phone_verified_at IS NOT NULL AND id<>? AND status<>'withdrawn'", [phone, req.user.id]))
+        fail(409, '이미 다른 계정에서 인증한 번호예요.');
       if (!changedRows(await db.run('UPDATE phone_verifications SET verified_at=? WHERE id=? AND verified_at IS NULL', [stamp, row.id])))
         fail(409, '이미 확인한 인증번호예요.');
       await db.run('UPDATE users SET phone=?, phone_verified_at=? WHERE id=?', [phone, stamp, req.user.id]);
@@ -244,7 +249,7 @@ export function accountRoutes({
       })
       .parse(req.body);
     if (req.user.id.startsWith('demo-')) fail(400, '공용 테스트 계정은 탈퇴할 수 없어요.');
-    if (!passwordMatches(req.user.password, b.password)) fail(400, '비밀번호가 일치하지 않아요.');
+    if (!(await passwordMatches(req.user.password, b.password))) fail(400, '비밀번호가 일치하지 않아요.');
     await db.transaction(async () => {
       await db.lockUser(req.user.id);
       const user = await db.get('SELECT * FROM users WHERE id=?', [req.user.id]);
@@ -278,6 +283,9 @@ export function accountRoutes({
       // PD였다면 방송국과 공개 작품을 시청자 화면에서 내립니다(작품·정산 기록은 남김).
       await db.run("UPDATE channels SET status='hidden', admin_hidden=1 WHERE owner_id=?", [user.id]);
       await db.run("UPDATE dramas SET status='hidden' WHERE owner_id=? AND status='published'", [user.id]);
+      // 숏핑 스튜디오 협업: 내 프로젝트의 팀원과 초대를 정리하고, 다른 사람 팀에서도 빠집니다.
+      await db.run('DELETE FROM studio_members WHERE user_id=? OR project_id IN (SELECT id FROM studio_projects WHERE owner_id=?)', [user.id, user.id]);
+      await db.run('UPDATE studio_invites SET active=0 WHERE project_id IN (SELECT id FROM studio_projects WHERE owner_id=?)', [user.id]);
       await audit(user.id, 'user:withdrawn', user.id);
       if (b.reason)
         await db.run('INSERT INTO member_notes (id,user_id,actor_id,note,created_at) VALUES (?,?,?,?,?)', [

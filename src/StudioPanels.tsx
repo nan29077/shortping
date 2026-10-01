@@ -42,7 +42,7 @@ export function downloadCsv(name: string, rows: (string | number)[][]) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function StudioInsights({ data, admin = false }: { data: StudioData; admin?: boolean }) {
+export function StudioInsights({ data, admin = false, demo = true }: { data: StudioData; admin?: boolean; demo?: boolean }) {
   const days = Array.from({ length: 7 }, (_, i) => {
     const day = new Date();
     day.setDate(day.getDate() - 6 + i);
@@ -74,7 +74,7 @@ export function StudioInsights({ data, admin = false }: { data: StudioData; admi
           <div className="panel-heading">
             <div>
               <span className="eyebrow">LAST 7 DAYS</span>
-              <h3>최근 7일 테스트 매출</h3>
+              <h3>최근 7일 {demo ? '테스트 ' : ''}매출</h3>
             </div>
             <strong className="lime">{won(days.reduce((n, d) => n + d.amount, 0))}</strong>
           </div>
@@ -93,7 +93,7 @@ export function StudioInsights({ data, admin = false }: { data: StudioData; admi
               </div>
             ))}
           </div>
-          <p className="panel-footnote">실제 청구되지 않은 테스트 결제 · 브라우저 현지 날짜 기준</p>
+          <p className="panel-footnote">{demo ? '실제 청구되지 않은 테스트 결제 · ' : ''}브라우저 현지 날짜 기준</p>
         </section>
         <section className="management-panel">
           <div className="panel-heading">
@@ -128,7 +128,7 @@ export function StudioInsights({ data, admin = false }: { data: StudioData; admi
   );
 }
 
-export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin?: boolean }) {
+export function StudioOrders({ orders, admin = false, demo = true }: { orders: Order[]; admin?: boolean; demo?: boolean }) {
   const [query, setQuery] = useState(''),
     [kind, setKind] = useState('all'),
     [from, setFrom] = useState(''),
@@ -277,7 +277,7 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
                       )}
                     </td>
                     <td>
-                      <span className="status-chip">테스트 완료</span>
+                      <span className="status-chip">{demo ? '테스트 완료' : '완료'}</span>
                     </td>
                   </tr>
                 ))}
@@ -299,7 +299,7 @@ export function StudioOrders({ orders, admin = false }: { orders: Order[]; admin
       ) : (
         <Empty
           title="해당 주문이 없어요"
-          text="검색 조건을 변경하거나 시청자 계정으로 테스트 구매를 진행하세요."
+          text={demo ? '검색 조건을 변경하거나 시청자 계정으로 테스트 구매를 진행하세요.' : '검색 조건을 변경해 보세요.'}
         />
       )}
       <p className="panel-footnote">
@@ -322,6 +322,9 @@ export const actionLabel = (action: string) => {
     'payout:lama': '정산 수익 라마 전환',
     'user:sessions-cleared': '회원 강제 로그아웃',
     'home-appearance:updated': '홈 화면 꾸미기 변경',
+    // 개인정보(계좌) 열람은 감사 목적이 분명히 보이도록 따로 표시해요.
+    'payout:account-revealed': '출금 계좌 전체 열람',
+    'tax:account-revealed': '세무 계좌 전체 열람',
   };
   if (exact[action]) return exact[action];
   const prefix: [string, string][] = [
@@ -338,6 +341,9 @@ export const actionLabel = (action: string) => {
     ['channel:', '방송국 노출 설정'],
     ['drama:pricing', '작품 판매 설정 변경'],
     ['ai', 'AI 운영 설정 변경'],
+    ['home-layout:', '메인페이지 배치 변경'],
+    ['messaging:', '메일 · 문자 발송 설정 변경'],
+    ['sub-override:', '구독 배분 개별 설정 변경'],
   ];
   return prefix.find(([p]) => action.startsWith(p))?.[1] || action;
 };
@@ -404,8 +410,10 @@ export function StudioAudit({
 
 export function StudioSubscriptions({
   subscriptions,
+  demo = true,
 }: {
   subscriptions: StudioData['subscriptions'];
+  demo?: boolean;
 }) {
   const [query, setQuery] = useState(''),
     [state, setState] = useState('all');
@@ -477,12 +485,13 @@ export function StudioSubscriptions({
       ) : (
         <Empty
           title="해당 구독 내역이 없어요"
-          text="테스트 구독을 구매하면 이용 현황이 표시됩니다."
+          text={demo ? '테스트 구독을 구매하면 이용 현황이 표시됩니다.' : '구독한 회원이 생기면 이용 현황이 표시됩니다.'}
         />
       )}
       <p className="panel-footnote">
-        현재 테스트 패스는 자동 결제되지 않습니다. 회원은 마이페이지에서 테스트 구독을 종료할 수
-        있습니다.
+        {demo
+          ? '현재 테스트 패스는 자동 결제되지 않습니다. 회원은 마이페이지에서 테스트 구독을 종료할 수 있습니다.'
+          : '회원은 마이페이지에서 구독을 해지할 수 있고, 결제한 기간이 끝날 때까지 이용할 수 있습니다.'}
       </p>
     </section>
   );

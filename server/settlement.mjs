@@ -253,11 +253,17 @@ export async function subscriptionPlan(db, period, pool, settings) {
   };
 }
 // Subscription revenue is shared monthly in proportion to episodes watched, the same
-// pooled model streaming services use. Closing a period twice changes nothing.
-export async function closeSubscriptionPeriod(db, period, settings, actorId) {
+// pooled model streaming services use. A period can be closed only once (409 afterwards).
+export async function closeSubscriptionPeriod(db, period, settings, actorId, precheck) {
   const [, end] = periodRange(period);
   if (new Date(end).getTime() > Date.now())
     throw error(400, '아직 종료되지 않은 월은 마감할 수 없습니다.');
+  // 동시에 두 번 눌러도 한 번만 마감되도록 직렬화합니다(SQLite는 트랜잭션이 이미 한 줄로 실행).
+  if (db.engine === 'postgresql') await db.get('SELECT pg_advisory_xact_lock(7302001) AS locked');
+  // 이미 마감한 달을 다시 마감하면 배분을 새로 계산해 새 PD 몫만 더해지므로(합계가 풀을 넘음) 막습니다.
+  if (await db.get("SELECT 1 AS done FROM audit_logs WHERE action='settlement:closed' AND target_id=?", [period]))
+    throw error(409, `${period} 구독 정산은 이미 마감했어요. 같은 달은 다시 마감할 수 없어요.`);
+  if (precheck) await precheck();
   const pool = await subscriptionPool(db, period);
   const plan = await subscriptionPlan(db, period, pool, settings);
   const stamp = iso();

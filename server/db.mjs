@@ -12,6 +12,9 @@ pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 export async function openDb() {
   if (process.env.DATABASE_URL) {
     const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    // 쉬고 있던 연결이 서버 쪽에서 끊기면(RDS 장애 전환·점검 등) Pool이 'error'를 냅니다.
+    // 받아 주는 곳이 없으면 Node 프로세스가 통째로 죽으므로 기록만 하고 넘어갑니다(다음 요청은 새 연결).
+    pool.on('error', (e) => console.error('[pg] idle client error:', e?.message || e));
     const context = new AsyncLocalStorage();
     const query = async (sql, values = []) => {
       let i = 0;
@@ -22,14 +25,35 @@ export async function openDb() {
     };
     const transaction = async (fn) => {
       const client = await pool.connect();
+      let released = false;
       try {
         await client.query('BEGIN');
         const result = await context.run(client, fn);
         await client.query('COMMIT');
         return result;
       } catch (e) {
-        await client.query('ROLLBACK');
+        // 연결이 끊겨 ROLLBACK마저 실패하면 원래 오류를 지키고, 그 연결은 Pool로 돌려보내지 않고 버립니다.
+        let broken = null;
+        await client.query('ROLLBACK').catch((rollbackError) => {
+          broken = rollbackError;
+        });
+        client.release(broken || undefined);
+        released = true;
         throw e;
+      } finally {
+        if (!released) client.release();
+      }
+    };
+    // 여러 서버가 동시에 시작해도 DB 준비(migrate)는 한 곳씩 하도록 PostgreSQL 잠금으로 줄을 세웁니다.
+    const withLock = async (key, fn) => {
+      const client = await pool.connect();
+      try {
+        await client.query('SELECT pg_advisory_lock($1)', [key]);
+        try {
+          return await fn();
+        } finally {
+          await client.query('SELECT pg_advisory_unlock($1)', [key]).catch(() => {});
+        }
       } finally {
         client.release();
       }
@@ -39,6 +63,7 @@ export async function openDb() {
       get: async (s, p) => (await query(s, p)).rows[0],
       run: query,
       transaction,
+      withLock,
       // 트랜잭션 컨텍스트를 물려받지 않는 자리에서 실행합니다(타이머·백그라운드 작업용).
       detach: (fn) => context.exit(fn),
       // 돈이 오가는 트랜잭션 첫머리에서 회원 행을 잠가 같은 회원의 동시 요청을 한 줄로 세웁니다.
@@ -91,6 +116,11 @@ export async function openDb() {
 }
 
 export async function migrate(db) {
+  // PostgreSQL: 웹 서버·작업 프로세스·여러 서버가 동시에 떠도 DB 준비는 한 곳씩(동시 CREATE·ALTER 충돌 방지).
+  if (db.withLock) return db.withLock(7302002, () => migrateSchema(db));
+  return migrateSchema(db);
+}
+async function migrateSchema(db) {
   const statements = [
     `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','pd','viewer')), status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS user_profiles (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, avatar TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', auto_next INTEGER NOT NULL DEFAULT 1)`,
@@ -184,6 +214,8 @@ export async function migrate(db) {
     `CREATE INDEX IF NOT EXISTS studio_members_user ON studio_members(user_id)`,
     `CREATE TABLE IF NOT EXISTS studio_invites (id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, email TEXT, role TEXT NOT NULL, pay_mode TEXT NOT NULL DEFAULT 'self', sponsor_limit INTEGER NOT NULL DEFAULT 0, max_uses INTEGER NOT NULL DEFAULT 1, uses INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, expires_at TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS studio_invites_project ON studio_invites(project_id)`,
+    // 소유자가 팀에서 뺀 기록: 빼기 전에 만든 초대 링크로는 다시 들어올 수 없어요(2026-10-01).
+    `CREATE TABLE IF NOT EXISTS studio_removed_members (project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, removed_at TEXT NOT NULL, PRIMARY KEY(project_id, user_id))`,
     `CREATE TABLE IF NOT EXISTS studio_comments (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS studio_comments_project ON studio_comments(project_id, created_at)`,
     `CREATE TABLE IF NOT EXISTS studio_activity (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
@@ -406,7 +438,47 @@ export async function migrate(db) {
   }
   await db.run(
     "UPDATE dramas SET published_at=created_at WHERE published_at IS NULL AND status='published'",
-  );
+  );  // 2026-10-01: '작품 전체 열기'(핑)는 결제 당시 회차까지만 엽니다. scope='all'은 작품 전체 소장(예전 결제),
+  // 'episodes'는 회차 권한(episode_entitlements)으로 여는 표시용 행입니다. 예전 전체 열기는 지금 공개 회차까지 회차 권한으로 옮깁니다.
+  // 2026-10-01: 작품 관람 등급(전체·12·15·19). 지금까지 화면에 15세로 고정 표시했으므로 기존 작품은 15로 둡니다.
+  await ensureColumn(db, 'dramas', 'age_rating', "TEXT NOT NULL DEFAULT '15'");
+  // 2026-10-01: 자주 찾는 칸에 색인을 둡니다(데이터가 늘어도 목록 · 권한 확인 · 영상 구간 요청이 느려지지 않게).
+  for (const sql of [
+    'CREATE INDEX IF NOT EXISTS orders_user ON orders(user_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS episode_entitlements_order ON episode_entitlements(order_id)',
+    'CREATE INDEX IF NOT EXISTS entitlements_order ON entitlements(order_id)',
+    'CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id)',
+    // 앱 미디어 토큰(?mt=)은 세션 토큰 앞 32자로 찾아요.
+    'CREATE INDEX IF NOT EXISTS sessions_token32 ON sessions((substr(token,1,32)))',
+    'CREATE INDEX IF NOT EXISTS dramas_owner ON dramas(owner_id)',
+    'CREATE INDEX IF NOT EXISTS dramas_status ON dramas(status)',
+    'CREATE INDEX IF NOT EXISTS media_files_owner ON media_files(owner_id)',
+    'CREATE INDEX IF NOT EXISTS studio_projects_owner ON studio_projects(owner_id)',
+    'CREATE INDEX IF NOT EXISTS studio_episodes_project ON studio_episodes(project_id, number)',
+    'CREATE INDEX IF NOT EXISTS studio_shots_episode ON studio_shots(episode_id, sort_order)',
+    'CREATE INDEX IF NOT EXISTS studio_characters_project ON studio_characters(project_id)',
+    'CREATE INDEX IF NOT EXISTS studio_locations_project ON studio_locations(project_id)',
+    'CREATE INDEX IF NOT EXISTS studio_props_project ON studio_props(project_id)',
+    'CREATE INDEX IF NOT EXISTS ai_jobs_project ON ai_jobs(project_id, status)',
+    'CREATE INDEX IF NOT EXISTS ai_jobs_target ON ai_jobs(target_id, status)',
+    'CREATE INDEX IF NOT EXISTS ping_consumptions_lot ON ping_consumptions(lot_id)',
+    'CREATE INDEX IF NOT EXISTS upload_sessions_owner ON upload_sessions(owner_id, status)',
+  ])
+    await db.run(sql);
+  // 합성 처리기 살아 있음 표시(여러 처리기가 서로의 합성을 되돌리지 않도록)
+  await ensureColumn(db, 'studio_renders', 'heartbeat_at', 'TEXT');
+  await ensureColumn(db, 'entitlements', 'scope', "TEXT NOT NULL DEFAULT 'all'");
+  if (await db.get("SELECT 1 AS x FROM entitlements en JOIN orders o ON o.id=en.order_id WHERE o.kind='ping_title' AND en.scope='all' LIMIT 1")) {
+    await db.run(
+      `INSERT INTO episode_entitlements (user_id,drama_id,episode,order_id,created_at)
+       SELECT en.user_id, en.drama_id, e.number, en.order_id, o.created_at FROM entitlements en
+       JOIN orders o ON o.id=en.order_id AND o.kind='ping_title'
+       JOIN dramas d ON d.id=en.drama_id
+       JOIN episodes e ON e.drama_id=en.drama_id AND e.review_status='approved' AND e.number > d.free_episodes
+       WHERE 1=1 ON CONFLICT DO NOTHING`,
+    );
+    await db.run("UPDATE entitlements SET scope='episodes' WHERE scope='all' AND order_id IN (SELECT id FROM orders WHERE kind='ping_title')");
+  }
 }
 
 async function ensureColumn(db, table, column, type) {

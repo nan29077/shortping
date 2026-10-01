@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { episodeEditable } from '../routes-serial.mjs';
 import { randomUUID } from 'node:crypto';
-import { writeFile, mkdir, rm } from 'node:fs/promises';
+import { copyFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { loadSettings } from '../settings.mjs';
@@ -105,6 +105,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     }
     const m = await memberOf(p.id, req.user);
     if (!m) fail(404, '프로젝트를 찾을 수 없어요.');
+    // 소유자가 이용 제한 · 탈퇴 상태면 협업자는 프로젝트를 열 수 없어요(소유자 라마로 계속 작업되지 않도록).
+    const owner = await db.get('SELECT status FROM users WHERE id=?', [p.owner_id]);
+    if (owner?.status !== 'active') fail(403, '프로젝트 소유자 계정을 지금 이용할 수 없어 함께 작업할 수 없어요.');
     if (!can(m.role, need)) fail(403, `${ROLE_NAME[m.role] || m.role} 역할은 ${needText(need)} 권한이 없어요. 프로젝트 소유자에게 역할 변경을 요청해 주세요.`);
     req.teamRole = m.role;
     req.teamMember = m;
@@ -946,8 +949,12 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         const instruction = String(extra.instruction || '').trim();
         if (instruction.length < 2) fail(400, '어떻게 고칠지 적어 주세요.');
         const ids = Array.isArray(opt.shotIds) ? opt.shotIds.map(String) : [];
-        const shots = (await shotsOf(e.id)).filter((x) => ids.includes(x.id));
-        if (!shots.length) fail(400, '다시 쓸 컷을 골라 주세요.');
+        const all = await shotsOf(e.id);
+        const picked = all.filter((x) => ids.includes(x.id));
+        if (!picked.length) fail(400, '다시 쓸 컷을 골라 주세요.');
+        // 떨어진 컷(예: 1·4번)만 다시 쓰면 사이 컷 순서가 뒤바뀌어요. 화면과 같이 고른 컷 사이를 모두 포함한 구간으로 다시 씁니다.
+        const shots = all.slice(all.indexOf(picked[0]), all.indexOf(picked[picked.length - 1]) + 1);
+        if (shots.length > 20) fail(400, '한 번에 20컷까지 고칠 수 있어요.');
         return {
           kind: 'rewrite_range',
           capability: 'text',
@@ -1555,7 +1562,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   });
   app.patch('/api/studio/ai/projects/:id', roles('pd', 'admin'), async (req, res) => {
     const p = await project(req, req.params.id, 'script');
-    const b = projectSchema.partial().parse(req.body);
+    // zod의 partial()은 .default()가 있는 칸(톤·스타일·시놉시스·중국 모델 제외)을 보내지 않아도 기본값으로 채워요.
+    // 바뀐 칸만 보내는 화면(2026-10-01)에서 다른 칸이 지워지지 않도록, 실제로 보낸 칸만 반영합니다.
+    const parsed = projectSchema.partial().parse(req.body);
+    const b = Object.fromEntries(Object.entries(parsed).filter(([k]) => Object.hasOwn(req.body || {}, k)));
     // 모델 정책(중국 모델 제외) · 회차 수는 관리 항목이에요(2026-09-30 점검).
     if (req.teamRole && req.teamRole !== 'owner' && !can(req.teamRole, 'manage') && ((b.exclude_cn !== undefined && (b.exclude_cn ? 1 : 0) !== Number(p.exclude_cn)) || (b.episode_count !== undefined && Number(b.episode_count) !== Number(p.episode_count))))
       fail(403, `${ROLE_NAME[req.teamRole] || req.teamRole} 역할은 회차 수 · 모델 정책을 바꿀 수 없어요.`);
@@ -1668,6 +1678,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     const p = await project(req, req.params.id, 'script');
     const c = await db.get('SELECT id FROM studio_characters WHERE id=? AND project_id=?', [req.params.cid, p.id]);
     if (!c) fail(404, '인물을 찾을 수 없어요.');
+    // 진행 중인 AI 작업(이미지 · 목소리 등)이 있으면 지우지 않아요(결과 갈 곳 없이 라마만 차감되지 않게).
+    if (await db.get("SELECT id FROM ai_jobs WHERE target_id=? AND status IN ('queued','running') AND kind<>'translate' LIMIT 1", [c.id]))
+      fail(409, '이 인물의 AI 작업이 진행 중이에요. 끝나거나 작업 센터에서 멈춘 뒤 지워 주세요.');
     await db.run('UPDATE studio_shots SET speaker_id=NULL WHERE speaker_id=?', [c.id]);
     // 컷의 등장 인물 목록에서도 뺍니다.
     for (const s of await db.all("SELECT s.id, s.cast_ids FROM studio_shots s JOIN studio_episodes e ON e.id=s.episode_id WHERE e.project_id=? AND s.cast_ids LIKE ?", [p.id, `%${c.id}%`]))
@@ -1886,7 +1899,15 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   });
   app.delete('/api/studio/ai/shots/:sid', roles('pd', 'admin'), async (req, res) => {
     const s = await loadShot(req, req.params.sid, 'script');
-    await db.run('DELETE FROM studio_shots WHERE id=?', [s.id]);
+    // 진행 중인 AI 작업이 있는 컷을 지우면 결과가 갈 곳 없이 라마만 차감돼요. 끝나거나 멈춘 뒤 지우게 합니다.
+    if (await db.get("SELECT id FROM ai_jobs WHERE target_type='shot' AND target_id=? AND status IN ('queued','running') AND kind<>'translate' LIMIT 1", [s.id]))
+      fail(409, '이 컷을 만드는 AI 작업이 진행 중이에요. 작업이 끝나거나 작업 센터에서 멈춘 뒤 지워 주세요.');
+    await db.transaction(async () => {
+      // 지우기 전 대본을 버전으로 남겨, 버전 기록에서 되돌릴 수 있게 합니다.
+      const order = (await shotsOf(s.episode_id)).findIndex((x) => x.id === s.id);
+      await snapshotScript(s.episode_id, s.project_id, 'before_delete', `${order + 1}번 컷 지우기 전`);
+      await db.run('DELETE FROM studio_shots WHERE id=?', [s.id]);
+    });
     // 합성한 뒤 컷이 바뀌면 완성본을 다시 만들어야 합니다.
     await db.run("UPDATE studio_episodes SET status=CASE WHEN status='composed' THEN 'scripted' ELSE status END,compose_dirty=CASE WHEN status='composing' THEN 1 ELSE compose_dirty END WHERE id=?", [s.episode_id]);
     await resetScriptReview(s.episode_id);
@@ -2110,6 +2131,31 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     await cleanup(new Set(specs.filter((spec, i) => made.created[i])));
     return made.jobs;
   }
+  // 대본을 새로 쓰는 작업(대본 쓰기·구간 다시 쓰기·대본 나누기)과 컷 작업(이미지·영상·음성 등)이 같은 회차에서 겹치면,
+  // 컷 ID를 다시 쓰는 대본 반영 뒤에 끝난 옛 컷 결과가 내용이 바뀐 새 컷에 붙고 라마도 차감됩니다(2026-10-01 점검).
+  // 그래서 둘 중 하나가 진행 중이면 다른 쪽은 시작하지 않아요. 번역(무료)은 막지 않습니다.
+  const SCRIPT_REWRITE_KINDS = ['script', 'rewrite_range', 'parse_script'];
+  async function guardScriptVsShots(p, spec) {
+    if (SCRIPT_REWRITE_KINDS.includes(spec.kind)) {
+      const shotJob =
+        spec.kind === 'parse_script'
+          ? await db.get("SELECT id FROM ai_jobs WHERE project_id=? AND status IN ('queued','running') AND target_type='shot' AND kind<>'translate' LIMIT 1", [p.id])
+          : await db.get(
+              "SELECT id FROM ai_jobs WHERE project_id=? AND status IN ('queued','running') AND target_type='shot' AND kind<>'translate' AND target_id IN (SELECT id FROM studio_shots WHERE episode_id=?) LIMIT 1",
+              [p.id, spec.target.id],
+            );
+      if (shotJob) fail(409, '이 회차의 컷을 만드는 AI 작업이 진행 중이에요. 끝난 뒤 대본을 다시 써 주세요.');
+      return;
+    }
+    if (spec.target?.type !== 'shot' || spec.kind === 'translate') return;
+    const shot = await db.get('SELECT episode_id FROM studio_shots WHERE id=?', [spec.target.id]);
+    if (!shot) return;
+    const scriptJob = await db.get(
+      "SELECT id FROM ai_jobs WHERE project_id=? AND status IN ('queued','running') AND (kind='parse_script' OR (kind IN ('script','rewrite_range') AND target_type='episode' AND target_id=?)) LIMIT 1",
+      [p.id, shot.episode_id],
+    );
+    if (scriptJob) fail(409, '이 회차의 대본을 AI가 다시 쓰는 중이에요. 대본이 바뀐 뒤 컷을 만들어 주세요.');
+  }
   async function runSpecsTx(req, p, b, specs, exclude, price) {
     const createdFlags = [];
     const jobs = await db.transaction(async () => {
@@ -2140,6 +2186,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
           createdFlags.push(false);
           continue;
         }
+        await guardScriptVsShots(p, spec);
         // 후보 여러 장: 잠금 안에서 한 번 더 확인해요(두 번 빨리 눌러 후보가 두 배로 생기지 않도록).
         if (spec.input?.candidate && /^c1$/.test(spec.keySuffix || '')) {
           const family = spec.kind === 'shot_video' ? ['shot_video', 'shot_upscale_video'] : ['shot_image', 'shot_image_edit', 'shot_upscale'];
@@ -2394,10 +2441,21 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         await db.run('UPDATE dramas SET trailer=CASE WHEN ?<>\'\' THEN ? ELSE trailer END, hashtags=CASE WHEN ?<>\'\' THEN ? ELSE hashtags END WHERE id=?', [trailer, trailer, hashtags, hashtags, drama.id]);
       }
       for (const e of targets) {
+        // 자막 파일은 공개 회차용으로 따로 복사해요. 같은 파일을 함께 쓰면 스튜디오에서 자막을 다시 만들거나
+        // 공개 회차를 지울 때 다른 쪽 자막까지 사라져요(2026-10-01 점검).
+        let subtitles = '';
+        if (/^[a-f0-9-]+\.vtt$/.test(e.subtitles || '') && existsSync(path.join(subsDir, e.subtitles))) {
+          subtitles = randomUUID() + '.vtt';
+          await copyFile(path.join(subsDir, e.subtitles), path.join(subsDir, subtitles));
+        }
+        const previous = (await db.get('SELECT subtitles FROM episodes WHERE drama_id=? AND number=?', [drama.id, e.number]))?.subtitles || '';
         await db.run(
           "INSERT INTO episodes (id,drama_id,number,title,video,duration,source,subtitles,studio_episode_id,thumbnail,review_status) VALUES (?,?,?,?,?,?,'studio',?,?,?,?) ON CONFLICT(drama_id,number) DO UPDATE SET title=excluded.title,video=excluded.video,duration=excluded.duration,source='studio',subtitles=excluded.subtitles,studio_episode_id=excluded.studio_episode_id,thumbnail=excluded.thumbnail",
-          [randomUUID(), drama.id, e.number, e.title.slice(0, 100), e.video, Math.max(1, Number(e.duration)), e.subtitles || '', e.id, e.thumbnail || '', serial ? 'draft' : 'approved'],
+          [randomUUID(), drama.id, e.number, e.title.slice(0, 100), e.video, Math.max(1, Number(e.duration)), subtitles, e.id, e.thumbnail || '', serial ? 'draft' : 'approved'],
         );
+        // 예전에 내보낸 자막 복사본은 정리해요(스튜디오 회차가 아직 쓰는 파일이면 그대로 둬요).
+        if (/^[a-f0-9-]+\.vtt$/.test(previous) && previous !== subtitles && !(await db.get('SELECT id FROM studio_episodes WHERE subtitles=?', [previous])) && !(await db.get('SELECT id FROM episodes WHERE subtitles=?', [previous])))
+          await rm(path.join(subsDir, previous), { force: true }).catch(() => {});
         await db.run('UPDATE studio_episodes SET exported_at=? WHERE id=?', [now(), e.id]);
       }
       // 썸네일 A/B: 대표 포스터 + 후보를 비교 목록으로 등록(이미 있는 이미지는 건너뜀)
@@ -2696,6 +2754,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       try {
         for (const spec of work.specs) await engine.screen({ userId: p.owner_id, kind: spec.kind, texts: [spec.input.userText, spec.input.text] });
         const queuedOk = await db.transaction(async () => {
+          // 프로젝트 행을 잠근 뒤 진행 중 작업을 다시 확인해요(다른 서버 · PD의 직접 실행과 겹쳐 같은 작업이 두 번 등록되지 않게).
+          if (db.engine === 'postgresql') await db.get('SELECT id FROM studio_projects WHERE id=? FOR UPDATE', [p.id]);
+          if (await db.get("SELECT id FROM ai_jobs WHERE project_id=? AND status IN ('queued','running') LIMIT 1", [p.id])) return false;
           // 등록 직전에 다시 확인: 멈췄으면 아무것도 등록하지 않습니다(같은 트랜잭션에서 상태도 갱신).
           if (!(await saveIfRunning(p.id, ap.run, { ...ap, stage: work.stage, signature, repeat, message: `${AP_STAGES[work.stage]} ${work.specs.length}건 진행 중`, spent, updated_at: now() })))
             return false;
@@ -2711,7 +2772,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
                 requested,
                 tier: c.tier,
                 tags: spec.tags || [],
-                input: spec.input,
+                // 이번 빠른 제작이 만든 작업 표시: 멈추기를 누르면 이 작업만 취소해요(팀원이 직접 건 작업은 그대로).
+                input: { ...spec.input, _autopilot: ap.run },
                 target: spec.target,
                 projectId: p.id,
                 excludeCn: !!Number(p.exclude_cn),
@@ -2774,7 +2836,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       return cur;
     });
     // 이미 시작된 AI 작업은 끝까지 처리하고, 대기 중인 작업은 취소해 라마를 돌려줍니다.
-    const queued = await db.all("SELECT id FROM ai_jobs WHERE project_id=? AND status='queued'", [p.id]);
+    // 이번 빠른 제작이 만든 대기 작업만 취소해요(팀원이 자기 라마로 직접 건 작업은 그대로 둬요).
+    const queued = await db.all("SELECT id FROM ai_jobs WHERE project_id=? AND status='queued' AND input LIKE ?", [p.id, `%"_autopilot":"${String(ap.run || '').replace(/[^a-f0-9-]/gi, '')}"%`]);
     let canceled = 0;
     for (const j of queued) if (await engine.cancel(j.id, req.user).then(() => true, () => false)) canceled++;
     await saveAutopilot(p.id, { ...ap, status: 'stopped', message: `멈췄어요. 대기 중이던 작업 ${canceled}건은 취소하고 라마를 돌려드렸어요.`, updated_at: now() });
@@ -2997,5 +3060,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (!(await db.get('SELECT voice FROM voice_samples WHERE url=?', ['/uploads/' + req.params.file]))) fail(404, '파일을 찾을 수 없어요.');
     res.sendFile(path.join(uploadDir, req.params.file));
   });
-  return { precheck };
+  // /uploads 비공개 결과물: 협업자가 함께 만드는 프로젝트 소유자의 파일인지
+  const sharesUpload = (user, ownerId, url) => collab.sharesWith(user, ownerId, url);
+  return { precheck, sharesUpload };
 }

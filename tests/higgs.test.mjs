@@ -204,7 +204,7 @@ test('start/end frames: continue from previous shot (free), chosen end image, ow
   assert.ok(other);
   // 끝 장면 이미지는 저장 공간 정리 대상이 아님(참조 자리 26곳)
   const st = await request('/admin/storage', { cookie: admin });
-  assert.equal(st.data.checked_places, 27);
+  assert.equal(st.data.checked_places, 29);
 });
 
 test('character card: pose refs picked per shot; face match from AI verify; quality flags low match', async () => {

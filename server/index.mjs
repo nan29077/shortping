@@ -7,7 +7,6 @@ import {
   randomUUID,
   randomBytes,
   randomInt,
-  scryptSync,
   timingSafeEqual,
   createHash,
   createHmac,
@@ -16,7 +15,7 @@ import { mkdirSync, openSync, readSync, closeSync, unlinkSync, existsSync, readF
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { openDb, migrate } from './db.mjs';
-import { seed, hashPassword } from './seed.mjs';
+import { seed, hashPasswordAsync, scryptAsync } from './seed.mjs';
 import { inspectMedia, precheck } from './media.mjs';
 import { loadSettings } from './settings.mjs';
 import {
@@ -63,6 +62,9 @@ const port = Number(process.env.PORT || 3033);
 const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
 if (production && (!process.env.DATABASE_URL || !origin.startsWith('https://')))
   throw new Error('Production requires DATABASE_URL and HTTPS APP_ORIGIN');
+// 운영에서는 출금 계좌번호 · AI API 키 암호화 키가 꼭 있어야 해요(없으면 계좌번호가 평문으로 쌓여요).
+if (production && String(process.env.AI_SECRET_KEY || '').length < 32)
+  throw new Error('Production requires AI_SECRET_KEY (32+ characters) to encrypt bank accounts and AI API keys');
 const db = await openDb();
 await migrate(db);
 if (demo) await seed(db);
@@ -131,6 +133,11 @@ app.use(
   }),
 );
 app.use(express.json({ limit: '256kb' }));
+// Express 5는 본문이 없으면 req.body가 undefined라, req.body.x를 읽는 곳에서 500이 나요. 빈 객체로 맞춰 400(입력 확인)으로 안내합니다.
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 // 모바일 앱(안드로이드 · iOS)은 앱 안의 화면(capacitor://localhost, https://localhost)에서 운영 서버로 요청합니다.
 // 앱은 쿠키 대신 Authorization: Bearer 토큰을 쓰므로, 이 출처에는 쿠키 없이(credentials 없이) CORS를 허용합니다.
 const appOrigins = new Set([
@@ -242,9 +249,9 @@ const makeMediaToken = (sessionHash) => {
   return `${body}.${mediaSign(body)}`;
 };
 const MEDIA_PATHS = /^\/(play\/|dramas\/[^/]+\/trailer$|subtitles\/|studio\/media\/|studio\/ai\/episodes\/[^/]+\/subtitles$|studio\/ai\/voices\/sample\/)/;
-async function mediaUser(req) {
+async function mediaUser(req, anyPath = false) {
   const raw = typeof req.query?.mt === 'string' ? req.query.mt : '';
-  if (!raw || !['GET', 'HEAD'].includes(req.method) || !MEDIA_PATHS.test(req.path)) return null;
+  if (!raw || !['GET', 'HEAD'].includes(req.method) || (!anyPath && !MEDIA_PATHS.test(req.path))) return null;
   const [body, sig] = raw.split('.');
   if (!body || !sig) return null;
   const want = mediaSign(body);
@@ -363,10 +370,11 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   if (await db.get('SELECT id FROM users WHERE email=?', [c.email]))
     fail(409, '이미 가입된 이메일입니다.');
   const user = { id: randomUUID(), email: c.email, name: c.name, role: 'viewer', status: 'active' };
+  const passwordHash = await hashPasswordAsync(c.password);
   // 동시에 같은 이메일로 가입하면 UNIQUE 제약이 막아 주므로, 그 결과로 중복 여부를 판정합니다.
   await db.run(
     'INSERT INTO users (id,email,name,password,role,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(email) DO NOTHING',
-    [user.id, c.email, c.name, hashPassword(c.password), 'viewer', now()],
+    [user.id, c.email, c.name, passwordHash, 'viewer', now()],
   );
   if (!(await db.get('SELECT id FROM users WHERE id=?', [user.id])))
     fail(409, '이미 가입된 이메일입니다.');
@@ -378,7 +386,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   const [salt, hash] = (
     user?.password || '00000000000000000000000000000000:' + '0'.repeat(128)
   ).split(':');
-  const valid = timingSafeEqual(scryptSync(c.password, salt, 64), Buffer.from(hash, 'hex'));
+  const valid = timingSafeEqual(await scryptAsync(c.password, salt, 64), Buffer.from(hash, 'hex'));
   if (!user || !valid || user.status !== 'active')
     fail(401, '이메일 또는 비밀번호를 확인해 주세요.');
   await session(req, res, user);
@@ -470,14 +478,17 @@ app.post('/api/account/password', requireAuth, authLimiter, async (req, res) => 
     })
     .parse(req.body);
   const [salt, hash] = req.user.password.split(':');
-  if (!timingSafeEqual(scryptSync(b.currentPassword, salt, 64), Buffer.from(hash, 'hex')))
+  if (!timingSafeEqual(await scryptAsync(b.currentPassword, salt, 64), Buffer.from(hash, 'hex')))
     fail(400, '현재 비밀번호가 일치하지 않습니다.');
   if (b.currentPassword === b.newPassword) fail(400, '기존과 다른 비밀번호를 입력해 주세요.');
+  const passwordHash = await hashPasswordAsync(b.newPassword);
   await db.transaction(async () => {
     await db.run('UPDATE users SET password=? WHERE id=?', [
-      hashPassword(b.newPassword),
+      passwordHash,
       req.user.id,
     ]);
+    // 비밀번호를 바꾸면 아직 쓰지 않은 재설정 링크도 함께 막아요(메일함을 뺏긴 경우 대비).
+    await db.run('UPDATE password_resets SET used_at=? WHERE user_id=? AND used_at IS NULL', [now(), req.user.id]);
     await db.run('DELETE FROM sessions WHERE user_id=? AND token<>?', [
       req.user.id,
       sessionToken(req),
@@ -518,9 +529,8 @@ async function countThumbClick(req, dramaId, thumbId) {
 }
 app.get('/api/dramas/:id', async (req, res) => {
   const d = await db.get(catalogSql + ' WHERE d.id=?', [req.params.id]);
-  if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
-    fail(404, '작품을 찾을 수 없습니다.');
-  const entitled = await hasAccess(req.user, d);
+  if (!d || !(await canSeeDrama(req.user, d))) fail(404, '작품을 찾을 수 없습니다.');
+  const entitled = d.status === 'hidden' && !seesAll(req.user, d) ? await ownsWholeTitle(req.user, d) : await hasAccess(req.user, d);
   if (typeof req.query.t === 'string') await countThumbClick(req, d.id, req.query.t);
   const settings = await loadSettings(db);
   const owned = await ownedEpisodes(req.user, d.id);
@@ -560,7 +570,25 @@ async function ownedEpisodes(user, dramaId) {
     ])
   ).map((r) => Number(r.episode));
 }
+// 노출 중단(숨김)된 작품: 관리자가 내리거나 PD가 탈퇴해도, 이미 핑으로 연 회차(또는 예전 작품 소장)는 계속 볼 수 있어요.
+// 구독만으로는 볼 수 없습니다(구독은 공개 작품 기준).
+async function paidViewer(user, d) {
+  if (!user || d.status !== 'hidden') return false;
+  return !!(
+    (await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [user.id, d.id])) ||
+    (await db.get('SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? LIMIT 1', [user.id, d.id]))
+  );
+}
+const ownsWholeTitle = async (user, d) =>
+  !!(user && (await db.get("SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=? AND scope='all'", [user.id, d.id])));
+// 작품 화면·재생·자막·시청 기록에서 이 사람에게 작품을 보여 줄 수 있는지
+const canSeeDrama = async (user, d) => d.status === 'published' || seesAll(user, d) || (await paidViewer(user, d));
 async function canWatch(user, d, number) {
+  if (d.status === 'hidden' && !seesAll(user, d)) {
+    if (!(await paidViewer(user, d))) return false;
+    if (number <= d.free_episodes || (await ownsWholeTitle(user, d))) return true;
+    return !!(await db.get('SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? AND episode=?', [user.id, d.id, number]));
+  }
   if (number <= d.free_episodes || (await hasAccess(user, d))) return true;
   return !!(
     user &&
@@ -578,7 +606,7 @@ async function recordSubscriptionView(user, d, number) {
   const stamp = now();
   if (!(await db.get('SELECT user_id FROM subscriptions WHERE user_id=? AND expires_at>?', [user.id, stamp])))
     return;
-  if (await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [user.id, d.id])) return;
+  if (await db.get("SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=? AND scope='all'", [user.id, d.id])) return;
   if (
     await db.get('SELECT user_id FROM episode_entitlements WHERE user_id=? AND drama_id=? AND episode=?', [
       user.id,
@@ -629,7 +657,8 @@ async function hasAccess(user, d) {
   if (!user) return false;
   if (user.role === 'admin' || user.id === d.owner_id) return true;
   return !!(
-    (await db.get('SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=?', [
+    // scope='episodes'(핑 전체 열기)는 결제 당시 회차까지만 회차 권한으로 열려 있어 여기서는 세지 않습니다.
+    (await db.get("SELECT user_id FROM entitlements WHERE user_id=? AND drama_id=? AND scope='all'", [
       user.id,
       d.id,
     ])) ||
@@ -643,8 +672,7 @@ const uploadDir = path.resolve(process.env.UPLOAD_DIR || 'uploads');
 mkdirSync(uploadDir, { recursive: true });
 app.get('/api/play/:id/:number', async (req, res) => {
   const d = await db.get('SELECT * FROM dramas WHERE id=?', [req.params.id]);
-  if (!d || (d.status !== 'published' && req.user?.role !== 'admin' && d.owner_id !== req.user?.id))
-    fail(404, '작품을 찾을 수 없습니다.');
+  if (!d || !(await canSeeDrama(req.user, d))) fail(404, '작품을 찾을 수 없습니다.');
   const number = z.coerce.number().int().min(1).parse(req.params.number);
   if (!(await canWatch(req.user, d, number)))
     fail(403, '이 회차는 회차 구매, 작품 소장 또는 구독 후 시청할 수 있어요.');
@@ -680,11 +708,18 @@ app.get('/api/library', requireAuth, async (req, res) => {
     ),
     history: await db.all('SELECT * FROM history WHERE user_id=? ORDER BY updated_at DESC', [u]),
     orders: await db.all(
-      'SELECT o.*,d.title,(SELECT e.episode FROM episode_entitlements e WHERE e.order_id=o.id) AS episode FROM orders o LEFT JOIN dramas d ON d.id=o.drama_id WHERE o.user_id=? ORDER BY o.created_at DESC',
+      "SELECT o.*,d.title,CASE WHEN o.kind='ping_episode' THEN (SELECT MIN(e.episode) FROM episode_entitlements e WHERE e.order_id=o.id) END AS episode FROM orders o LEFT JOIN dramas d ON d.id=o.drama_id WHERE o.user_id=? ORDER BY o.created_at DESC",
       [u],
     ),
     purchases: (await db.all('SELECT drama_id FROM entitlements WHERE user_id=?', [u])).map(
       (x) => x.drama_id,
+    ),
+    // 노출 중단된 작품도 연 회차는 계속 볼 수 있어 보관함에 표시할 최소 정보를 함께 보냅니다.
+    hidden_dramas: await db.all(
+      `SELECT d.id,d.title,d.genre,d.image FROM dramas d WHERE d.status='hidden' AND (
+         EXISTS (SELECT 1 FROM episode_entitlements e WHERE e.user_id=? AND e.drama_id=d.id) OR
+         EXISTS (SELECT 1 FROM entitlements t WHERE t.user_id=? AND t.drama_id=d.id))`,
+      [u, u],
     ),
     channels: (await db.all('SELECT channel_id FROM channel_follows WHERE user_id=?', [u])).map(
       (x) => x.channel_id,
@@ -721,8 +756,8 @@ app.post('/api/history', requireAuth, async (req, res) => {
       progress: z.number().min(0).max(86400),
     })
     .parse(req.body);
-  const d = await db.get("SELECT * FROM dramas WHERE id=? AND status='published'", [b.dramaId]);
-  if (!d) fail(404, '작품을 찾을 수 없습니다.');
+  const d = await db.get('SELECT * FROM dramas WHERE id=?', [b.dramaId]);
+  if (!d || !(await canSeeDrama(req.user, d))) fail(404, '작품을 찾을 수 없습니다.');
   if (!(await canWatch(req.user, d, b.episode))) fail(403, '시청 권한이 없습니다.');
   const episode = await db.get(
     `SELECT id,number,duration FROM episodes e WHERE drama_id=? AND number=?${seesAll(req.user, d) ? '' : ' AND ' + VISIBLE}`,
@@ -751,7 +786,8 @@ app.post('/api/checkout', requireAuth, async (req, res) => {
       b.idempotencyKey,
     ]);
     if (existing) {
-      if (existing.user_id !== req.user.id) fail(409, '중복 요청입니다.');
+      // 다른 종류(예: 핑 충전)에 쓴 키를 구독에 다시 보내면 성공처럼 돌려주지 않습니다.
+      if (existing.user_id !== req.user.id || existing.kind !== 'subscription') fail(409, '중복 요청입니다.');
       return { id: existing.id, amount: existing.amount, status: existing.status, kind: existing.kind };
     }
     if (
@@ -911,9 +947,17 @@ app.post('/api/pings/unlock', requireAuth, async (req, res) => {
     if (existing) {
       if (existing.user_id !== req.user.id || !['ping_episode', 'ping_title'].includes(existing.kind))
         fail(409, '중복 요청입니다.');
-      const episode = await db.get('SELECT episode FROM episode_entitlements WHERE order_id=?', [
-        existing.id,
-      ]);
+      // 같은 키를 다른 작품·회차·종류에 다시 쓰면 예전 주문을 성공처럼 돌려주지 않습니다.
+      if (existing.drama_id !== b.dramaId || existing.kind !== (b.all ? 'ping_title' : 'ping_episode'))
+        fail(409, '중복 요청입니다. 다시 시도해 주세요.');
+      if (!b.all) {
+        const ep = await db.get('SELECT episode FROM episode_entitlements WHERE order_id=?', [existing.id]);
+        if (ep && Number(ep.episode) !== b.episode) fail(409, '중복 요청입니다. 다시 시도해 주세요.');
+      }
+      const episode =
+        existing.kind === 'ping_episode'
+          ? await db.get('SELECT episode FROM episode_entitlements WHERE order_id=?', [existing.id])
+          : null;
       return orderShape(existing, {
         episode: episode?.episode ?? null,
         wallet: await walletOf(db, req.user.id),
@@ -959,12 +1003,19 @@ app.post('/api/pings/unlock', requireAuth, async (req, res) => {
       episode: b.all ? null : b.episode,
       memo: b.all ? `전체 열기 ${locked.length}편` : `${b.episode}화`,
     });
-    if (b.all)
+    if (b.all) {
+      // 전체 열기는 지금 잠긴 회차만 회차 권한으로 엽니다. 이후 올라오는 연재 회차는 따로 열어야 해요.
+      for (const n of locked)
+        await db.run(
+          'INSERT INTO episode_entitlements (user_id,drama_id,episode,order_id,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING',
+          [req.user.id, drama.id, n, id, createdAt],
+        );
+      // '소장 작품' 목록 표시용(접근 권한 아님)
       await db.run(
-        'INSERT INTO entitlements (user_id,drama_id,order_id) VALUES (?,?,?) ON CONFLICT DO NOTHING',
+        "INSERT INTO entitlements (user_id,drama_id,order_id,scope) VALUES (?,?,?,'episodes') ON CONFLICT DO NOTHING",
         [req.user.id, drama.id, id],
       );
-    else
+    } else
       await db.run(
         'INSERT INTO episode_entitlements (user_id,drama_id,episode,order_id,created_at) VALUES (?,?,?,?,?)',
         [req.user.id, drama.id, b.episode, id, createdAt],
@@ -1056,6 +1107,8 @@ const dramaSchema = z.object({
   rights_confirmed: z.boolean().optional(),
   likeness_confirmed: z.boolean().optional(),
   ai_usage: z.enum(['none', 'partial', 'full']).optional(),
+  // 관람 등급: 보내지 않으면 기존 값(새 작품은 15세)을 유지합니다.
+  age_rating: z.enum(['all', '12', '15', '19']).optional(),
 });
 async function saveDeclaration(id, b) {
   if (b.rights_confirmed === undefined && b.likeness_confirmed === undefined && b.ai_usage === undefined)
@@ -1119,7 +1172,7 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
   await checkMedia(req, b.image);
   const channel = await db.get('SELECT id FROM channels WHERE owner_id=?', [req.user.id]);
   await db.run(
-    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,free,episode_pings,free_episodes,created_at,channel_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO dramas (id,owner_id,title,tagline,synopsis,genre,image,free,episode_pings,free_episodes,created_at,channel_id,age_rating) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
     [
       id,
       req.user.id,
@@ -1133,6 +1186,7 @@ app.post('/api/studio/dramas', roles('pd', 'admin'), async (req, res) => {
       b.free_episodes,
       now(),
       channel?.id || null,
+      b.age_rating || '15',
     ],
   );
   await saveDeclaration(id, b);
@@ -1190,7 +1244,7 @@ app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
     const b = dramaSchema.parse(req.body);
     await checkMedia(req, b.image);
     await db.run(
-      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,free=?,episode_pings=?,free_episodes=? WHERE id=?',
+      'UPDATE dramas SET title=?,tagline=?,synopsis=?,genre=?,image=?,free=?,episode_pings=?,free_episodes=?,age_rating=? WHERE id=?',
       [
         b.title,
         b.tagline,
@@ -1200,6 +1254,7 @@ app.patch('/api/studio/dramas/:id', roles('pd', 'admin'), async (req, res) => {
         b.free ? 1 : 0,
         b.episode_pings,
         b.free_episodes,
+        b.age_rating || d.age_rating || '15',
         d.id,
       ],
     );
@@ -1343,8 +1398,39 @@ app.post(
   }).single('file'),
   uploadMedia,
 );
-app.get('/uploads/:file', (req, res) => {
+// 공개 자리(작품 표지·썸네일·방송국·아바타·메인페이지)에 쓰인 파일은 누구나 받을 수 있어요.
+const PUBLIC_UPLOAD_SQL = [
+  'SELECT 1 FROM dramas WHERE image=?',
+  'SELECT 1 FROM drama_thumbnails WHERE url=?',
+  'SELECT 1 FROM episodes WHERE thumbnail=?',
+  'SELECT 1 FROM channels WHERE banner=? OR logo=?',
+  'SELECT 1 FROM user_profiles WHERE avatar=?',
+  "SELECT 1 FROM platform_settings WHERE key IN ('home_style','home_layout') AND value LIKE '%' || ? || '%'",
+].map((q) => `EXISTS (${q})`);
+async function publicUpload(url) {
+  const params = [url, url, url, url, url, url, url];
+  return !!(await db.get(`SELECT ${PUBLIC_UPLOAD_SQL.join(' OR ')} AS ok`, params))?.ok;
+}
+// /uploads는 /api 바깥이라 로그인 확인을 여기서 따로 합니다(쿠키 · Bearer · 앱 미디어 토큰).
+async function uploadViewer(req) {
+  const token = sessionToken(req);
+  if (token)
+    return db.get('SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=? AND s.expires_at>? AND u.status=?', [token, now(), 'active']);
+  return mediaUser(req, true);
+}
+let studioUploadAccess = null;
+app.get('/uploads/:file', async (req, res) => {
   if (!/^[a-f0-9-]+\.(jpg|png|webp)$/.test(req.params.file)) return res.sendStatus(404);
+  const url = '/uploads/' + req.params.file;
+  // 숏핑 스튜디오에서 만든 비공개 결과물(컷·인물·장소 이미지 등)은 만든 사람 · 협업자 · 관리자만 받아요.
+  // 공개 자리에 쓰이면(작품 표지 등) 누구나 받을 수 있어요.
+  const f = await db.get('SELECT owner_id,project_id FROM media_files WHERE url=?', [url]);
+  if (f?.project_id && !(await publicUpload(url))) {
+    const user = await uploadViewer(req);
+    if (!user || !(user.id === f.owner_id || user.role === 'admin' || (await studioUploadAccess?.(user, f.owner_id, url))))
+      return res.sendStatus(404);
+    res.set('Cache-Control', 'private, max-age=600');
+  }
   res.sendFile(path.join(uploadDir, req.params.file));
 });
 app.post('/api/studio/dramas/:id/episodes', roles('pd', 'admin'), async (req, res) => {
@@ -1447,6 +1533,8 @@ app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
     fail(404, '회원을 찾을 수 없습니다.');
   await db.transaction(async () => {
     await db.run('UPDATE users SET role=?,status=? WHERE id=?', [b.role, b.status, req.params.id]);
+    // 이용 제한하면 로그인도 끊어요(나중에 다시 풀어도 예전 로그인이 되살아나지 않게).
+    if (b.status !== 'active') await db.run('DELETE FROM sessions WHERE user_id=?', [req.params.id]);
     await db.run(
       'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
       [randomUUID(), req.user.id, `user:${b.role}:${b.status}`, req.params.id, now()],
@@ -1512,6 +1600,7 @@ const routeContext = {
   mediaPath,
   owned,
   canWatch,
+  canSeeDrama,
   registerMediaFile,
   contentIssues,
   episodeEditable,
@@ -1531,7 +1620,7 @@ const renderer = createRenderWorker({ db, uploadDir });
 adminAiRoutes({ ...routeContext, engine: aiEngine });
 // 모델 품질 시험 · 품질 대시보드(6단계, 최고 관리자 전용)
 benchRoutes({ ...routeContext, engine: aiEngine });
-studioAiRoutes({ ...routeContext, engine: aiEngine, renderer });
+studioUploadAccess = studioAiRoutes({ ...routeContext, engine: aiEngine, renderer }).sharesUpload;
 await aiEngine.start();
 if (process.env.COMPOSE_WORKER !== 'external') {
   await renderer.recover();

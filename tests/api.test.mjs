@@ -325,7 +325,11 @@ test('subscription unlocks other titles and cancellation preserves purchased tit
   );
   await request('/subscription/cancel', { method: 'POST', cookie: viewer });
   assert.equal((await request('/dramas/moon', { cookie: viewer })).data.entitled, false);
-  assert.equal((await request('/dramas/midnight', { cookie: viewer })).data.entitled, true);
+  // 핑 전체 열기는 작품 소장이 아니라 결제 당시 회차까지 회차 권한으로 열려요(이후 연재 회차는 따로).
+  const midnight = (await request('/dramas/midnight', { cookie: viewer })).data;
+  assert.equal(midnight.entitled, false);
+  assert.equal(midnight.locked_count, 0);
+  assert.ok(midnight.episodes.every((e) => !e.locked));
 });
 test('PD creates private draft; empty draft cannot be submitted', async () => {
   const r = await request('/studio/dramas', {

@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, ApiError, lama, uuid, SESSION_EXPIRED_EVENT, type Drama } from './api';
-import { Modal } from './App';
+import { Modal, setLeaveGuard } from './App';
 import type { ManagedDrama } from './ContentReview';
 import { useConfirm } from './confirm';
 import { episodeNumberFrom, MAX_VIDEO_MB, uploadVideo, type UploadHandle } from './upload';
@@ -150,6 +150,21 @@ export default function EpisodeManager({
       abort.current?.abort();
     };
   }, [d.id]);
+  // 영상을 올리는 중에는 화면을 떠나기 전에 물어요(뒤로 가기 · 다른 메뉴 · 새로고침 · 탭 닫기).
+  // 떠나면 업로드가 취소되고, 큰 파일은 처음부터 다시 올려야 하기 때문이에요.
+  useEffect(() => {
+    if (!running) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    setLeaveGuard(() => '영상을 올리는 중이에요. 화면을 떠나면 업로드가 취소돼요. 그래도 떠날까요?');
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+      setLeaveGuard(null);
+    };
+  }, [running]);
   const published = detail?.status === 'published';
   const episodes = (detail?.episodes || []) as SerialEpisode[];
   const statusOf = (e?: SerialEpisode) => e?.review_status || 'approved';

@@ -26,6 +26,7 @@ const PUBLIC_DRAMA_FIELDS = [
   'hashtags',
   'subtitle_style',
   'thumb_id',
+  'age_rating',
 ];
 export function publicDrama(d) {
   if (!d) return d;

@@ -830,7 +830,10 @@ function Models({
           <button
             className="secondary compact"
             disabled={busy || !(Number(factor) >= 0.1 && Number(factor) <= 10)}
-            onClick={() =>
+            onClick={async () => {
+              // 누를 때마다 지금 가격에 다시 곱해져요(×1.1을 두 번 누르면 ×1.21). 한 번 더 확인해요.
+              if (!(await ask({ title: `라마 가격을 ${factor}배로 바꿀까요?`, text: '지금 보이는 모델들의 현재 라마 가격에 곱해서 고정해요. 다시 누르면 또 곱해져요. 원가 기준으로 되돌리려면 ‘자동 계산으로’를 쓰세요.', ok: '배율 적용' })))
+                return;
               void run(
                 () =>
                   api('/admin/ai/models/bulk', 'POST', {
@@ -839,8 +842,8 @@ function Models({
                     capability: cap,
                   }),
                 `라마 가격을 ${factor}배로 고정했어요.`,
-              )
-            }
+              );
+            }}
           >
             배율 적용
           </button>

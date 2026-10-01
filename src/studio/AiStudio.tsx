@@ -235,6 +235,7 @@ export default function AiStudio({
     );
   return (
     <>
+      {confirmUi}
       <StartHero
         form={form}
         setForm={setForm}
@@ -535,7 +536,6 @@ export default function AiStudio({
                 }
               }}
             >
-              {confirmUi}
               <button type="button" className="text-link" onClick={() => setWizard(1)}>
                 <ArrowLeft size={14} /> 템플릿 다시 고르기
               </button>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useConfirm } from '../confirm';
 import { Bot, Loader2, Pause, Play, Rocket, Square } from 'lucide-react';
 import { api, lama, won, type AiModelOption, type AutopilotEstimate, type StudioProjectDetail } from '../api';
 import { ModelPicker, OptionRow, effectiveChoices, type Choices } from './parts';
@@ -66,18 +67,26 @@ export default function AutopilotPanel({
   };
   const [cap, setCap] = useState('');
   const [est, setEst] = useState<AutopilotEstimate | null>(null);
+  // 예상 비용을 계산한 설정: 설정을 바꾼 직후 옛(싼) 금액을 보고 비싼 설정으로 시작하지 않게, 지금 설정과 같을 때만 시작할 수 있어요.
+  const [estKey, setEstKey] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ask, confirmUi] = useConfirm();
   const body = () => ({ choices, includeVideo, ...opts, ...(cap ? { cap: Number(cap) } : {}) });
   // 회차·컷 상태 요약(작업 중 2초마다 새로 받는 데이터가 같으면 예상 비용을 다시 계산하지 않도록)
   const episodeSig = data.episodes.map((e) => [e.id, e.status, e.shots.length, e.shots.filter((s) => s.image).length, e.shots.filter((s) => s.audio).length, e.shots.filter((s) => s.video).length, e.shots.filter((s) => s.lipsync).length].join(':')).join('|');
   // 설정이 바뀌면 예상 비용을 다시 계산합니다.
+  const settingsKey = JSON.stringify({ choices, includeVideo, opts });
   useEffect(() => {
     if (!open || running) return;
     let alive = true;
+    const key = settingsKey;
     const t = setTimeout(async () => {
       try {
         const r = await api<AutopilotEstimate>(`/studio/ai/projects/${data.project.id}/autopilot/estimate`, 'POST', { choices, includeVideo, ...opts });
-        if (alive) setEst(r);
+        if (alive) {
+          setEst(r);
+          setEstKey(key);
+        }
       } catch (e) {
         if (alive) notify((e as Error).message);
       }
@@ -90,7 +99,18 @@ export default function AutopilotPanel({
   }, [open, running, choices, includeVideo, JSON.stringify(opts), data.project.id, data.project.updated_at, data.characters.length, episodeSig]);
   const suggested = est ? Math.ceil(est.total * 1.3) + 10 : 0;
   const lacking = !!est && est.wallet.total < Math.min(cap ? Number(cap) : suggested, est.total);
+  const stale = !est || estKey !== settingsKey;
   const start = async () => {
+    if (!est || stale || busy) return;
+    const limit = cap ? Number(cap) : suggested;
+    if (
+      !(await ask({
+        title: '빠른 제작을 시작할까요?',
+        text: `예상 약 ${lama(est.total)} · 최대 ${lama(limit)}까지 써요(보유 ${lama(est.wallet.total)}). 단계마다 실제 쓴 만큼만 차감돼요.`,
+        ok: '빠른 제작 시작',
+      }))
+    )
+      return;
     setBusy(true);
     try {
       await api(`/studio/ai/projects/${data.project.id}/autopilot`, 'POST', body());
@@ -125,6 +145,7 @@ export default function AutopilotPanel({
   const at = ap ? stages.indexOf(ap.stage) : -1;
   return (
     <section className={'management-panel autopilot-card' + (running ? ' running' : '')}>
+      {confirmUi}
       <div className="panel-heading">
         <div>
           <h3>
@@ -269,7 +290,7 @@ export default function AutopilotPanel({
                   라마 충전하러 가기 (보유 {lama(est!.wallet.total)})
                 </button>
               ) : (
-                <button className="primary" disabled={busy || !est || !!est.unavailable.length} onClick={() => void start()}>
+                <button className="primary" disabled={busy || stale || !est || !!est.unavailable.length} title={stale && est ? '바뀐 설정으로 예상 비용을 다시 계산하고 있어요' : undefined} onClick={() => void start()}>
                   {ap?.status === 'paused' || ap?.status === 'stopped' ? <Play size={15} /> : <Rocket size={15} />}
                   {ap?.status === 'paused' || ap?.status === 'stopped' ? ' 이어서 빠른 제작' : ' 빠른 제작 시작'}
                 </button>

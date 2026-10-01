@@ -640,7 +640,7 @@ function ExportSection({ ws, meta, variants }: { ws: WS; meta: Meta | null; vari
         <div className="form-columns">
           <label>
             회차 가격 (핑 · 0이면 기본값)
-            <NumberInput min={0} max={1000} value={f.episode_pings} disabled={f.free} onChange={(e) => setF({ ...f, episode_pings: Math.max(0, Number(e.target.value) || 0) })} />
+            <NumberInput min={0} max={1000} value={f.episode_pings} disabled={f.free} onChange={(e) => setF({ ...f, episode_pings: Math.min(1000, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
           </label>
           <label>
             무료 회차 수 {season.paywall_from ? <small className="muted">(시즌 설계: {season.paywall_from}화부터 유료)</small> : null}

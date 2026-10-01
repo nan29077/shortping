@@ -112,16 +112,23 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
   app.post('/api/admin/settlements/close', roles('admin'), async (req, res) => {
     const b = z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }).parse(req.body);
     const settings = await loadSettings(db);
-    // 앞 달 구독 매출이 남아 있는데 마감하지 않았다면 순서대로 마감하도록 안내합니다.
-    const earlier = await db.get(
-      `SELECT MIN(v.period) AS period FROM subscription_views v
-       WHERE v.period < ? AND NOT EXISTS (SELECT 1 FROM audit_logs a WHERE a.action='settlement:closed' AND a.target_id=v.period)`,
-      [b.period],
-    );
-    if (earlier?.period)
-      fail(409, `${earlier.period} 구독 정산이 아직 마감되지 않았어요. 앞 달부터 순서대로 마감해 주세요.`);
     // 배분 항목·시청 표시·감사 기록을 한 트랜잭션으로 묶어 중간에 실패해도 절반만 남지 않게 합니다.
-    res.json(await db.transaction(() => closeSubscriptionPeriod(db, b.period, settings, req.user.id)));
+    // 앞 달 마감 여부 확인도 같은 트랜잭션 안에서 해(closeSubscriptionPeriod가 먼저 잠금) 순서가 꼬이지 않게 합니다.
+    res.json(
+      await db.transaction(async () => {
+        const result = closeSubscriptionPeriod(db, b.period, settings, req.user.id, async () => {
+          // 앞 달 구독 매출이 남아 있는데 마감하지 않았다면 순서대로 마감하도록 안내합니다.
+          const earlier = await db.get(
+            `SELECT MIN(v.period) AS period FROM subscription_views v
+             WHERE v.period < ? AND NOT EXISTS (SELECT 1 FROM audit_logs a WHERE a.action='settlement:closed' AND a.target_id=v.period)`,
+            [b.period],
+          );
+          if (earlier?.period)
+            fail(409, `${earlier.period} 구독 정산이 아직 마감되지 않았어요. 앞 달부터 순서대로 마감해 주세요.`);
+        });
+        return result;
+      }),
+    );
   });
   app.post('/api/admin/payouts/:id', roles('admin'), async (req, res) => {
     const b = z
@@ -596,8 +603,12 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
       .parse(req.body);
     if (req.params.id === req.user.id || req.params.id === 'demo-admin')
       fail(400, '현재 관리자 계정은 변경할 수 없어요.');
-    if (!(await db.get('SELECT id FROM users WHERE id=?', [req.params.id])))
-      fail(404, '회원을 찾을 수 없습니다.');
+    const current = await db.get('SELECT id,status FROM users WHERE id=?', [req.params.id]);
+    if (!current) fail(404, '회원을 찾을 수 없습니다.');
+    // 탈퇴는 출금 대기 · AI 예약 확인과 개인정보 정리를 거치는 탈퇴 절차로만 해요. 탈퇴한 계정은 되살릴 수 없어요.
+    if (b.status === 'withdrawn' && current.status !== 'withdrawn')
+      fail(400, '탈퇴 처리는 회원 본인의 탈퇴 절차로만 할 수 있어요. 이용을 막으려면 이용 제한으로 바꿔 주세요.');
+    if (current.status === 'withdrawn' && b.status !== 'withdrawn') fail(400, '탈퇴한 계정은 다시 활성화할 수 없어요.');
     await db.transaction(async () => {
       // 관리자가 번호를 바꾸면 휴대폰 인증 표시는 지웁니다(같은 번호면 유지).
       await db.run(
