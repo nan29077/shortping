@@ -34,7 +34,7 @@ export function toVtt(text) {
       `${String(Number((m[1] || '0:').slice(0, -1))).padStart(2, '0')}:${m[2].padStart(2, '0')}:${m[3]}.${m[4]}`;
     const body = lines
       .slice(at + 1)
-      .map((l) => l.replace(/<[^>]*>/g, '').replace(/[{}]/g, '').trim())
+      .map((l) => l.replace(/<[^>]*>/g, '').replace(/\{[^}]*\}/g, '').replace(/[{}]/g, '').trim())
       .filter(Boolean)
       .join('\n');
     if (!body) continue;
@@ -399,9 +399,9 @@ export function uploadRoutes({
     await db.transaction(async () => {
       const d = await owned(req, true);
       const e = await db.get('SELECT id,subtitles,review_status FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
+      if (!e) fail(404, '회차를 찾을 수 없습니다.');
       if (!episodeEditable(d, e))
         fail(409, '임시저장 또는 반려 상태에서 자막을 수정해 주세요. 연재 중인 작품은 공개 전 회차만 고칠 수 있어요.');
-      if (!e) fail(404, '회차를 찾을 수 없습니다.');
       await writeFile(path.join(subsDir, file), vtt, 'utf8');
       await db.run('UPDATE episodes SET subtitles=? WHERE id=?', [file, e.id]);
       previous = e.subtitles;
@@ -416,6 +416,7 @@ export function uploadRoutes({
     await db.transaction(async () => {
       const d = await owned(req, true);
       const e = await db.get('SELECT subtitles,review_status FROM episodes WHERE drama_id=? AND number=?', [d.id, number]);
+      if (!e) fail(404, '회차를 찾을 수 없습니다.');
       if (!episodeEditable(d, e))
         fail(409, '임시저장 또는 반려 상태에서 자막을 수정해 주세요. 연재 중인 작품은 공개 전 회차만 고칠 수 있어요.');
       await db.run("UPDATE episodes SET subtitles='' WHERE drama_id=? AND number=?", [d.id, number]);

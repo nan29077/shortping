@@ -18,7 +18,7 @@ import {
   settleKindLabel,
   api,
   day,
-  localDay,
+  kstDay,
   moment,
   won,
   type StudioSettlement,
@@ -32,7 +32,7 @@ import { downloadCsv } from './StudioPanels';
 // 정산 항목의 날짜. 구독 배분 항목은 마감을 실행한 날이 아니라 해당 정산 월(period)로 잡아야
 // 관리자 월별 집계와 PD 달력이 같은 달을 가리킵니다.
 const entryDay = (e: { kind: string; period?: string; created_at: string }) =>
-  e.kind === 'subscription' && e.period ? `${e.period}-01` : localDay(new Date(e.created_at));
+  e.kind === 'subscription' && e.period ? `${e.period}-01` : kstDay(new Date(e.created_at));
 
 export const entryStatus: Record<string, string> = {
   pending: '정산 예정',
@@ -103,7 +103,7 @@ export function SettlementCalendar({
           <strong>{monthLabel(month)}</strong>
           <button
             aria-label="다음 달"
-            disabled={month >= monthKey(new Date())}
+            disabled={month >= kstDay(new Date()).slice(0, 7)}
             onClick={() => onMonth(shiftMonth(month, 1))}
           >
             <ChevronRight size={16} />
@@ -206,7 +206,7 @@ export default function Settlement({
 }) {
   const [data, setData] = useState<StudioSettlement | null>(null),
     [error, setError] = useState(''),
-    [month, setMonth] = useState(monthKey(new Date())),
+    [month, setMonth] = useState(kstDay(new Date()).slice(0, 7)),
     [selected, setSelected] = useState(''),
     [status, setStatus] = useState('all'),
     [busy, setBusy] = useState(false),

@@ -92,6 +92,7 @@ import { asset } from './platform';
 import { MessagingPanel, ReadinessWarnings, SubscriptionRulesPanel } from './AdminOps';
 import { GENRES } from './genres';
 import NumberInput from './NumberInput';
+import { useConfirm } from './confirm';
 
 export type StudioData = {
   dramas: Drama[];
@@ -161,6 +162,7 @@ export default function Studio({
   onHomeLayout: () => void;
   reloadChannels: () => Promise<void>;
 }) {
+  const [ask, confirmUi] = useConfirm();
   const [data, setData] = useState<StudioData | null>(null),
     [error, setError] = useState(''),
     [editor, setEditor] = useState<Drama | 'new' | null>(null),
@@ -384,6 +386,7 @@ export default function Studio({
     revenue = data.orders.reduce((sum, o) => sum + orderRevenue(o, admin), 0);
   return (
     <>
+      {confirmUi}
       <header className="management-topbar">
         <button
           type="button"
@@ -670,6 +673,16 @@ export default function Studio({
                       )}
                     </div>
                   )}
+                  {d.status === 'published' && Number(d.rejected_episodes || 0) > 0 && (
+                    <div className="review-note">
+                      반려된 회차 {d.rejected_episodes}개 · 회차 관리에서 반려 사유를 보고 고쳐 다시 신청해 주세요.
+                      {!admin && (
+                        <button className="text-link" onClick={() => setEpisodeEditor(d)}>
+                          회차 관리
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className="content-tools">
                     {['draft', 'rejected'].includes(d.status) && (
                       <>
@@ -681,12 +694,18 @@ export default function Studio({
                         <button
                           className="lime"
                           disabled={busy}
-                          onClick={() =>
+                          onClick={async () => {
+                            // 기본 샘플 포스터 그대로면 한 번 더 확인해요(2026-10-01 재점검).
+                            if (
+                              d.image.startsWith('/images/') &&
+                              !(await ask({ title: '샘플 포스터로 심사를 요청할까요?', text: '아직 기본 샘플 포스터예요. 작품에 맞는 포스터로 바꾸면 반려될 일이 줄고 시청자 눈에도 더 잘 띄어요.', ok: '그대로 요청' }))
+                            )
+                              return;
                             act(
                               () => api('/studio/dramas/' + d.id + '/submit', 'POST'),
                               '심사를 요청했어요. 관리자 승인 후 공개됩니다.',
-                            )
-                          }
+                            );
+                          }}
                         >
                           <Send size={14} />
                           심사 요청

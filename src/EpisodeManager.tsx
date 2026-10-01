@@ -814,7 +814,7 @@ export default function EpisodeManager({
       {removeNumber !== null && (
         <div className="review-alert">
           {removeNumber}화 등록을 삭제할까요?{' '}
-          {published ? '심사 신청과 공개 예약도 함께 취소돼요. ' : ''}원본 파일은 유지됩니다.
+          {published ? '심사 신청과 공개 예약도 함께 취소돼요. ' : ''}자막은 바로 지워지고, 올린 영상 파일은 다른 곳에서 쓰지 않으면 보관 기간이 지난 뒤 자동으로 정리돼요.
           <div className="form-actions">
             <button className="secondary" disabled={busy} onClick={() => setRemoveNumber(null)}>
               취소
@@ -964,6 +964,10 @@ export default function EpisodeManager({
                   {(q.status === 'uploading' || q.status === 'saving') && (
                     <div
                       className="progress"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(q.progress * 100)}
                       aria-label={`${q.number}화 업로드 ${Math.round(q.progress * 100)}%`}
                     >
                       <span style={{ width: `${Math.round(q.progress * 100)}%` }} />

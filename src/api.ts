@@ -126,6 +126,7 @@ export type Drama = {
   ai_label?: boolean;
   episode_total?: number;
   pending_episodes?: number;
+  rejected_episodes?: number;
   trailer?: string;
   hashtags?: string;
   subtitle_style?: string;
@@ -588,6 +589,11 @@ export const day = (value?: string | null) =>
   value ? new Date(value).toLocaleDateString('ko-KR') : '-';
 export const moment = (value?: string | null) =>
   value ? new Date(value).toLocaleString('ko-KR') : '-';
+// 정산 · 판매 집계는 서버가 한국 시간으로 묶어요. 브라우저 시간대가 달라도 같은 날짜가 나오게 합니다.
+export const kstDay = (d: Date) => {
+  const k = new Date(d.getTime() + 9 * 3600000);
+  return `${k.getUTCFullYear()}-${String(k.getUTCMonth() + 1).padStart(2, '0')}-${String(k.getUTCDate()).padStart(2, '0')}`;
+};
 export const localDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const count = (value: number | string) => {

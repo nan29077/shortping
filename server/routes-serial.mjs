@@ -11,6 +11,14 @@ import { settleThumbs } from './thumbs.mjs';
 //   pending   회차 심사 대기
 //   rejected  회차 반려(고쳐서 다시 신청)
 //   scheduled 승인됐고 예약한 시각을 기다리는 중
+// 알림용 한국 시간 표기: '10월 1일 오후 9:16'(초 · 연도 없이)
+// 서버의 국제화 데이터에 따라 'PM'처럼 나올 수 있어 직접 만들어요.
+export const kstShort = (iso) => {
+  const k = new Date(new Date(iso).getTime() + 9 * 3600000);
+  const h = k.getUTCHours();
+  const m = String(k.getUTCMinutes()).padStart(2, '0');
+  return `${k.getUTCMonth() + 1}월 ${k.getUTCDate()}일 ${h < 12 ? '오전' : '오후'} ${h % 12 || 12}:${m}`;
+};
 export const EDITABLE_EPISODE = ['draft', 'rejected'];
 // 작품 상태와 회차 상태를 함께 보고 회차를 고칠 수 있는지 판단합니다.
 export function episodeEditable(d, e) {
@@ -90,9 +98,14 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
         result.status === 'rejected'
           ? `${title} 심사가 반려됐어요`
           : result.status === 'scheduled'
-            ? `${title}이 승인됐어요 · ${new Date(result.publish_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} 공개 예정`
-            : `${title}이 공개됐어요`,
-      body: result.status === 'rejected' ? b.note.trim() : '시청자가 지금 볼 수 있어요.',
+            ? `${title}가 승인됐어요 · ${kstShort(result.publish_at)} 공개 예정`
+            : `${title}가 공개됐어요`,
+      body:
+        result.status === 'rejected'
+          ? b.note.trim()
+          : result.status === 'scheduled'
+            ? '예약한 시각이 되면 시청자에게 자동으로 공개돼요.'
+            : '시청자가 지금 볼 수 있어요.',
       link: 'studio/contents',
     });
     res.json({ ok: true, status: result.status });
@@ -150,6 +163,9 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
     const winner = b.id ? list.find((r) => r.id === b.id) : [...list].sort((x, y) => rate(y) - rate(x))[0];
     if (!winner) fail(404, '후보를 찾을 수 없어요.');
     if (!existsSync(mediaPath(winner.url))) fail(400, '선택한 이미지 파일을 찾을 수 없어요. 다른 후보를 골라 주세요.');
+    // 심사 중(또는 숨김)인 작품은 심사받은 포스터가 바뀌지 않게 PD가 끝낼 수 없어요(관리자는 가능).
+    if (!['draft', 'rejected', 'published'].includes(d.status) && req.user.role !== 'admin')
+      fail(409, '심사 중인 작품은 대표 포스터를 바꿀 수 없어요. 심사가 끝난 뒤 다시 시도해 주세요.');
     if (d.status === 'published' && (list.some((item) => !Number(item.reviewed)) || !Number(winner.reviewed))) fail(409, '관리자가 확인하지 않은 표지 후보가 있어 비교를 끝낼 수 없어요.');
     await db.transaction(async () => {
       await db.run('UPDATE drama_thumbnails SET active=0, winner=CASE WHEN id=? THEN 1 ELSE 0 END WHERE drama_id=? AND active=1', [winner.id, d.id]);

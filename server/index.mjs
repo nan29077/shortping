@@ -132,6 +132,8 @@ app.use(
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   }),
 );
+// 자막은 20만 자(한글이면 최대 약 600KB)까지 받으니 이 경로만 본문 한도를 넓혀요(2026-10-01 재점검).
+app.post('/api/studio/dramas/:id/episodes/:number/subtitles', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '256kb' }));
 // Express 5는 본문이 없으면 req.body가 undefined라, req.body.x를 읽는 곳에서 500이 나요. 빈 객체로 맞춰 400(입력 확인)으로 안내합니다.
 app.use((req, res, next) => {
@@ -504,7 +506,7 @@ app.delete('/api/account/history', requireAuth, async (req, res) => {
 // 예약 공개 회차(scheduled)는 정한 시각이 되면 공개 처리기가 approved로 바꿉니다.
 const VISIBLE = "e.review_status='approved'";
 const catalogSql =
-  `SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND ${VISIBLE}) AS episode_count, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_total, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.source='studio') AS studio_episodes, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.review_status='pending') AS pending_episodes FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id`;
+  `SELECT d.*, c.name AS channel_name, c.slug AS channel_slug, c.status AS channel_status, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND ${VISIBLE}) AS episode_count, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id) AS episode_total, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.source='studio') AS studio_episodes, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.review_status='pending') AS pending_episodes, (SELECT COUNT(*) FROM episodes e WHERE e.drama_id=d.id AND e.review_status='rejected') AS rejected_episodes FROM dramas d LEFT JOIN channels c ON c.id=d.channel_id`;
 // 작품 주인·관리자는 심사 중인 회차도 봅니다.
 const seesAll = (user, d) => !!user && (user.role === 'admin' || user.id === d.owner_id);
 app.get('/api/dramas', async (req, res) =>
@@ -1292,10 +1294,16 @@ const upload = multer({
   fileFilter: (req, file, cb) =>
     cb(null, ['video/mp4', 'image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)),
 });
+const IMAGE_UPLOAD_MAX = 20 * 1024 * 1024;
 async function uploadMedia(req, res) {
   const f = req.file;
   if (!f) fail(400, 'MP4, JPG, PNG, WEBP 파일만 업로드할 수 있어요.');
   if (req.path === '/api/account/avatar') return res.json(await uploadAvatar(req, f));
+  // 영상은 500MB까지지만, 표지 · 배너 같은 이미지는 20MB까지만 받아요(화면 한도 10~20MB, 2026-10-01 재점검).
+  if (f.mimetype.startsWith('image/') && f.size > IMAGE_UPLOAD_MAX) {
+    unlinkSync(f.path);
+    fail(413, '이미지는 20MB 이하로 올려 주세요.');
+  }
   res.json(await registerMediaFile(f, req.user.id));
 }
 // 프로필 이미지는 일반 이미지 저장소가 아닙니다: 이미지 형식·크기(5MB)·가로세로(64~4096px)를 확인하고,
