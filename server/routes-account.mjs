@@ -44,7 +44,7 @@ export function accountRoutes({
   now,
   roles,
   requireAuth,
-  authLimiter,
+  authLimiters,
   sessionToken,
   publicUser,
   origin,
@@ -69,7 +69,7 @@ export function accountRoutes({
 
   // ── 비밀번호 찾기 ─────────────────────────────────────────────
   // 가입 여부와 상관없이 늘 같은 응답을 돌려줘 계정이 있는지 알아낼 수 없게 합니다.
-  app.post('/api/auth/password-reset/request', authLimiter, async (req, res) => {
+  app.post('/api/auth/password-reset/request', authLimiters.reset, async (req, res) => {
     const b = z
       .object({ email: z.email().max(254).transform((v) => v.toLowerCase()) })
       .parse(req.body);
@@ -105,7 +105,7 @@ export function accountRoutes({
     }
     res.json({ ok: true, message: RESET_SENT });
   });
-  app.post('/api/auth/password-reset/confirm', authLimiter, async (req, res) => {
+  app.post('/api/auth/password-reset/confirm', authLimiters.reset, async (req, res) => {
     const b = z
       .object({
         token: z.string().regex(/^[a-f0-9]{64}$/, '재설정 링크가 올바르지 않아요.'),
@@ -133,7 +133,7 @@ export function accountRoutes({
   });
 
   // ── 휴대폰 인증 ─────────────────────────────────────────────
-  app.post('/api/account/phone/send', requireAuth, authLimiter, async (req, res) => {
+  app.post('/api/account/phone/send', requireAuth, authLimiters.phone, async (req, res) => {
     const b = z.object({ phone: z.string().max(20) }).parse(req.body);
     const phone = normalizePhone(b.phone);
     if (!phone) fail(400, '휴대폰 번호를 확인해 주세요. 예) 010-1234-5678');
@@ -173,7 +173,7 @@ export function accountRoutes({
     }
     res.json({ ok: true, phone, expires_at: expiresAt });
   });
-  app.post('/api/account/phone/verify', requireAuth, authLimiter, async (req, res) => {
+  app.post('/api/account/phone/verify', requireAuth, authLimiters.phone, async (req, res) => {
     const b = z
       .object({ phone: z.string().max(20), code: z.string().trim().regex(/^\d{6}$/, '인증번호 6자리를 입력해 주세요.') })
       .parse(req.body);
@@ -240,7 +240,7 @@ export function accountRoutes({
   app.get('/api/account/withdraw', requireAuth, async (req, res) => {
     res.json({ ...(await withdrawCheck(req.user)), demo: req.user.id.startsWith('demo-') });
   });
-  app.post('/api/account/withdraw', requireAuth, authLimiter, async (req, res) => {
+  app.post('/api/account/withdraw', requireAuth, authLimiters.withdraw, async (req, res) => {
     const b = z
       .object({
         password: z.string().min(1, '비밀번호를 입력해 주세요.').max(128),
@@ -360,17 +360,11 @@ export function accountRoutes({
         title: '프록시 뒤에서 운영한다면 TRUST_PROXY_HOPS를 설정해야 해요',
         text:
           (proxy.forwardedSeen
-            ? `최근 X-Forwarded-For 머리글이 붙은 요청이 들어왔어요(마지막 ${new Date(proxy.lastSeenAt).toLocaleString('ko-KR')}, ${proxy.seenCount}건). 로드밸런서·CDN을 거치고 있다는 뜻이에요. `
+            ? `최근 X-Forwarded-For 머리글이 붙은 요청이 들어왔어요(마지막 ${new Date(proxy.lastSeenAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}, ${proxy.seenCount}건). 로드밸런서·CDN을 거치고 있다는 뜻이에요. `
             : '') +
           '이 값이 없으면 모든 요청이 프록시 IP 하나로 보여 요청 제한이 전체 사용자 공용이 되고, 기록에 남는 IP도 틀려져요. 프록시 수(보통 1)를 서버 환경변수 TRUST_PROXY_HOPS에 넣어 주세요.',
       });
-    if (production && !process.env.AI_SECRET_KEY)
-      warnings.push({
-        id: 'secret-key',
-        level: 'danger',
-        title: 'AI_SECRET_KEY가 없어요',
-        text: '계좌번호·발송 비밀값·AI API 키를 암호화하는 키예요. 설정하기 전에는 새 계좌번호가 암호화되지 않은 채 저장돼요.',
-      });
+    // AI_SECRET_KEY는 운영 서버가 시작할 때 이미 확인해요(없으면 서버가 뜨지 않음). 그래서 여기서는 따로 알리지 않아요.
     const plain = await plaintextAccountCount(db);
     if (plain)
       warnings.push({

@@ -62,8 +62,9 @@ export function uploadRoutes({
 }) {
   const partsDir = path.join(uploadDir, '.parts');
   const subsDir = path.join(uploadDir, 'subtitles');
-  void mkdir(partsDir, { recursive: true });
-  void mkdir(subsDir, { recursive: true });
+  // 폴더를 만들지 못하면(권한 · 디스크) 업로드 때 알 수 없는 오류가 나니 시작할 때 크게 알려요.
+  for (const dir of [partsDir, subsDir])
+    mkdir(dir, { recursive: true }).catch((e) => console.error('[숏핑] 업로드 폴더를 만들지 못했어요:', dir, e.message));
   const partPath = (id) => path.join(partsDir, id + '.part');
   const writing = new Set();
   const session = async (req) => {

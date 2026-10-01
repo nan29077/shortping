@@ -490,7 +490,7 @@ async function ensureColumn(db, table, column, type) {
     db.engine === 'postgresql'
       ? (
           await db.all(
-            'SELECT column_name AS name FROM information_schema.columns WHERE table_name=?',
+            'SELECT column_name AS name FROM information_schema.columns WHERE table_name=? AND table_schema=current_schema()',
             [table],
           )
         ).map((r) => r.name)

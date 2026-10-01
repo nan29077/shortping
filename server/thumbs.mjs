@@ -7,6 +7,7 @@ import { notify } from './notify.mjs';
 export const AB_MIN_IMPRESSIONS = Number(process.env.AB_MIN_IMPRESSIONS || 300);
 const bucket = (key, n) => parseInt(createHash('md5').update(String(key)).digest('hex').slice(0, 8), 16) % n;
 
+const seenToday = new Set();
 export async function applyThumbs(db, dramas, viewerKey) {
   if (!dramas.length) return dramas;
   const ids = dramas.map((d) => d.id);
@@ -28,6 +29,11 @@ export async function applyThumbs(db, dramas, viewerKey) {
     const day = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
     const fresh = [];
     for (const id of shown) {
+      // 이 서버가 오늘 이미 센 노출이면 DB에 다시 쓰지 않아요(목록 요청마다 쓰기가 몰리지 않게, 2026-10-01 재점검).
+      const memo = `${viewerKey}|${id}|${day}`;
+      if (seenToday.has(memo)) continue;
+      if (seenToday.size > 50000) seenToday.clear();
+      seenToday.add(memo);
       const r = await db.run('INSERT INTO thumb_click_marks (viewer_key,thumb_id,day) VALUES (?,?,?) ON CONFLICT DO NOTHING', ['imp:' + viewerKey, id, day]).catch(() => null);
       if (Number(r?.rowCount ?? r?.changes ?? 0) > 0) fresh.push(id);
     }

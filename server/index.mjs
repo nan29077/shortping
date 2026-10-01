@@ -57,7 +57,13 @@ import { looksInternal, zodMessage } from './errors.mjs';
 import { GENRES } from './genres.mjs';
 
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
-const demo = !production && process.env.ENABLE_DEMO !== 'false';
+// 데모(샘플 데이터 · 관리자 테스트 로그인)는 로컬 SQLite에서만 기본으로 켜요. DATABASE_URL(PostgreSQL)을 쓰면
+// 운영 DB일 수 있으니 ENABLE_DEMO=true로 직접 켤 때만 켭니다(2026-10-01 재점검).
+const demo =
+  !production &&
+  (process.env.DATABASE_URL ? process.env.ENABLE_DEMO === 'true' : process.env.ENABLE_DEMO !== 'false');
+if (process.env.DATABASE_URL && !production && !demo && process.env.ENABLE_DEMO !== 'false')
+  console.log('DATABASE_URL이 있어 데모 데이터를 넣지 않아요. 테스트용 DB라면 ENABLE_DEMO=true로 켜 주세요.');
 const port = Number(process.env.PORT || 3033);
 const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
 if (production && (!process.env.DATABASE_URL || !origin.startsWith('https://')))
@@ -193,11 +199,35 @@ app.use(
     skip: (req) => req.method === 'GET' && /^\/(play\/|dramas\/[^/]+\/trailer$|studio\/media\/|subtitles\/|studio\/ai\/episodes\/[^/]+\/subtitles$|studio\/ai\/voices\/sample\/)/.test(req.path),
   }),
 );
-const authLimiter = rateLimit({
-  windowMs: 15 * 60_000,
-  limit: testing ? 2_000 : 40,
-  message: { error: '잠시 후 다시 시도해 주세요.' },
-});
+// 로그인 · 가입 · 재설정 · 문자 인증 · 탈퇴가 한 한도를 같이 쓰면, 통신사 공용 IP에서 한 사람이 다른 사람까지 막아요.
+// 경로마다 따로 세고, 로그인한 뒤의 요청(비밀번호 변경 · 문자 · 탈퇴)은 IP가 아니라 계정으로 셉니다(2026-10-01 재점검).
+const limitMessage = { error: '잠시 후 다시 시도해 주세요.' };
+const authLimit = (limit, options = {}) =>
+  rateLimit({
+    windowMs: 15 * 60_000,
+    limit: testing ? 2_000 : limit,
+    message: limitMessage,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    ...options,
+  });
+const byUser = { keyGenerator: (req) => 'u:' + (req.user?.id || ''), validate: { keyGeneratorIpFallback: false } };
+const authLimiters = {
+  demo: authLimit(40),
+  register: authLimit(20),
+  login: authLimit(60),
+  // 같은 이메일로 비밀번호를 15분에 10번 틀리면 그 이메일만 잠시 막아요(성공한 로그인은 세지 않음).
+  loginEmail: authLimit(10, {
+    keyGenerator: (req) => 'e:' + String(req.body?.email || '').trim().toLowerCase(),
+    skipSuccessfulRequests: true,
+    validate: { keyGeneratorIpFallback: false },
+    message: { error: '이 이메일로 로그인을 여러 번 실패했어요. 15분 뒤에 다시 시도하거나 비밀번호를 재설정해 주세요.' },
+  }),
+  reset: authLimit(20),
+  password: authLimit(10, byUser),
+  phone: authLimit(15, byUser),
+  withdraw: authLimit(10, byUser),
+};
 const fail = (status, message) => {
   const e = new Error(message);
   e.status = status;
@@ -360,14 +390,14 @@ app.get('/api/health', async (req, res) => {
   }
 });
 app.get('/api/auth/me', (req, res) => res.json({ user: publicUser(req.user) }));
-app.post('/api/auth/demo', authLimiter, async (req, res) => {
+app.post('/api/auth/demo', authLimiters.demo, async (req, res) => {
   if (!demo) fail(404, '사용할 수 없는 기능입니다.');
   const role = z.enum(['admin', 'pd', 'viewer']).parse(req.body.role);
   const user = await db.get('SELECT * FROM users WHERE id=?', [`demo-${role}`]);
   if (user.status !== 'active') fail(403, '이용이 제한된 계정입니다.');
   await session(req, res, user);
 });
-app.post('/api/auth/register', authLimiter, async (req, res) => {
+app.post('/api/auth/register', authLimiters.register, async (req, res) => {
   const c = credentials.extend({ name: z.string().trim().min(2).max(30) }).parse(req.body);
   if (await db.get('SELECT id FROM users WHERE email=?', [c.email]))
     fail(409, '이미 가입된 이메일입니다.');
@@ -382,7 +412,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     fail(409, '이미 가입된 이메일입니다.');
   await session(req, res, user);
 });
-app.post('/api/auth/login', authLimiter, async (req, res) => {
+app.post('/api/auth/login', authLimiters.login, authLimiters.loginEmail, async (req, res) => {
   const c = credentials.parse(req.body);
   const user = await db.get('SELECT * FROM users WHERE email=?', [c.email]);
   const [salt, hash] = (
@@ -470,7 +500,7 @@ app.post('/api/account/revoke-sessions', requireAuth, async (req, res) => {
   ]);
   res.json({ ok: true });
 });
-app.post('/api/account/password', requireAuth, authLimiter, async (req, res) => {
+app.post('/api/account/password', requireAuth, authLimiters.password, async (req, res) => {
   if (req.user.id.startsWith('demo-'))
     fail(400, '공용 테스트 계정은 비밀번호를 변경할 수 없습니다.');
   const b = z
@@ -643,10 +673,16 @@ async function recordQualifiedView(user, d, episode, progress) {
   if (changedRows(marked)) await db.run('UPDATE dramas SET views=views+1 WHERE id=?', [d.id]);
   const stamp = now();
   const earliest = new Date(Date.now() - (needed / 2) * 1000).toISOString();
-  await db.run(
-    'UPDATE subscription_views SET qualified=1 WHERE user_id=? AND drama_id=? AND episode=? AND period=? AND qualified=0 AND created_at<=?',
-    [user.id, d.id, episode.number, periodOf(stamp), earliest],
-  );
+  // 월말 밤에 재생을 시작해 다음 달에 기준을 넘긴 경우도 시작한 달(아직 마감 전이면)로 인정해요(2026-10-01 재점검).
+  const periods = [periodOf(stamp)];
+  const prev = periodOf(new Date(Date.now() - 6 * 3600000).toISOString());
+  if (prev !== periods[0] && !(await db.get("SELECT 1 AS closed FROM audit_logs WHERE action='settlement:closed' AND target_id=?", [prev])))
+    periods.push(prev);
+  for (const period of periods)
+    await db.run(
+      'UPDATE subscription_views SET qualified=1 WHERE user_id=? AND drama_id=? AND episode=? AND period=? AND qualified=0 AND created_at<=?',
+      [user.id, d.id, episode.number, period, earliest],
+    );
 }
 // 하루 단위 중복 방지 표시는 며칠 지나면 필요 없으니 정리합니다.
 setInterval(() => {
@@ -1619,7 +1655,7 @@ const routeContext = {
 };
 studioRoutes(routeContext);
 adminRoutes(routeContext);
-accountRoutes({ ...routeContext, authLimiter, sessionToken, publicUser, origin, proxyStatus, production });
+accountRoutes({ ...routeContext, authLimiters, sessionToken, publicUser, origin, proxyStatus, production });
 uploadRoutes(routeContext);
 lamaRoutes(routeContext);
 serialRoutes(routeContext);
@@ -1762,6 +1798,8 @@ async function shutdown(signal) {
   } catch {
     /* 이미 닫힘 */
   }
+  // 합성 처리기도 멈춰요(새 합성은 가져가지 않음, 2026-10-01 재점검).
+  if (process.env.COMPOSE_WORKER !== 'external') await Promise.resolve(renderer.stop()).catch(() => {});
   // 처리 중이던 AI 작업을 넘겨주고(다음 서버가 바로 이어받도록) DB를 닫습니다.
   await aiEngine.stop().catch(() => {});
   await Promise.resolve(db.close()).catch(() => {});

@@ -17,5 +17,5 @@ COPY --chown=node:node server ./server
 COPY --chown=node:node scripts/promote-admin.mjs ./scripts/promote-admin.mjs
 USER node
 EXPOSE 3033
-HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:3033/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3033)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "server/index.mjs", "--production"]
