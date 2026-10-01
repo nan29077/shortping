@@ -88,6 +88,18 @@ export async function uploadVideo(
   return api<UploadResult>(`/studio/uploads/${handle.id}/complete`, 'POST');
 }
 
+// 더 이상 이어 올리지 않을 업로드(대기열에서 뺌 · 화면을 떠남 · 서버가 거절)는 서버 조각을 지워 자리를 비워요.
+// 실패해도 서버가 6시간 뒤(한도에 닿으면 30분 뒤) 스스로 정리하므로 조용히 넘어갑니다.
+export function cancelUpload(handle?: UploadHandle | null) {
+  if (!handle) return;
+  void fetch(apiUrl('/studio/uploads/' + handle.id), {
+    method: 'DELETE',
+    credentials: fetchCredentials,
+    headers: authHeaders(),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 // 파일 이름에서 회차 번호를 찾습니다. "03화", "EP02", "episode-4", "제5화", "7.mp4"
 export function episodeNumberFrom(name: string): number | null {
   const base = name.replace(/\.[^.]+$/, '');

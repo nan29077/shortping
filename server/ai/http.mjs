@@ -129,7 +129,19 @@ async function readLimited(res, limit) {
   }
   return Buffer.concat(chunks, total);
 }
-export async function download(url, headers = {}) {
+// options.trustedOrigin: 관리자가 정한 공급사 주소(base_url)의 출처. 생성 요청(call)과 같은 곳이면 사내 프록시 ·
+//   지역 엔드포인트(http · 내부망)여도 결과를 받아요(그 밖의 주소는 지금처럼 SSRF 검사).
+// options.authOrigins: 인증 헤더(API 키)를 보내도 되는 출처 목록. 없으면 처음 주소와 같은 출처일 때만 보내요.
+const originOf = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
+};
+export async function download(url, headers = {}, options = {}) {
+  const trusted = options.trustedOrigin ? originOf(options.trustedOrigin) : '';
+  const authOrigins = new Set((options.authOrigins || [originOf(url)]).map(originOf).filter(Boolean));
   if (url.startsWith('data:')) {
     const [, meta, data] = url.match(/^data:([^,]*),(.*)$/s) || [];
     if (!meta) throw new VendorError('결과 파일을 읽지 못했어요.');
@@ -138,9 +150,11 @@ export async function download(url, headers = {}) {
     return buffer;
   }
   let current = url;
-  let sendHeaders = headers;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (!(await allowedUrl(current))) throw new VendorError('안전하지 않은 결과 주소예요.', { retryable: false });
+    const origin = originOf(current);
+    if (!(trusted && origin === trusted) && !(await allowedUrl(current))) throw new VendorError('안전하지 않은 결과 주소예요.', { retryable: false });
+    // API 키는 허용한 출처에만 보내요(응답에 담긴 다른 호스트 주소나 리다이렉트 대상에는 보내지 않음).
+    const sendHeaders = authOrigins.has(origin) ? headers : {};
     let res;
     try {
       res = await fetch(current, { headers: sendHeaders, signal: AbortSignal.timeout(300000), redirect: 'manual' });
@@ -150,10 +164,8 @@ export async function download(url, headers = {}) {
     if ([301, 302, 303, 307, 308].includes(res.status)) {
       const location = res.headers.get('location');
       if (!location) throw new VendorError('결과 파일을 내려받지 못했어요(주소 없음).');
-      const next = new URL(location, current).toString();
-      // 다른 곳으로 넘어가면 공급사 인증 헤더(API 키)를 보내지 않습니다.
-      if (new URL(next).origin !== new URL(current).origin) sendHeaders = {};
-      current = next;
+      // 다른 곳으로 넘어가면 그 출처가 허용 목록에 없는 한 공급사 인증 헤더(API 키)를 보내지 않습니다.
+      current = new URL(location, current).toString();
       continue;
     }
     if (!res.ok) throw new VendorError(`결과 파일을 내려받지 못했어요(${res.status}).`);

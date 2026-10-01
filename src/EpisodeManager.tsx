@@ -20,7 +20,7 @@ import { api, ApiError, lama, uuid, SESSION_EXPIRED_EVENT, type Drama } from './
 import { Modal, setLeaveGuard } from './App';
 import type { ManagedDrama } from './ContentReview';
 import { useConfirm } from './confirm';
-import { episodeNumberFrom, MAX_VIDEO_MB, uploadVideo, type UploadHandle } from './upload';
+import { cancelUpload, episodeNumberFrom, MAX_VIDEO_MB, uploadVideo, type UploadHandle } from './upload';
 import {
   defaultReserveInput,
   EpisodeStatusChip,
@@ -129,6 +129,8 @@ export default function EpisodeManager({
     [dragging, setDragging] = useState(false),
     [loadError, setLoadError] = useState('');
   const abort = useRef<AbortController | null>(null);
+  const queueRef = useRef<QueueItem[]>([]);
+  queueRef.current = queue;
   const subtitleFor = useRef<number>(0);
   const subtitleInput = useRef<HTMLInputElement>(null);
   const [ask, confirmUi] = useConfirm();
@@ -148,6 +150,8 @@ export default function EpisodeManager({
     return () => {
       alive.current = false;
       abort.current?.abort();
+      // 화면을 닫으면 이어 올릴 정보가 사라지므로, 끝나지 않은 업로드의 서버 조각도 정리해요.
+      for (const q of queueRef.current) if (q.status !== 'done') cancelUpload(q.handle);
     };
   }, [d.id]);
   // 영상을 올리는 중에는 화면을 떠나기 전에 물어요(뒤로 가기 · 다른 메뉴 · 새로고침 · 탭 닫기).
@@ -254,7 +258,9 @@ export default function EpisodeManager({
         });
       } catch (e) {
         // 서버가 파일을 거절한 경우(형식·용량 등)는 다시 올려도 같아서 자동 재시도에서 뺍니다.
-        const rejected = e instanceof ApiError && e.code !== 'network' && e.code !== 'unauthorized';
+        // 동시 업로드 한도(upload_limit)는 파일 문제가 아니라 잠시 뒤 다시 시도하면 돼요.
+        const rejected = e instanceof ApiError && e.code !== 'network' && e.code !== 'unauthorized' && e.code !== 'upload_limit';
+        if (rejected) cancelUpload(item.handle);
         patch(item.key, {
           status: 'error',
           error: (e as Error).message,
@@ -933,7 +939,11 @@ export default function EpisodeManager({
                         className="icon-button"
                         aria-label={q.file.name + ' 빼기'}
                         title="대기열에서 빼기"
-                        onClick={() => setQueue((prev) => prev.filter((x) => x.key !== q.key))}
+                        onClick={() => {
+                          // 올리다 만 영상이면 서버에 남은 조각도 지워 동시 업로드 자리를 비워요.
+                          if (q.status !== 'done') cancelUpload(q.handle);
+                          setQueue((prev) => prev.filter((x) => x.key !== q.key));
+                        }}
                       >
                         <X size={15} />
                       </button>

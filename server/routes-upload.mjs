@@ -85,9 +85,11 @@ export function uploadRoutes({
     // 한 사람이 동시에 열어 둘 수 있는 분할 업로드는 최대 MAX_OPEN_UPLOADS개입니다.
     // 먼저 이 사람의 멈춘(STALE_UPLOAD_MS 동안 조각이 오지 않은) 업로드를 정리하고 개수를 셉니다.
     await expireStale(req.user.id);
-    const open = await db.get("SELECT COUNT(*) AS n FROM upload_sessions WHERE owner_id=? AND status='open'", [req.user.id]);
-    if (Number(open?.n || 0) >= MAX_OPEN_UPLOADS)
-      fail(429, `동시에 올릴 수 있는 영상은 ${MAX_OPEN_UPLOADS}개까지예요. 진행 중인 업로드를 마치거나 취소한 뒤 다시 시도해 주세요.`);
+    const countOpen = async () => Number((await db.get("SELECT COUNT(*) AS n FROM upload_sessions WHERE owner_id=? AND status='open'", [req.user.id]))?.n || 0);
+    // 한도에 닿았으면 30분 넘게 조각이 오지 않은(멈추거나 화면을 떠난) 업로드부터 정리해 자리를 만들어요(2026-10-01 재점검).
+    if ((await countOpen()) >= MAX_OPEN_UPLOADS) await expireStale(req.user.id, 30 * 60 * 1000);
+    if ((await countOpen()) >= MAX_OPEN_UPLOADS)
+      throw Object.assign(new Error(`동시에 올릴 수 있는 영상은 ${MAX_OPEN_UPLOADS}개까지예요. 진행 중인 업로드를 마치거나 잠시 뒤 다시 시도해 주세요.`), { status: 429, code: 'upload_limit' });
     const id = randomUUID();
     await writeFile(partPath(id), '');
     await db.run(
@@ -178,8 +180,8 @@ export function uploadRoutes({
     res.json({ ok: true });
   });
   // 멈춘 업로드(STALE_UPLOAD_MS 동안 조각이 오지 않음)는 조각 파일을 지우고 '만료'로 바꿉니다.
-  async function expireStale(ownerId = null) {
-    const stale = new Date(Date.now() - STALE_UPLOAD_MS).toISOString();
+  async function expireStale(ownerId = null, idleMs = STALE_UPLOAD_MS) {
+    const stale = new Date(Date.now() - idleMs).toISOString();
     const rows = await db.all(
       "SELECT id FROM upload_sessions WHERE status='open' AND updated_at<?" + (ownerId ? ' AND owner_id=?' : ''),
       ownerId ? [stale, ownerId] : [stale],

@@ -2055,11 +2055,13 @@ export function Modal({
   children,
   close,
   className = '',
+  backdropClassName = '',
 }: {
   title: string;
   children: React.ReactNode;
   close: () => void;
   className?: string;
+  backdropClassName?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const token = useRef(Symbol('shortping-modal'));
@@ -2118,7 +2120,7 @@ export function Modal({
     };
   }, []);
   return (
-    <div className="modal-backdrop" onClick={() => modalStack.at(-1) === token.current && close()}>
+    <div className={'modal-backdrop ' + backdropClassName} onClick={() => modalStack.at(-1) === token.current && close()}>
       <div
         className={'modal ' + className}
         ref={ref}
@@ -2889,7 +2891,11 @@ function WatchPage({
     );
   // 회차 사이 이동은 기록을 쌓지 않고 현재 항목을 바꿉니다. 뒤로 가면 회차를 보기 전 화면으로 돌아갑니다.
   const goEpisode = (n: number) => navigate('watch/' + id + '/' + n, { replace: true });
-  const next = d.episodes.find((e) => e.number === number + 1);
+  // 이전 · 다음 화는 보이는 회차 목록 순서로 정해요. 심사 중인 회차가 있어 번호가 비어도(예: 13화 없이 14화) 이어서 볼 수 있게.
+  const ordered = [...d.episodes].sort((a, b) => a.number - b.number);
+  const at = ordered.findIndex((e) => e.number === number);
+  const next = at >= 0 ? ordered[at + 1] : undefined;
+  const prev = at > 0 ? ordered[at - 1] : undefined;
   const autoNext =
     user?.auto_next !== false &&
     !!next &&
@@ -3013,9 +3019,9 @@ function WatchPage({
               onEnded={() => {
                 persist(true);
                 // 잠긴 다음 회차는 자동 열기를 켜고 핑이 충분할 때만 이어서 이동합니다.
-                if (autoNext) {
-                  markAutoplay(id, number + 1);
-                  goEpisode(number + 1);
+                if (autoNext && next) {
+                  markAutoplay(id, next.number);
+                  goEpisode(next.number);
                 }
               }}
             >
@@ -3047,7 +3053,7 @@ function WatchPage({
         )}
       </div>
       <div className="watch-controls">
-        <button disabled={number <= 1} onClick={() => goEpisode(number - 1)}>
+        <button disabled={!prev} onClick={() => prev && goEpisode(prev.number)}>
           <ChevronLeft size={20} />
           이전 화
         </button>
@@ -3055,7 +3061,7 @@ function WatchPage({
           <Clapperboard size={18} />
           전체 회차 <ChevronDown size={15} />
         </button>
-        <button disabled={number >= d.episode_count} onClick={() => goEpisode(number + 1)}>
+        <button disabled={!next} onClick={() => next && goEpisode(next.number)}>
           다음 화<ChevronRight size={20} />
         </button>
       </div>

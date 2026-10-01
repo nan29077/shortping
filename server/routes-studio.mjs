@@ -346,9 +346,14 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
       .parse(req.body);
     if (b.business_type === 'business' && !/^\d{3}-?\d{2}-?\d{5}$/.test(b.business_no))
       fail(400, '사업자등록번호 10자리를 정확히 입력해 주세요.');
-    await taxProfile(req.user.id);
+    // 관리자 확인(verified)은 출금에 쓰는 핵심 정보(사업자 유형·번호·상호·대표자·계좌)가 바뀔 때만 다시 받아요.
+    // 연락처 · 주소 · 세금계산서 이메일만 고치면 확인 상태를 그대로 둡니다(2026-10-01 재점검).
+    const before = openRow(await taxProfile(req.user.id));
+    const keyChanged =
+      ['business_type', 'business_no', 'business_name', 'rep_name', 'bank_name', 'account_holder'].some((k) => String(before?.[k] ?? '') !== String(b[k] ?? '')) ||
+      String(before?.account_number ?? '').replace(/-/g, '') !== String(b.account_number).replace(/-/g, '');
     await db.run(
-      'UPDATE pd_tax_profiles SET business_type=?,business_no=?,business_name=?,rep_name=?,business_class=?,business_item=?,tax_email=?,bank_name=?,account_number=?,account_holder=?,contact=?,address=?,verified=0,updated_at=? WHERE user_id=?',
+      `UPDATE pd_tax_profiles SET business_type=?,business_no=?,business_name=?,rep_name=?,business_class=?,business_item=?,tax_email=?,bank_name=?,account_number=?,account_holder=?,contact=?,address=?${keyChanged ? ',verified=0' : ''},updated_at=? WHERE user_id=?`,
       [
         b.business_type,
         b.business_no,

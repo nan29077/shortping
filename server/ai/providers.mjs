@@ -130,7 +130,8 @@ const openai = {
     const base = trimBase(provider.base_url, this.base);
     const data = await call(`${base}/videos/${ref}`, { method: 'GET', headers: bearer(key) });
     if (data.status === 'completed')
-      return ok({ url: `${base}/videos/${ref}/content`, headers: bearer(key) });
+      // 결과는 생성 요청과 같은 공급사 주소(프록시 포함)에서 받아요.
+      return ok({ url: `${base}/videos/${ref}/content`, headers: bearer(key), trustedOrigin: base });
     if (data.status === 'failed') throw new VendorError('영상 생성 실패: ' + (data.error?.message || '원인 미상'), { retryable: true });
     return pending(ref);
   },
@@ -254,7 +255,8 @@ const gemini = {
     const sample = data.response?.generateVideoResponse?.generatedSamples?.[0] || data.response?.generatedVideos?.[0];
     const uri = sample?.video?.uri;
     if (!uri) throw new VendorError('영상 결과가 없어요(안전 정책으로 걸러졌을 수 있어요).', { retryable: false });
-    return ok({ url: uri, headers: this.headers(key) });
+    // API 키는 구글 API 또는 관리자가 정한 공급사 주소로만 보내요(응답 속 다른 호스트로 새지 않게).
+    return ok({ url: uri, headers: this.headers(key), trustedOrigin: base, authOrigins: [base, 'https://generativelanguage.googleapis.com'] });
   },
   async test({ provider, key }) {
     await call(`${trimBase(provider.base_url, this.base)}/models?pageSize=1`, { method: 'GET', headers: this.headers(key), timeout: 20000 });

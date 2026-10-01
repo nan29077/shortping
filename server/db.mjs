@@ -214,6 +214,10 @@ async function migrateSchema(db) {
     `CREATE INDEX IF NOT EXISTS studio_members_user ON studio_members(user_id)`,
     `CREATE TABLE IF NOT EXISTS studio_invites (id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, email TEXT, role TEXT NOT NULL, pay_mode TEXT NOT NULL DEFAULT 'self', sponsor_limit INTEGER NOT NULL DEFAULT 0, max_uses INTEGER NOT NULL DEFAULT 1, uses INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, expires_at TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS studio_invites_project ON studio_invites(project_id)`,
+    // AI 공급사 원가가 들었지만 실패한 시도(결과 확인 시간 초과 · 결과 다운로드 실패 등)의 원가 기록(2026-10-01 재점검).
+    // 월 예산 · 공급사 한도 계산에 포함해 실제 원가보다 적게 잡히지 않게 합니다.
+    `CREATE TABLE IF NOT EXISTS ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, provider_id TEXT, model_ref TEXT, cost_won INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ai_job_attempts_month ON ai_job_attempts(created_at, provider_id)`,
     // 소유자가 팀에서 뺀 기록: 빼기 전에 만든 초대 링크로는 다시 들어올 수 없어요(2026-10-01).
     `CREATE TABLE IF NOT EXISTS studio_removed_members (project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, removed_at TEXT NOT NULL, PRIMARY KEY(project_id, user_id))`,
     `CREATE TABLE IF NOT EXISTS studio_comments (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,

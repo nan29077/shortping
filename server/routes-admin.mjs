@@ -677,6 +677,11 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
     if (!drama) fail(404, '작품을 찾을 수 없습니다.');
     if (!['published', 'hidden'].includes(drama.status))
       fail(409, '공개된 작품의 판매 설정만 변경할 수 있어요.');
+    // 탈퇴 · 이용 제한된 PD의 작품은 다시 공개하지 않아요(탈퇴 때 내린 작품이 다시 팔리지 않게).
+    if (b.status === 'published' && drama.status !== 'published') {
+      const owner = await db.get('SELECT status FROM users WHERE id=?', [drama.owner_id]);
+      if (owner?.status !== 'active') fail(409, '작품 주인 계정이 탈퇴 · 이용 제한 상태라 다시 공개할 수 없어요.');
+    }
     await db.run(
       'UPDATE dramas SET free=?,episode_pings=?,free_episodes=?,badge=?,status=? WHERE id=?',
       [b.free ? 1 : 0, b.episode_pings, b.free_episodes, b.badge, b.status, drama.id],

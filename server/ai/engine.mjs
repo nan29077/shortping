@@ -175,7 +175,11 @@ export function createAiEngine({ db, uploadDir, demo }) {
       `SELECT provider_id, COALESCE(SUM(cost_won),0) AS n FROM ai_jobs WHERE status IN ('succeeded','queued','running') AND created_at>=?${excludeJobId ? ' AND id<>?' : ''} GROUP BY provider_id`,
       excludeJobId ? [kstMonthStart(), excludeJobId] : [kstMonthStart()],
     );
-    return new Map(rows.map((r) => [r.provider_id, Number(r.n)]));
+    const out = new Map(rows.map((r) => [r.provider_id, Number(r.n)]));
+    // 원가는 들었지만 실패한 시도도 공급사 이번 달 원가에 더해요.
+    for (const r of await db.all('SELECT provider_id, COALESCE(SUM(cost_won),0) AS n FROM ai_job_attempts WHERE created_at>=? GROUP BY provider_id', [kstMonthStart()]))
+      out.set(r.provider_id, (out.get(r.provider_id) || 0) + Number(r.n));
+    return out;
   }
   const cooling = (r) => r.cooldown_until && new Date(r.cooldown_until).getTime() > Date.now();
   // 정책으로 걸러진 이유(직접 선택 시 안내용)
@@ -297,7 +301,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (!providerBudget) return;
     const spent = Number(
       (await db.get(`SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_jobs WHERE provider_id=? AND status IN ('succeeded','queued','running') AND created_at>=?${excludeJobId ? ' AND id<>?' : ''}`, excludeJobId ? [provider.provider_id, kstMonthStart(), excludeJobId] : [provider.provider_id, kstMonthStart()]))?.n || 0,
-    );
+    ) + Number((await db.get('SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_job_attempts WHERE provider_id=? AND created_at>=?', [provider.provider_id, kstMonthStart()]))?.n || 0);
     if (spent + costWon > providerBudget)
       throw error(503, `${provider.provider_name}의 이번 달 AI 원가 한도를 넘어요. 다른 모델을 선택하거나 관리자에게 문의해 주세요.`, { code: 'provider_monthly_budget' });
   }
@@ -341,7 +345,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     if (budget > 0) {
       const spent = Number(
         (await db.get("SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_jobs WHERE status IN ('succeeded','queued','running') AND created_at>=?", [kstMonthStart()]))?.n || 0,
-      );
+      ) + Number((await db.get('SELECT COALESCE(SUM(cost_won),0) AS n FROM ai_job_attempts WHERE created_at>=?', [kstMonthStart()]))?.n || 0);
       if (spent + costWon > budget)
         throw error(503, '이번 달 플랫폼 AI 예산을 모두 사용했어요. 관리자에게 문의해 주세요.', { code: 'monthly_budget' });
     }
@@ -435,7 +439,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     let data = result.data;
     let mime = result.mime;
     if (!data && result.url) {
-      data = await download(result.url, result.headers || {});
+      data = await download(result.url, result.headers || {}, { trustedOrigin: result.trustedOrigin, authOrigins: result.authOrigins });
       mime = mime || { image: 'image/png', video: 'video/mp4', tts: 'audio/mpeg', music: 'audio/mpeg', sfx: 'audio/mpeg', lipsync: 'video/mp4', upscale: 'image/png', upscale_video: 'video/mp4' }[job.capability];
     }
     if (!data?.length) throw Object.assign(new Error('결과 파일이 비어 있어요.'), { retryable: true });
@@ -548,6 +552,12 @@ export function createAiEngine({ db, uploadDir, demo }) {
       const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
       if (!fresh || !['running', 'queued'].includes(fresh.status)) return;
       const attempts = Number(fresh.attempts) + 1;
+      // 공급사가 작업을 받았거나(결과 확인 중 실패 · 시간 초과) 결과를 이미 만든 뒤 실패했다면 원가가 들었어요.
+      // 재시도 · 실패 처리로 cost_won이 바뀌기 전에 이 시도의 원가를 따로 남깁니다.
+      if ((fresh.vendor_ref || err?.vendorSpent) && Number(fresh.cost_won) > 0)
+        await db.run('INSERT INTO ai_job_attempts (id,job_id,provider_id,model_ref,cost_won,reason,created_at) VALUES (?,?,?,?,?,?,?)', [
+          randomUUID(), fresh.id, fresh.provider_id, fresh.model_ref, Number(fresh.cost_won), String(err?.message || '').slice(0, 200), iso(),
+        ]);
       // 자동 선택이면 요청 형식 오류(4xx)처럼 같은 모델로는 다시 해도 안 되는 경우에도 다른 모델을 한 번 더 시도합니다.
       const switchOnly = err?.retryable === false && !err?.handlerError && fresh.requested_model === 'auto' && err?.status !== 401;
       const retryable = (err?.retryable !== false || switchOnly) && attempts < 3;
@@ -626,7 +636,13 @@ export function createAiEngine({ db, uploadDir, demo }) {
         ]);
         return;
       }
-      await finish(job, model, res.result);
+      try {
+        await finish(job, model, res.result);
+      } catch (e) {
+        // 공급사가 결과를 이미 만들었으므로(원가 발생) 이 시도의 원가를 따로 남겨요.
+        if (e && typeof e === 'object') e.vendorSpent = true;
+        throw e;
+      }
     } catch (err) {
       // 결과 확인 중 일시 오류(연결 끊김·429·5xx)라면 공급사가 만들고 있는 작업을 버리지 않고
       // 잠시 뒤 다시 확인합니다. 새로 생성하면 원가가 두 번 들기 때문입니다.
@@ -791,6 +807,11 @@ export function createAiEngine({ db, uploadDir, demo }) {
       if (job.status === 'queued' || (force && job.status === 'running')) {
         if (Number(job.hold_paid) + Number(job.hold_bonus) > 0)
           await releaseLama(db, { userId: job.user_id, jobId: job.id, holdPaid: Number(job.hold_paid), holdBonus: Number(job.hold_bonus), memo: '작업 취소 · 전액 반환', });
+        // 관리자가 공급사에 이미 넘긴 작업을 강제로 멈추면 그 원가는 들었으므로 따로 남겨요.
+        if (job.vendor_ref && Number(job.cost_won) > 0)
+          await db.run('INSERT INTO ai_job_attempts (id,job_id,provider_id,model_ref,cost_won,reason,created_at) VALUES (?,?,?,?,?,?,?)', [
+            randomUUID(), job.id, job.provider_id, job.model_ref, Number(job.cost_won), '관리자 강제 취소', iso(),
+          ]);
         await db.run("UPDATE ai_jobs SET status='canceled',finished_at=?,hold_paid=0,hold_bonus=0,cost_won=0,error=? WHERE id=?", [iso(), force ? '관리자가 취소했어요.' : '취소했어요.', job.id]);
         await handlers.get(job.kind)?.onFail?.({ job, message: '취소됨' });
         return { ok: true };

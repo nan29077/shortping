@@ -1529,8 +1529,10 @@ app.patch('/api/admin/users/:id', roles('admin'), async (req, res) => {
     .parse(req.body);
   if (req.params.id === req.user.id || req.params.id === 'demo-admin')
     fail(400, '현재 관리자 계정은 변경할 수 없어요.');
-  if (!(await db.get('SELECT id FROM users WHERE id=?', [req.params.id])))
-    fail(404, '회원을 찾을 수 없습니다.');
+  const current = await db.get('SELECT id,status FROM users WHERE id=?', [req.params.id]);
+  if (!current) fail(404, '회원을 찾을 수 없습니다.');
+  // 탈퇴한 계정은 되살릴 수 없어요(회원 관리 경로와 같은 규칙, 2026-10-01 재점검).
+  if (current.status === 'withdrawn') fail(400, '탈퇴한 계정은 다시 활성화하거나 바꿀 수 없어요.');
   await db.transaction(async () => {
     await db.run('UPDATE users SET role=?,status=? WHERE id=?', [b.role, b.status, req.params.id]);
     // 이용 제한하면 로그인도 끊어요(나중에 다시 풀어도 예전 로그인이 되살아나지 않게).

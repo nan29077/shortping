@@ -1607,11 +1607,30 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   // 한국어로 쓴 묘사(컷 화면·인물 외모·장소)는 저장할 때 영상·이미지 모델용 영어로 번역해 둡니다.
   // 번역은 플랫폼이 부담하므로(라마 차감 없음) 텍스트 모델이 없거나 실패해도 저장에는 영향이 없습니다.
   // inTx: 이미 트랜잭션 안(작업 결과 반영 중 등)이면 새 트랜잭션을 열지 않습니다(SQLite 대기열 교착 방지).
+  const TRANSLATE_DAILY_LIMIT = Number(process.env.TRANSLATE_DAILY_LIMIT || 300);
   async function queueTranslate(projectId, userId, items, { inTx = false } = {}) {
     const list = items.filter((x) => /[가-힣]/.test(x.ko || '') && String(x.ko).trim().length >= 2);
     if (!list.length) return;
     const wrap = (fn) => (inTx ? fn() : db.transaction(fn));
     try {
+      // 무료 번역(플랫폼 부담)은 끝없이 쌓이지 않게 해요(2026-10-01 재점검).
+      // 1) 같은 대상의 번역이 아직 대기 중이면 새로 만들지 않고 마지막 문장으로 바꿔 둬요.
+      if (list.length === 1) {
+        const waiting = await db.get("SELECT id,input FROM ai_jobs WHERE kind='translate' AND status='queued' AND project_id=? AND target_id=? LIMIT 1", [projectId, list[0].id]);
+        if (waiting) {
+          let prev = {};
+          try {
+            prev = JSON.parse(waiting.input || '{}');
+          } catch {}
+          const r = await db.run("UPDATE ai_jobs SET input=? WHERE id=? AND status='queued'", [JSON.stringify({ ...prev, ...translatePrompt(list), items: list, userText: '' }), waiting.id]);
+          if (Number(r?.rowCount ?? r?.changes ?? 0) > 0) return;
+        }
+      }
+      // 2) 프로젝트당 하루(KST) 번역 작업 수 상한. 넘으면 한글 묘사를 그대로 써요(번역은 다음 날 다시 돼요).
+      const kst = new Date(Date.now() + 9 * 3600000);
+      const dayStart = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9 * 3600000).toISOString();
+      const today = Number((await db.get("SELECT COUNT(*) AS n FROM ai_jobs WHERE kind='translate' AND project_id=? AND created_at>=?", [projectId, dayStart]))?.n || 0);
+      if (today >= TRANSLATE_DAILY_LIMIT) return;
       await wrap(() =>
         engine.enqueue({
           userId,

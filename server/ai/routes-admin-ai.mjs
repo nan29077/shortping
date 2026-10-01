@@ -81,8 +81,8 @@ export function adminAiRoutes({ app, db, fail, now, roles, engine }) {
       capabilities: capabilityLabel,
       providers: (
         await db.all(
-          "SELECT p.*, (SELECT COALESCE(SUM(j.cost_won),0) FROM ai_jobs j WHERE j.provider_id=p.id AND j.status IN ('succeeded','queued','running') AND j.created_at>=?) AS month_cost FROM ai_providers p ORDER BY p.sort_order, p.created_at",
-          [since],
+          "SELECT p.*, (SELECT COALESCE(SUM(j.cost_won),0) FROM ai_jobs j WHERE j.provider_id=p.id AND j.status IN ('succeeded','queued','running') AND j.created_at>=?) + (SELECT COALESCE(SUM(a.cost_won),0) FROM ai_job_attempts a WHERE a.provider_id=p.id AND a.created_at>=?) AS month_cost FROM ai_providers p ORDER BY p.sort_order, p.created_at",
+          [since, since],
         )
       ).map(providerView),
       routes: await db.all('SELECT * FROM ai_route_rules ORDER BY capability, tier'),

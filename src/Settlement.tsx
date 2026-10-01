@@ -248,6 +248,10 @@ export default function Settlement({
   );
   const ready = data.balance.available >= data.settings.payout_min && data.balance.available > 0;
   const accountReady = !!(form.bank_name && form.account_number && form.account_holder);
+  // 출금은 저장된 정보 기준이에요. 사업자는 관리자 확인을 받아야 세금계산서(부가세 가산) 기준으로 출금할 수 있어요.
+  const savedProfile = data.profile;
+  const verifiedBusiness = savedProfile?.business_type === 'business' && !!Number(savedProfile?.verified);
+  const pendingBusiness = savedProfile?.business_type === 'business' && !Number(savedProfile?.verified);
 
   if (section === 'settlement')
     return (
@@ -380,7 +384,7 @@ export default function Settlement({
               <p>출금 가능 금액 전액을 한 번에 신청합니다.</p>
             </div>
             <span className="tag-outline">
-              {form.business_type === 'business' ? '사업자' : '비사업자'}
+              {verifiedBusiness ? '사업자' : pendingBusiness ? '사업자 · 확인 대기' : '비사업자'}
             </span>
           </div>
           <div className="payout-summary">
@@ -388,7 +392,7 @@ export default function Settlement({
               <span>출금 가능 금액</span>
               <strong className="lime">{won(data.balance.available)}</strong>
             </div>
-            {form.business_type === 'business' ? (
+            {verifiedBusiness ? (
               <>
                 <div>
                   <span>부가세 ({data.settings.vat_rate}%)</span>
@@ -441,6 +445,13 @@ export default function Settlement({
               </>
             )}
           </div>
+          {pendingBusiness && (
+            <div className="review-alert">
+              <AlertCircle size={16} />
+              사업자 정보를 관리자가 확인하고 있어요. 확인이 끝나면 세금계산서 기준으로 출금할 수 있어요. 급하면 세무 · 정산
+              정보에서 비사업자로 바꿔 원천징수 기준으로 신청할 수 있어요.
+            </div>
+          )}
           {!accountReady && (
             <div className="review-alert">
               <AlertCircle size={16} />
@@ -488,11 +499,15 @@ export default function Settlement({
           ) : (
             <button
               className="primary full"
-              disabled={!ready || !accountReady || busy}
+              disabled={!ready || !accountReady || busy || pendingBusiness}
               onClick={() => setConfirming(true)}
             >
               <Banknote size={17} />
-              {ready ? `${won(data.balance.available)} 출금 신청` : '출금 가능 금액이 부족해요'}
+              {pendingBusiness
+                ? '사업자 확인 후 출금할 수 있어요'
+                : ready
+                  ? `${won(data.balance.available)} 출금 신청`
+                  : '출금 가능 금액이 부족해요'}
             </button>
           )}
           <p className="panel-footnote">{data.settings.payout_notice}</p>
@@ -585,7 +600,11 @@ export default function Settlement({
               address: form.address,
             });
             await load(true);
-            notify('세무 정보를 저장했어요. 관리자 검증 후 출금에 사용됩니다.');
+            notify(
+              form.business_type === 'business'
+                ? '세무 정보를 저장했어요. 사업자 정보는 관리자 확인 후 출금에 쓰여요.'
+                : '세무 정보를 저장했어요. 바로 출금 신청에 쓰여요.',
+            );
           } catch (err) {
             notify((err as Error).message);
           } finally {
@@ -725,7 +744,7 @@ export default function Settlement({
         <div className="info-box">
           <FileSpreadsheet size={17} />
           주민등록번호는 저장하지 않습니다. 비사업자 원천징수 신고에 필요한 정보는 지급대행사 연동
-          단계에서 안전하게 수집합니다. 정보를 수정하면 검증 상태가 다시 대기로 바뀝니다.
+          단계에서 안전하게 수집합니다. 사업자 번호 · 상호 · 대표자 · 계좌를 바꾸면 검증 상태가 다시 대기로 바뀌어요(연락처 · 주소 · 이메일만 바꾸면 그대로).
         </div>
         <button className="primary full" disabled={busy}>
           {busy ? '저장 중…' : '세무 · 정산 정보 저장'}
