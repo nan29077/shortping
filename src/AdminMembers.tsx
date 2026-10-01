@@ -141,6 +141,8 @@ export default function AdminMembers({
   const original = editing ? members.find((m) => m.id === editing.id) : undefined;
   return (
     <>
+      {/* 확인 창은 맨 위(portal)에 떠요. 목록의 '세션 종료'와 수정 창 모두에서 쓰도록 바깥에 둬요. */}
+      {confirmUi}
       <div className="stats-grid">
         <div className="stat-card">
           <div>
@@ -624,7 +626,6 @@ export default function AdminMembers({
 
       {editing && (
         <Modal title="회원 정보 관리" close={() => !busy && setEditing(null)}>
-          {confirmUi}
           <h3>{editing.name}</h3>
           <p className="muted">{editing.email}</p>
           <label>
