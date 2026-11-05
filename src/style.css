@@ -8820,7 +8820,8 @@ input[type='number']::-webkit-outer-spin-button {
   textarea,
   select,
   .search-field input {
-    font-size: 16px;
+    /* 화면마다 입력칸 글자를 따로 작게 정한 규칙이 많아 여기서 확실히 덮어요. */
+    font-size: 16px !important;
   }
 }
 /* 화면에는 보이지 않고 화면 낭독기만 읽는 글자 */
