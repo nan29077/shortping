@@ -26,6 +26,20 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   }
 }
 installTableLabels();
+// 새 버전을 배포하면 예전 화면 조각 파일(assets/*.js)이 사라져, 이미 열어 둔 탭에서 처음 여는 화면이
+// '잠시 화면을 불러오지 못했어요'로 멈춰요. 조각을 못 받으면 새 버전으로 한 번 새로 고칩니다
+// (같은 탭에서 10초 안에 다시 실패하면 오류 화면을 그대로 보여 줘 무한 새로 고침을 막아요).
+window.addEventListener('vite:preloadError', (event) => {
+  try {
+    const last = Number(sessionStorage.getItem('sp:chunk-reload') || 0);
+    if (Date.now() - last < 10_000) return;
+    sessionStorage.setItem('sp:chunk-reload', String(Date.now()));
+  } catch {
+    /* 저장소를 못 쓰면 한 번만 시도하는 보호 없이 그대로 새로 고칩니다 */
+  }
+  event.preventDefault();
+  location.reload();
+});
 const root: Root = import.meta.hot?.data.root ?? createRoot(document.getElementById('root')!);
 if (import.meta.hot)
   import.meta.hot.dispose((data) => {
@@ -55,7 +69,9 @@ if (isNativeApp) {
       (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       return;
     }
-    if (canGoBack || history.length > 1) history.back();
+    // history.length는 앞으로 가기 기록까지 세고 줄지 않아서, 첫 화면에서도 1보다 클 수 있어요.
+    // 그러면 뒤로 가기가 아무 일도 하지 않으니 웹뷰가 알려 주는 canGoBack만 봅니다.
+    if (canGoBack) history.back();
     else void NativeApp.exitApp();
   });
 } else {

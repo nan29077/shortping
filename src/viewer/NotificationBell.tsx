@@ -29,18 +29,23 @@ const store = {
     for (const fn of this.listeners) fn(this.state);
   },
 };
+// 계정이 바뀌어 종을 새로 시작할 때마다 올려요. 그 전에 보낸 요청의 응답(예전 계정 알림)은 버립니다.
+let generation = 0;
 function loadNotifications() {
   if (store.inflight) return store.inflight;
-  store.inflight = (async () => {
+  const g = generation;
+  let mine: Promise<void> | null = null;
+  mine = (async () => {
     try {
       const r = await api<{ list: NotificationItem[]; unread: number }>('/notifications');
-      store.set({ list: r.list || [], unread: Number(r.unread) || 0, failed: false, loaded: true });
+      if (g === generation) store.set({ list: r.list || [], unread: Number(r.unread) || 0, failed: false, loaded: true });
     } catch {
-      store.set({ failed: true, loaded: true });
+      if (g === generation) store.set({ failed: true, loaded: true });
     } finally {
-      store.inflight = null;
+      if (store.inflight === mine) store.inflight = null;
     }
   })();
+  store.inflight = mine;
   return store.inflight;
 }
 const startPolling = () => {
@@ -61,6 +66,8 @@ function subscribe(fn: (s: BellState) => void) {
   store.listeners.add(fn);
   if (store.listeners.size === 1) {
     // 다른 계정으로 바뀌었을 수 있으니 새로 시작할 때는 비우고 다시 받습니다.
+    generation++;
+    store.inflight = null;
     store.set({ list: [], unread: 0, loaded: false, failed: false });
     void loadNotifications();
     if (document.visibilityState === 'visible') startPolling();
@@ -195,7 +202,13 @@ export default function NotificationBell({
                 <li key={n.id}>
                   <button className={n.read_at ? '' : 'unread'} onClick={() => openItem(n)}>
                     <span className="viewer-bell-title">
-                      {!n.read_at && <i aria-label="읽지 않음" />}
+                      {/* 역할 없는 <i>의 aria-label은 화면 낭독기가 읽지 않아요. 숨긴 글자로 알려 줍니다. */}
+                      {!n.read_at && (
+                        <>
+                          <i aria-hidden="true" />
+                          <span className="sr-only">읽지 않음, </span>
+                        </>
+                      )}
                       {n.title}
                     </span>
                     {n.body && <span className="viewer-bell-body">{n.body}</span>}

@@ -314,17 +314,20 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId, pre
   ]);
   return { period, pool, shares, ...plan.summary };
 }
-export async function requestPayout(db, { pdId, profile, settings }) {
-  if (!profile?.account_number || !profile?.bank_name || !profile?.account_holder)
-    throw error(400, '출금 계좌를 먼저 등록해 주세요.');
-  if (profile.business_type === 'business' && !profile.business_no)
-    throw error(400, '사업자등록번호를 먼저 등록해 주세요.');
-  if (profile.business_type === 'business' && !isVerifiedBusiness(profile))
-    throw error(409, '사업자 정보 확인 중입니다. 관리자 확인 후 출금할 수 있어요. 급하면 개인으로 바꿔 신청해 주세요.');
+// loadProfile을 넘기면 잠금을 잡은 뒤 세무 정보를 다시 읽습니다. 출금 신청과 동시에 계좌 · 사업자 정보가
+// 바뀌어도 바뀌기 전 계좌로 신청되거나, 확인이 풀린 사업자 정보에 부가세가 붙지 않게 해요.
+export async function requestPayout(db, { pdId, profile, settings, loadProfile }) {
   return db.transaction(async () => {
     // 같은 PD의 출금 신청이 동시에 들어와도 한 번만 처리되도록 사용자 행을 잠급니다.
     if (db.engine === 'postgresql')
       await db.get('SELECT id FROM users WHERE id=? FOR UPDATE', [pdId]);
+    if (loadProfile) profile = await loadProfile();
+    if (!profile?.account_number || !profile?.bank_name || !profile?.account_holder)
+      throw error(400, '출금 계좌를 먼저 등록해 주세요.');
+    if (profile.business_type === 'business' && !profile.business_no)
+      throw error(400, '사업자등록번호를 먼저 등록해 주세요.');
+    if (profile.business_type === 'business' && !isVerifiedBusiness(profile))
+      throw error(409, '사업자 정보 확인 중입니다. 관리자 확인 후 출금할 수 있어요. 급하면 개인으로 바꿔 신청해 주세요.');
     await refreshEntries(db);
     const rows = await db.all(
       "SELECT id,net FROM settlement_entries WHERE pd_id=? AND status='available'",
@@ -355,10 +358,9 @@ export async function requestPayout(db, { pdId, profile, settings }) {
         iso(),
       ],
     );
-    await db.run(
-      `UPDATE settlement_entries SET status='requested', payout_id=? WHERE status='available' AND id IN (${rows.map(() => '?').join(',')})`,
-      [id, ...rows.map((r) => r.id)],
-    );
+    // 정산 건마다 ?를 붙이면 판매가 많은 PD는 DB 변수 한도(SQLite 32,766 · PostgreSQL 65,535)를 넘어
+    // 출금이 계속 실패해요. 잠금 안에서 같은 조건으로 한 번에 묶고, 아래에서 건수로 확인합니다.
+    await db.run("UPDATE settlement_entries SET status='requested', payout_id=? WHERE pd_id=? AND status='available'", [id, pdId]);
     const locked = await db.all("SELECT id FROM settlement_entries WHERE payout_id=?", [id]);
     if (locked.length !== rows.length)
       throw error(409, '다른 출금 신청이 처리 중입니다. 잠시 후 다시 시도해 주세요.');
@@ -367,10 +369,11 @@ export async function requestPayout(db, { pdId, profile, settings }) {
 }
 // 정산 수익을 라마로 전환합니다. 출금과 같은 세금 규칙(원천징수·부가세)을 적용한 지급액을
 // 라마(1라마 = 10원, 10원 미만은 PD에게 유리하게 올림)로 바로 지급하고, 지급 내역(method='lama')을 남깁니다.
-export async function convertToLama(db, { pdId, profile, settings, credit }) {
+export async function convertToLama(db, { pdId, profile, settings, credit, loadProfile }) {
   return db.transaction(async () => {
     if (db.engine === 'postgresql')
       await db.get('SELECT id FROM users WHERE id=? FOR UPDATE', [pdId]);
+    if (loadProfile) profile = await loadProfile();
     await refreshEntries(db);
     const rows = await db.all(
       "SELECT id,net FROM settlement_entries WHERE pd_id=? AND status='available'",
@@ -389,10 +392,7 @@ export async function convertToLama(db, { pdId, profile, settings, credit }) {
       'INSERT INTO payouts (id,pd_id,amount,vat,income_tax,local_tax,payable,business_type,bank_name,account_number,account_holder,status,memo,requested_at,processed_at,processed_by,method,lama) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       [id, pdId, amount, tax.vat, tax.incomeTax, tax.localTax, tax.payable, tax.businessType, '', '', '', 'paid', '라마 전환', stamp, stamp, pdId, 'lama', lama + bonus],
     );
-    await db.run(
-      `UPDATE settlement_entries SET status='paid', payout_id=? WHERE status='available' AND id IN (${rows.map(() => '?').join(',')})`,
-      [id, ...rows.map((r) => r.id)],
-    );
+    await db.run("UPDATE settlement_entries SET status='paid', payout_id=? WHERE pd_id=? AND status='available'", [id, pdId]);
     const locked = await db.all('SELECT id FROM settlement_entries WHERE payout_id=?', [id]);
     if (locked.length !== rows.length)
       throw error(409, '다른 출금 신청이 처리 중입니다. 잠시 후 다시 시도해 주세요.');

@@ -1,3 +1,4 @@
+import { MEDIA_IN_USE_SQL } from './media-refs.mjs';
 import express from 'express';
 import helmet from 'helmet';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
@@ -1383,13 +1384,9 @@ async function dropOldAvatar(userId, oldUrl, newUrl) {
   if (!oldUrl || oldUrl === newUrl || !/^\/uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(oldUrl)) return;
   const file = await db.get('SELECT owner_id FROM media_files WHERE url=?', [oldUrl]);
   if (file?.owner_id !== userId) return;
-  const used = await db.get(
-    `SELECT 1 AS used WHERE EXISTS (SELECT 1 FROM user_profiles WHERE avatar=? AND user_id<>?)
-       OR EXISTS (SELECT 1 FROM dramas WHERE image=?) OR EXISTS (SELECT 1 FROM channels WHERE banner=? OR logo=?)
-       OR EXISTS (SELECT 1 FROM drama_thumbnails WHERE url=?) OR EXISTS (SELECT 1 FROM episodes WHERE thumbnail=?)
-       OR EXISTS (SELECT 1 FROM studio_library WHERE image=?) OR EXISTS (SELECT 1 FROM studio_characters WHERE image=?)`,
-    [oldUrl, userId, oldUrl, oldUrl, oldUrl, oldUrl, oldUrl, oldUrl, oldUrl],
-  );
+  // 정리 작업과 같은 참조 목록으로 확인해요(스튜디오 장소 · 소품 · 메인 배경 등에 다시 쓴 사진을 지우지 않게).
+  // 내 프로필은 이미 새 사진으로 바뀐 뒤라 목록에 걸리지 않습니다.
+  const used = await db.get(MEDIA_IN_USE_SQL, [oldUrl]);
   if (used) return;
   await db.run('DELETE FROM media_files WHERE url=?', [oldUrl]);
   await rm(path.join(uploadDir, path.basename(oldUrl)), { force: true }).catch(() => {});
@@ -1548,6 +1545,9 @@ app.post('/api/admin/dramas/:id/review', roles('admin'), async (req, res) => {
     if (d.status !== 'pending') fail(409, '심사 대기 중인 작품만 처리할 수 있어요.');
     if (b.status === 'rejected' && !b.note.trim()) fail(400, '반려 사유를 입력해 주세요.');
     if (b.status === 'published') {
+      // 탈퇴 · 이용 제한된 PD의 작품은 공개(판매)할 수 없어요. 매출을 지급할 수 없기 때문이에요.
+      const owner = await db.get('SELECT status FROM users WHERE id=?', [d.owner_id]);
+      if (owner?.status !== 'active') fail(409, '작품 주인 계정이 탈퇴 · 이용 제한 상태라 공개할 수 없어요.');
       const { issues } = await contentIssues(d);
       if (issues.length) fail(400, issues.join(' '));
     }
@@ -1766,6 +1766,9 @@ if (production) {
     res.set('Cache-Control', 'no-store').type('html').send(injectHomeTags(html, shareBase(req)));
   });
   app.use(express.static('dist'));
+  // 없는 화면 조각(배포 전 예전 파일 이름)은 404로 알려 줘야 앱이 새 버전으로 다시 불러와요.
+  // index.html을 대신 보내면 브라우저가 스크립트로 읽다 실패해 화면이 멈춥니다.
+  app.use('/assets', (req, res) => res.status(404).type('text/plain').send('Not found'));
   app.get('/{*path}', (req, res) => res.sendFile(path.resolve('dist/index.html')));
 } else {
   const { createServer } = await import('vite');

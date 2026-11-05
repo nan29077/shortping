@@ -127,6 +127,8 @@ const leaveBlocked = () => {
   leaveGuard = null; // 한 번 떠나기로 했으면 이어지는 이동에서 다시 묻지 않습니다.
   return false;
 };
+const scrollMemory = new Map<number, number>();
+let pendingScroll: number | null = null;
 window.addEventListener('hashchange', () => {
   // 링크·뒤로 가기로 주소가 바뀌었는데 떠나지 않기로 했다면, 주소를 원래 화면으로 되돌립니다
   // (다른 hashchange 처리기는 되돌린 주소를 읽으므로 화면이 바뀌지 않아요).
@@ -135,6 +137,9 @@ window.addEventListener('hashchange', () => {
     return;
   }
   const s = readNavState();
+  // 떠나는 화면의 스크롤 위치를 기억해 두고, 뒤로·앞으로 돌아오면 그 위치로 되돌려요(목록 화면).
+  scrollMemory.set(navIdx, window.scrollY);
+  pendingScroll = s && s.spIdx !== navIdx ? (scrollMemory.get(s.spIdx) ?? null) : null;
   if (s) navIdx = s.spIdx; // 뒤로·앞으로 이동이거나 replace로 바꾼 항목
   else {
     // 새로 쌓인 항목(링크·navigate·주소창 입력)
@@ -410,6 +415,7 @@ export default function App() {
       setUser(null);
       setLib(emptyLibrary);
       expiredAtRef.current = Date.now();
+      setCheckout(null);
       setToast({ text: '로그인이 만료되었어요. 다시 로그인해 주세요.', tone: 'error' });
       loginWithReturn();
     };
@@ -422,7 +428,18 @@ export default function App() {
       setRoute(next);
       // 검색어는 검색·탐색 화면에서만 유효합니다. 홈으로 돌아오면 피드가 검색어로 걸러지지 않게 합니다.
       if (!['search', 'explore'].includes(next.page)) setQuery('');
-      window.scrollTo({ top: 0, behavior: 'instant' });
+      // 화면을 옮기면 열려 있던 결제 · 안내 창을 닫아요(뒤로 가기 후에도 남아 새 화면을 가리고 스크롤을 잠그던 문제).
+      setCheckout(null);
+      setModal(null);
+      // 새 화면은 맨 위에서, 뒤로 돌아온 목록 화면은 보던 위치에서 이어 봐요.
+      const y = ['home', 'search', 'explore', 'channels', 'channel', 'my'].includes(next.page) ? pendingScroll : null;
+      pendingScroll = null;
+      window.scrollTo({ top: y ?? 0, behavior: 'instant' });
+      if (y) {
+        // 목록이 다시 그려진 뒤(이미지 · 데이터)에도 한 번 더 맞춰요.
+        requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'instant' }));
+        setTimeout(() => Math.abs(window.scrollY - y) > 4 && window.scrollTo({ top: y, behavior: 'instant' }), 350);
+      }
     };
     window.addEventListener('hashchange', fn);
     return () => window.removeEventListener('hashchange', fn);
@@ -2930,6 +2947,8 @@ function WatchPage({
       if (kind === 'login') loginWithReturn();
       return;
     }
+    // load()는 영상을 0초로 되돌려요. 보던 위치(마지막 저장 기록보다 최신)에서 이어 보도록 기억해 둡니다.
+    resumeAt.current = video.current?.currentTime || lastPos.current || null;
     video.current?.load();
   };
   if (error)
@@ -3046,6 +3065,8 @@ function WatchPage({
           <>
             <video
               ref={video}
+              // 앱에서는 영상 · 자막을 별도 API 서버에서 받아요. crossorigin이 없으면 다른 출처의 자막(<track>)을 막습니다.
+              crossOrigin={isNativeApp ? 'anonymous' : undefined}
               src={videoSrc}
               poster={asset(d.image)}
               controls

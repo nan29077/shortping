@@ -83,6 +83,7 @@ export function lamaRoutes({ app, db, fail, now, roles, demo }) {
       pdId: req.user.id,
       profile,
       settings,
+      loadProfile: () => taxProfile(req.user.id),
       credit: ({ payoutId, paid, bonus }) =>
         creditLama(db, { userId: req.user.id, type: 'convert', paid, bonus, payoutId, memo: '정산 수익 전환' }),
     });

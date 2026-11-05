@@ -267,7 +267,8 @@ export function accountRoutes({
         "UPDATE users SET status='withdrawn', withdrawn_at=?, email=?, name='탈퇴한 회원', password='', phone='', phone_verified_at=NULL WHERE id=?",
         [stamp, `withdrawn+${user.id}@deleted.local`, user.id],
       );
-      await db.run("UPDATE user_profiles SET bio='' WHERE user_id=?", [user.id]);
+      // 직접 올린 프로필 사진도 기본 아바타로 바꿔요. 그대로 두면 사진 파일이 계속 공개 주소로 남습니다.
+      await db.run("UPDATE user_profiles SET bio='', avatar='/avatars/block-01.webp' WHERE user_id=?", [user.id]);
       await db.run(
         "UPDATE pd_tax_profiles SET business_no='', business_name='', rep_name='', business_class='', business_item='', tax_email='', bank_name='', account_number='', account_holder='', contact='', address='', updated_at=? WHERE user_id=?",
         [stamp, user.id],
@@ -282,7 +283,8 @@ export function accountRoutes({
       await db.run('UPDATE subscriptions SET expires_at=?, auto_renew=0 WHERE user_id=? AND expires_at>?', [stamp, user.id, stamp]);
       // PD였다면 방송국과 공개 작품을 시청자 화면에서 내립니다(작품·정산 기록은 남김).
       await db.run("UPDATE channels SET status='hidden', admin_hidden=1 WHERE owner_id=?", [user.id]);
-      await db.run("UPDATE dramas SET status='hidden' WHERE owner_id=? AND status='published'", [user.id]);
+      // 심사 대기 중이던 작품도 내립니다(탈퇴 뒤 승인돼 판매되면 지급할 수 없는 정산이 쌓여요).
+      await db.run("UPDATE dramas SET status='hidden' WHERE owner_id=? AND status IN ('published','pending')", [user.id]);
       // 숏핑 스튜디오 협업: 내 프로젝트의 팀원과 초대를 정리하고, 다른 사람 팀에서도 빠집니다.
       await db.run('DELETE FROM studio_members WHERE user_id=? OR project_id IN (SELECT id FROM studio_projects WHERE owner_id=?)', [user.id, user.id]);
       await db.run('UPDATE studio_invites SET active=0 WHERE project_id IN (SELECT id FROM studio_projects WHERE owner_id=?)', [user.id]);

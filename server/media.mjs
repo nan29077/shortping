@@ -12,8 +12,10 @@ if (!process.env.FFMPEG_PATH && process.env.NODE_ENV !== 'production') {
 // Decode the opening frame, rather than trusting a MIME header or filename.
 // Full transcoding and whole-file quality checks belong in the production media worker.
 export async function inspectMedia(file, mime) {
-  if (mime.startsWith('image/') && file.size > 10 * 1024 * 1024)
-    throw Object.assign(new Error('포스터 이미지는 10MB 이하로 등록해 주세요.'), { status: 400 });
+  // 업로드 경로(IMAGE_UPLOAD_MAX)와 같은 20MB 기준. 포스터는 화면에서 10MB로 더 작게 막고,
+  // 썸네일 배경처럼 20MB까지 허용하는 화면도 여기서 막히지 않게 맞춥니다.
+  if (mime.startsWith('image/') && file.size > 20 * 1024 * 1024)
+    throw Object.assign(new Error('이미지는 20MB 이하로 올려 주세요.'), { status: 400 });
   let stderr;
   try {
     ({ stderr } = await exec(

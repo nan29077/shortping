@@ -135,21 +135,25 @@ export function serialRoutes({ app, db, fail, now, roles, owned, mediaPath, demo
   });
   app.post('/api/studio/dramas/:id/thumbnails', roles('pd', 'admin'), async (req, res) => {
     const b = z.object({ url: z.string().regex(/^\/(images\/[a-z0-9-]+\.webp|uploads\/[a-f0-9-]+\.(jpg|png|webp))$/) }).parse(req.body);
-    const d = await owned(req);
-    if (!['draft', 'rejected'].includes(d.status) && req.user.role !== 'admin')
-      fail(409, '공개·심사 중인 작품의 표지 후보는 관리자 검토가 필요해요. 관리자에게 요청해 주세요.');
-    if (b.url.startsWith('/uploads/')) {
-      const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [b.url]);
-      if (!f || (f.owner_id !== d.owner_id && req.user.role !== 'admin')) fail(403, '본인이 올리거나 만든 이미지만 쓸 수 있어요.');
-    }
-    if (!existsSync(mediaPath(b.url))) fail(400, '이미지 파일을 찾을 수 없어요. 다시 올려 주세요.');
-    const active = await db.all('SELECT url FROM drama_thumbnails WHERE drama_id=? AND active=1', [d.id]);
-    if (active.length >= 4) fail(400, '썸네일 후보는 4장까지 비교할 수 있어요.');
-    if (active.some((r) => r.url === b.url)) fail(409, '이미 비교 중인 이미지예요.');
-    // 비교를 처음 시작하면 지금 대표 포스터도 후보로 넣습니다.
-    if (!active.length && d.image !== b.url)
-      await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,reviewed,created_at) VALUES (?,?,?,?,?)', [randomUUID(), d.id, d.image, req.user.role === 'admin' ? 1 : 0, now()]);
-    await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,reviewed,created_at) VALUES (?,?,?,?,?)', [randomUUID(), d.id, b.url, req.user.role === 'admin' ? 1 : 0, now()]);
+    // 두 번 눌러 동시에 들어와도 대표 포스터가 두 번 들어가거나 4장 한도를 넘지 않도록 작품 행을 잠그고 처리해요.
+    const d = await db.transaction(async () => {
+      const d = await owned(req, true);
+      if (!['draft', 'rejected'].includes(d.status) && req.user.role !== 'admin')
+        fail(409, '공개·심사 중인 작품의 표지 후보는 관리자 검토가 필요해요. 관리자에게 요청해 주세요.');
+      if (b.url.startsWith('/uploads/')) {
+        const f = await db.get('SELECT owner_id FROM media_files WHERE url=?', [b.url]);
+        if (!f || (f.owner_id !== d.owner_id && req.user.role !== 'admin')) fail(403, '본인이 올리거나 만든 이미지만 쓸 수 있어요.');
+      }
+      if (!existsSync(mediaPath(b.url))) fail(400, '이미지 파일을 찾을 수 없어요. 다시 올려 주세요.');
+      const active = await db.all('SELECT url FROM drama_thumbnails WHERE drama_id=? AND active=1', [d.id]);
+      if (active.length >= 4) fail(400, '썸네일 후보는 4장까지 비교할 수 있어요.');
+      if (active.some((r) => r.url === b.url)) fail(409, '이미 비교 중인 이미지예요.');
+      // 비교를 처음 시작하면 지금 대표 포스터도 후보로 넣습니다.
+      if (!active.length && d.image !== b.url)
+        await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,reviewed,created_at) VALUES (?,?,?,?,?)', [randomUUID(), d.id, d.image, req.user.role === 'admin' ? 1 : 0, now()]);
+      await db.run('INSERT INTO drama_thumbnails (id,drama_id,url,reviewed,created_at) VALUES (?,?,?,?,?)', [randomUUID(), d.id, b.url, req.user.role === 'admin' ? 1 : 0, now()]);
+      return d;
+    });
     if (d.status === 'published') await audit(req.user.id, 'thumbnail:candidate', d.id);
     res.status(201).json({ ok: true });
   });

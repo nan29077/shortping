@@ -377,7 +377,7 @@ export function studioRoutes({ app, db, fail, now, roles, requireAuth, checkMedi
   app.post('/api/studio/payouts', roles('pd', 'admin'), async (req, res) => {
     const settings = await loadSettings(db);
     const profile = await taxProfile(req.user.id);
-    const result = await requestPayout(db, { pdId: req.user.id, profile, settings });
+    const result = await requestPayout(db, { pdId: req.user.id, profile, settings, loadProfile: () => taxProfile(req.user.id) });
     await db.run(
       'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
       [randomUUID(), req.user.id, 'payout:requested', result.id, now()],

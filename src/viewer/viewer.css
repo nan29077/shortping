@@ -407,6 +407,10 @@
   .site-layout > .app-shell {
     padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px));
   }
+  /* 시청 화면에는 하단 메뉴가 없어요. 위 규칙이 이겨 플레이어 아래에 빈 띠가 생기던 문제 */
+  .site-layout > .app-shell.watch-shell {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }
 @media (max-width: 620px) {
   .app-shell .feed-tabs {
