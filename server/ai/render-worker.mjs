@@ -134,13 +134,23 @@ export function createRenderWorker({ db, uploadDir }) {
       resolution: p.resolution,
       onProgress: progress,
     });
-    await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso(), p.id]);
-    await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [out.url, out.duration, out.width, out.height, out.hasAudio ? 1 : 0]);
-    await db.run("UPDATE studio_projects SET trailer=?,trailer_status='done',updated_at=? WHERE id=?", [out.url, iso(), p.id]);
-    await db.run(
-      'INSERT INTO studio_assets (id,owner_id,project_id,target_type,target_id,kind,url,job_id,model_label,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      [randomUUID(), p.owner_id, p.id, 'trailer', p.id, 'video', out.url, null, '예고편', iso()],
-    );
+    // 합성한 파일의 기록은 한 번에 남기고, 그사이 프로젝트가 지워지는 등으로 실패하면 파일도 지워요
+    // (회차 합성과 같은 방식). 그렇지 않으면 어디에도 등록되지 않은 영상 파일이 남습니다.
+    try {
+      await db.transaction(async () => {
+        await db.run('INSERT INTO media_files (url,owner_id,mime,created_at,project_id) VALUES (?,?,?,?,?)', [out.url, p.owner_id, 'video/mp4', iso(), p.id]);
+        await db.run('INSERT INTO media_metadata (url,duration,width,height,has_audio) VALUES (?,?,?,?,?)', [out.url, out.duration, out.width, out.height, out.hasAudio ? 1 : 0]);
+        await db.run("UPDATE studio_projects SET trailer=?,trailer_status='done',updated_at=? WHERE id=?", [out.url, iso(), p.id]);
+        await db.run(
+          'INSERT INTO studio_assets (id,owner_id,project_id,target_type,target_id,kind,url,job_id,model_label,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          [randomUUID(), p.owner_id, p.id, 'trailer', p.id, 'video', out.url, null, '예고편', iso()],
+        );
+      });
+    } catch (err) {
+      await db.run('DELETE FROM media_files WHERE url=?', [out.url]).catch(() => {});
+      await rm(path.join(uploadDir, path.basename(out.url)), { force: true }).catch(() => {});
+      throw err;
+    }
     await notify(db, p.owner_id, { kind: 'compose', title: `${p.title} 예고편이 완성됐어요`, body: `${out.duration}초 예고편을 작품에 붙일 수 있어요.`, link: `studio/ai/${p.id}/finish` });
   }
   async function run(job) {

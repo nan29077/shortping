@@ -1581,6 +1581,14 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       for (const e of eps.filter((x) => x.number > next.episode_count)) {
         const has = await db.get('SELECT id FROM studio_shots WHERE episode_id=? LIMIT 1', [e.id]);
         if (has || e.exported_at) fail(409, `${e.number}화에 대본이 있어 회차 수를 줄일 수 없어요.`);
+        // 진행 중인 AI 작업(대본 · 음악 등)이 있으면 지우지 않아요. 지우면 결과는 버려지는데 라마는 그대로 쓰여요.
+        if (
+          await db.get(
+            "SELECT id FROM ai_jobs WHERE status IN ('queued','running') AND kind<>'translate' AND (target_id=? OR target_id IN (SELECT id FROM studio_shots WHERE episode_id=?)) LIMIT 1",
+            [e.id, e.id],
+          )
+        )
+          fail(409, `${e.number}화의 AI 작업이 끝난 뒤 회차 수를 줄여 주세요.`);
         await db.run('DELETE FROM studio_episodes WHERE id=?', [e.id]);
       }
     });
@@ -2126,6 +2134,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
   });
   // 실행: 입력 검사 → (프로젝트 예산 확인) → 중복 검사·라마 예약(한 트랜잭션). AI 조수·다시 시도에서도 씁니다.
   async function runSpecs(req, p, b, specs, { exclude = [] } = {}) {
+    // 프로젝트 예산은 소유자만 정해요. 팀원이 budgetOk를 보내도 예산 확인을 건너뛰지 않습니다.
+    const owner = !req.teamMember || req.teamRole === 'owner';
+    b = { ...b, budgetOk: !!b.budgetOk && owner };
     for (const spec of specs) {
       await engine.screen({ userId: req.user.id, kind: spec.kind, texts: [spec.input.userText, spec.input.text] });
     }
@@ -2190,10 +2201,14 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       if (Number(p.budget_lama) > 0 && !b.budgetOk) {
         const budget = await budgetOf(p);
         if (budget.spent + price > budget.limit)
-          throw Object.assign(new Error(`프로젝트 예산(${budget.limit.toLocaleString('ko-KR')}라마)을 넘어요. 지금까지 ${budget.spent.toLocaleString('ko-KR')}라마를 썼고, 이번 작업은 약 ${price.toLocaleString('ko-KR')}라마예요.`), {
-            status: 409,
-            code: 'project_budget',
-          });
+          throw Object.assign(
+            new Error(
+              `프로젝트 예산(${budget.limit.toLocaleString('ko-KR')}라마)을 넘어요. 지금까지 ${budget.spent.toLocaleString('ko-KR')}라마를 썼고, 이번 작업은 약 ${price.toLocaleString('ko-KR')}라마예요.` +
+                (owner ? '' : ' 프로젝트 소유자에게 예산을 올려 달라고 요청해 주세요.'),
+            ),
+            // 팀원은 확인 창으로 넘어갈 수 없어서 다른 코드로 알려요(화면에 '그래도 진행' 확인이 뜨지 않게).
+            { status: 409, code: owner ? 'project_budget' : 'project_budget_owner' },
+          );
       }
       const out = [];
       for (const spec of specs) {
@@ -2718,6 +2733,8 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     return true;
   }
   const advancing = new Set();
+  // 안의 return pause(...)/save(...)는 반드시 await합니다. 그냥 돌려주면 DB 오류가 아래 catch를 지나쳐
+  // 처리되지 않은 거부로 서버가 멈추고, finally가 먼저 실행돼 같은 프로젝트를 동시에 진행할 수 있어요.
   async function advanceAutopilot(projectId) {
     if (advancing.has(projectId)) return;
     advancing.add(projectId);
@@ -2740,15 +2757,15 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       try {
         work = await stageWork(p, ap);
       } catch (e) {
-        return pause(e.message);
+        return await pause(e.message);
       }
-      if (work.stage === 'done') return save({ ...ap, status: 'done', stage: 'done', message: '초안이 모두 완성됐어요. 확인한 뒤 내보내기에서 검수를 신청하세요.', updated_at: now() });
+      if (work.stage === 'done') return await save({ ...ap, status: 'done', stage: 'done', message: '초안이 모두 완성됐어요. 확인한 뒤 내보내기에서 검수를 신청하세요.', updated_at: now() });
       // 같은 단계가 두 번 연속 비어 있으면(작업 실패) 멈춥니다.
       const signature = work.stage + ':' + (work.episode ? work.episode.id : work.specs.map((x) => x.target.id).sort().join(','));
       const repeat = signature === ap.signature ? Number(ap.repeat || 0) + 1 : 0;
       const retries = ap.retries ?? 1;
       if (repeat > retries)
-        return pause(`${AP_STAGES[work.stage]} 단계가 ${retries ? `${retries}번 다시 시도해도 ` : ''}완료되지 않았어요. 실패한 작업을 확인한 뒤 다시 시작해 주세요.`);
+        return await pause(`${AP_STAGES[work.stage]} 단계가 ${retries ? `${retries}번 다시 시도해도 ` : ''}완료되지 않았어요. 실패한 작업을 확인한 뒤 다시 시작해 주세요.`);
       // 다시 시도할 때는 이번 빠른 제작에서 그 대상에 실패한 모델을 빼고 다음 후보로(자동 선택일 때)
       const failedModels = new Map();
       if (repeat > 0 && work.specs)
@@ -2758,9 +2775,9 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         try {
           await startCompose(p, work.episode);
         } catch (e) {
-          return pause(e.message);
+          return await pause(e.message);
         }
-        return save({ ...ap, stage: 'compose', signature, repeat, message: `${work.episode.number}화 합성 중`, updated_at: now() });
+        return await save({ ...ap, stage: 'compose', signature, repeat, message: `${work.episode.number}화 합성 중`, updated_at: now() });
       }
       const spent = Number(
         (await db.get("SELECT COALESCE(SUM(charged_lama),0) AS n FROM ai_jobs WHERE project_id=? AND status='succeeded' AND created_at>=?", [p.id, ap.started_at]))?.n || 0,
@@ -2769,14 +2786,14 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       try {
         need = await estimateSpecs(p, ap, work.specs);
       } catch (e) {
-        return pause(e.message);
+        return await pause(e.message);
       }
       if (ap.cap && spent + need > ap.cap)
-        return pause(`설정한 최대 ${ap.cap.toLocaleString('ko-KR')}라마를 넘어서 멈췄어요. (지금까지 ${spent.toLocaleString('ko-KR')}라마, 다음 단계 예상 ${need.toLocaleString('ko-KR')}라마)`);
+        return await pause(`설정한 최대 ${ap.cap.toLocaleString('ko-KR')}라마를 넘어서 멈췄어요. (지금까지 ${spent.toLocaleString('ko-KR')}라마, 다음 단계 예상 ${need.toLocaleString('ko-KR')}라마)`);
       // 프로젝트 예산도 지켜요(2026-09-30 점검): 빠른 제작은 확인 창을 거치지 않으므로 넘기 전에 멈춥니다.
       const budget = await budgetOf(p);
       if (budget.limit > 0 && budget.spent + need > budget.limit)
-        return pause(`프로젝트 예산 ${budget.limit.toLocaleString('ko-KR')}라마를 넘어서 멈췄어요. (사용 ${budget.spent.toLocaleString('ko-KR')}라마, 다음 단계 예상 ${need.toLocaleString('ko-KR')}라마) 기획 · 설정에서 예산을 올리거나 직접 이어 만들 수 있어요.`);
+        return await pause(`프로젝트 예산 ${budget.limit.toLocaleString('ko-KR')}라마를 넘어서 멈췄어요. (사용 ${budget.spent.toLocaleString('ko-KR')}라마, 다음 단계 예상 ${need.toLocaleString('ko-KR')}라마) 기획 · 설정에서 예산을 올리거나 직접 이어 만들 수 있어요.`);
       try {
         for (const spec of work.specs) await engine.screen({ userId: p.owner_id, kind: spec.kind, texts: [spec.input.userText, spec.input.text] });
         const queuedOk = await db.transaction(async () => {
@@ -2813,7 +2830,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
         });
         if (!queuedOk) return;
       } catch (e) {
-        return pause(e.message);
+        return await pause(e.message);
       }
     } catch (e) {
       console.error('autopilot', e.message);
@@ -2848,7 +2865,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       fail(400, `라마가 부족해요. 예상 ${est.total.toLocaleString('ko-KR')}라마가 필요하고 사용 가능한 라마는 ${wallet.total.toLocaleString('ko-KR')}라마예요.`);
     const ap = { ...b, cap, run: randomUUID(), status: 'running', stage: '', repeat: 0, started_at: now(), estimate: est.total, message: '빠른 제작을 시작했어요.', updated_at: now() };
     await saveAutopilot(p.id, ap);
-    void advanceAutopilot(p.id);
+    void advanceAutopilot(p.id).catch((e) => console.error('autopilot', e.message));
     res.status(201).json({ autopilot: ap });
   });
   app.post('/api/studio/ai/projects/:id/autopilot/stop', roles('pd', 'admin'), async (req, res) => {
@@ -2922,6 +2939,10 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
       probed = await probeMedia(src);
       if (!probed.hasAudio || (meta && Number(meta.has_audio) === 0)) fail(400, '소리가 없는 영상이라 자막을 만들 수 없어요.');
       await runFfmpeg(['-i', src, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '48k', path.join(uploadDir, audio)], 240000);
+    } catch (err) {
+      // 실패 · 시간 초과로 반쯤 써진 음성 파일은 media_files에 없어서 정리 작업도 못 지워요. 여기서 지웁니다.
+      await rm(path.join(uploadDir, audio), { force: true }).catch(() => {});
+      throw err;
     } finally {
       subtitleExtracting.delete(req.user.id);
     }

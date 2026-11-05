@@ -157,3 +157,26 @@ test('썸네일 후보를 동시에 두 번 추가해도 대표 포스터가 한
   assert.equal(rows.length, 2, JSON.stringify(rows));
   assert.equal(new Set(rows.map((r) => r.url)).size, 2);
 });
+
+test('AI 작업이 진행 중인 회차는 회차 수를 줄여도 지워지지 않는다', async () => {
+  const pd = await newUser('eps', 'pd');
+  await request('/studio/ai/terms', { method: 'POST', cookie: pd.cookie, body: { agree: true, version: '2026-09' } });
+  const created = await request('/studio/ai/projects', { method: 'POST', cookie: pd.cookie, body: { title: '회차 줄이기', logline: '비 오는 밤 오래된 약속이 두 사람을 다시 부른다', genre: '로맨스', episode_count: 2, episode_seconds: 20 } });
+  assert.ok([200, 201].includes(created.status), JSON.stringify(created.data));
+  const pid = created.data.id;
+  const detail = await request('/studio/ai/projects/' + pid, { cookie: pd.cookie });
+  const second = detail.data.episodes.find((e) => e.number === 2);
+  // 처리기가 집어 가지 않도록 다음 확인 시각을 먼 미래로 둔 대기 작업
+  const jobId = randomUUID();
+  await testDb.run(
+    "INSERT INTO ai_jobs (id,user_id,project_id,target_type,target_id,kind,capability,status,next_poll_at,created_at) VALUES (?,?,?,'episode',?,'script','text','queued',?,?)",
+    [jobId, pd.id, pid, second.id, new Date(Date.now() + 3600_000).toISOString(), new Date().toISOString()],
+  );
+  const shrink = await request('/studio/ai/projects/' + pid, { method: 'PATCH', cookie: pd.cookie, body: { episode_count: 1 } });
+  assert.equal(shrink.status, 409, JSON.stringify(shrink.data));
+  assert.match(shrink.data.error, /AI 작업이 끝난 뒤/);
+  assert.equal((await testDb.all('SELECT id FROM studio_episodes WHERE id=?', [second.id])).length, 1);
+  await testDb.run("UPDATE ai_jobs SET status='failed' WHERE id=?", [jobId]);
+  assert.equal((await request('/studio/ai/projects/' + pid, { method: 'PATCH', cookie: pd.cookie, body: { episode_count: 1 } })).status, 200);
+  assert.equal((await testDb.all('SELECT id FROM studio_episodes WHERE id=?', [second.id])).length, 0);
+});

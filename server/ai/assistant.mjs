@@ -368,11 +368,20 @@ export function assistantRoutes({ app, db, fail, now, roles, engine, project, re
       }
       if (quoteChanges.length && !b.quoteOk)
         throw Object.assign(new Error(`현재 모델 기준으로 금액이 바뀌었어요. ${quoteChanges.join(' · ')} 실행 전 새 금액을 확인해 주세요.`), { status: 409, code: 'quote_changed' });
-      if (Number(p.budget_lama) > 0 && !b.budgetOk && aiActs.length) {
+      // 예산 넘김 확인(budgetOk)은 프로젝트 소유자만 할 수 있어요.
+      const isOwner = !req.teamMember || req.teamRole === 'owner';
+      const ownerOk = !!b.budgetOk && isOwner;
+      if (Number(p.budget_lama) > 0 && !ownerOk && aiActs.length) {
         const spent = Number((await db.get("SELECT COALESCE(SUM(CASE WHEN status='succeeded' THEN charged_lama WHEN status IN ('queued','running') THEN estimate_lama ELSE 0 END),0) AS n FROM ai_jobs WHERE project_id=? AND billed=1", [p.id]))?.n || 0);
         const add = currentTotal;
         if (spent + add > Number(p.budget_lama))
-          throw Object.assign(new Error(`프로젝트 예산(${Number(p.budget_lama).toLocaleString('ko-KR')}라마)을 넘어요. 이번 계획은 약 ${add.toLocaleString('ko-KR')}라마예요.`), { status: 409, code: 'project_budget' });
+          throw Object.assign(
+            new Error(
+              `프로젝트 예산(${Number(p.budget_lama).toLocaleString('ko-KR')}라마)을 넘어요. 이번 계획은 약 ${add.toLocaleString('ko-KR')}라마예요.` +
+                (isOwner ? '' : ' 프로젝트 소유자에게 예산을 올려 달라고 요청해 주세요.'),
+            ),
+            { status: 409, code: isOwner ? 'project_budget' : 'project_budget_owner' },
+          );
       }
       for (let i = 0; i < acts.length; i++) {
         const a = acts[i];

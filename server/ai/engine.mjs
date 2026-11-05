@@ -419,6 +419,9 @@ export function createAiEngine({ db, uploadDir, demo }) {
   async function loadModel(job) {
     const r = (await modelRows()).find((x) => x.id === job.model_ref);
     if (!r) throw Object.assign(new Error('모델이 삭제되었어요.'), { retryable: true, modelGone: true });
+    // 대기 중에 관리자가 모델 · 공급사를 끄거나 키를 지웠다면 새로 보내지 않아요(빈 키로 보내 401 · 차단기 작동).
+    // 이미 공급사가 만들고 있는 작업(결과 확인)은 원가가 들었으니 그대로 결과를 받습니다.
+    if (!job.vendor_ref && !usable(r)) throw Object.assign(new Error('지금은 이 모델을 쓸 수 없어요.'), { retryable: true, modelGone: true });
     return r;
   }
   async function hydrate(input) {
@@ -519,6 +522,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
     return db.transaction(async () => {
       const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
       if (!fresh || fresh.status !== 'running') return false; // 취소·삭제된 작업
+      // 멈춘 처리기로 보고 다른 처리기가 이어받은 작업이면, 늦게 도착한 이 결과는 반영하지 않아요(중복 반영 방지).
+      if (fresh.claimed_by !== workerId) return false;
       // 결과 반영(DB 갱신) 중 오류는 공급사 문제가 아니라서 같은 입력을 다시 만들지 않아요(원가만 늘어남). 모델 전환도 하지 않음.
       const output = await handler.onSuccess({ job: fresh, input, result: media, model }).catch((e) => {
         throw Object.assign(e instanceof Error ? e : new Error(String(e)), { retryable: false, status: e?.status || 500, handlerError: true });
@@ -565,6 +570,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
     await db.transaction(async () => {
       const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
       if (!fresh || !['running', 'queued'].includes(fresh.status)) return;
+      if (fresh.claimed_by !== workerId) return; // 다른 처리기가 이어받은 작업
       const attempts = Number(fresh.attempts) + 1;
       // 공급사가 작업을 받았거나(결과 확인 중 실패 · 시간 초과) 결과를 이미 만든 뒤 실패했다면 원가가 들었어요.
       // 재시도 · 실패 처리로 cost_won이 바뀌기 전에 이 시도의 원가를 따로 남깁니다.
@@ -589,20 +595,31 @@ export function createAiEngine({ db, uploadDir, demo }) {
         if (!target && !err?.modelGone && !switchOnly) {
           // 직접 고른 모델을 같은 공급사로 재시도할 때도 원가·월 예산·공급사 정보를 잃지 않습니다.
           // 축약 객체를 만들면 재시도 원가가 0원으로 계산되어 공급사 한도 검사를 우회할 수 있습니다.
-          target = model?.id === fresh.model_ref ? model : (await modelRows()).find((r) => r.id === fresh.model_ref) || null;
+          const same = model?.id === fresh.model_ref ? model : (await modelRows()).find((r) => r.id === fresh.model_ref) || null;
+          target = same && usable(same) ? same : null;
         }
         if (target) {
           const retryInput = JSON.parse(fresh.input || '{}');
           const retryCost = costWonFor(target, settings, unitsFor(fresh.capability, retryInput, target));
           if (db.engine === 'postgresql' && Number(target.monthly_budget_won || 0) > 0)
             await db.get('SELECT pg_advisory_xact_lock(hashtext(?))', [`shortping-ai-provider:${target.provider_id}`]);
-          await checkProviderLimit(target, retryCost, fresh.id);
-          const tried = [...new Set([...String(fresh.tried || '').split(','), target.id].filter(Boolean))].join(',');
-          await db.run(
-            "UPDATE ai_jobs SET status='queued',attempts=?,model_ref=?,provider_id=?,vendor_model=?,cost_won=?,vendor_ref='',claimed_by=NULL,started_at=NULL,poll_failures=0,error=?,error_detail=?,tried=?,next_poll_at=?,flags=? WHERE id=?",
-            [attempts, target.id, target.provider_id, target.model_id, retryCost, message, detail, tried, new Date(Date.now() + 1500 * attempts).toISOString(), flagsFor(target, fresh.capability, retryInput), fresh.id],
-          );
-          return;
+          // 재시도가 공급사 월 한도를 넘으면 재시도하지 않고 아래 정상 실패 처리(라마 반환 · 임시 파일 정리)로 갑니다.
+          // 여기서 오류를 그대로 던지면 실패 처리 전체가 되돌려져 정리 처리기(onFail)가 실행되지 않아요.
+          let overLimit = false;
+          try {
+            await checkProviderLimit(target, retryCost, fresh.id);
+          } catch (e) {
+            if (e?.code !== 'provider_monthly_budget') throw e;
+            overLimit = true;
+          }
+          if (!overLimit) {
+            const tried = [...new Set([...String(fresh.tried || '').split(','), target.id].filter(Boolean))].join(',');
+            await db.run(
+              "UPDATE ai_jobs SET status='queued',attempts=?,model_ref=?,provider_id=?,vendor_model=?,cost_won=?,vendor_ref='',claimed_by=NULL,started_at=NULL,poll_failures=0,error=?,error_detail=?,tried=?,next_poll_at=?,flags=? WHERE id=?",
+              [attempts, target.id, target.provider_id, target.model_id, retryCost, message, detail, tried, new Date(Date.now() + 1500 * attempts).toISOString(), flagsFor(target, fresh.capability, retryInput), fresh.id],
+            );
+            return;
+          }
         }
       }
       if (Number(fresh.hold_paid) + Number(fresh.hold_bonus) > 0)
@@ -616,15 +633,15 @@ export function createAiEngine({ db, uploadDir, demo }) {
   }
   async function deferPoll(job, err, model) {
     const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?', [job.id]);
-    if (!fresh || fresh.status !== 'running' || !fresh.vendor_ref) return false;
+    if (!fresh || fresh.status !== 'running' || !fresh.vendor_ref || fresh.claimed_by !== workerId) return false;
     const failures = Number(fresh.poll_failures || 0) + 1;
     const started = new Date(fresh.started_at || Date.now()).getTime();
     const limit = ['video', 'upscale_video'].includes(fresh.capability) ? 30 * 60000 : 10 * 60000;
     if (failures > 8 || Date.now() - started > limit) return false;
     const wait = Math.min(60000, 3000 * 2 ** (failures - 1)) + pollDelay(fresh.capability, model?.kind || '');
     const r = await db.run(
-      "UPDATE ai_jobs SET poll_failures=?,next_poll_at=?,claimed_by=NULL,error_detail=? WHERE id=? AND status='running'",
-      [failures, new Date(Date.now() + wait).toISOString(), String(err?.message || '').slice(0, 500), fresh.id],
+      "UPDATE ai_jobs SET poll_failures=?,next_poll_at=?,claimed_by=NULL,error_detail=? WHERE id=? AND status='running' AND claimed_by=?",
+      [failures, new Date(Date.now() + wait).toISOString(), String(err?.message || '').slice(0, 500), fresh.id, workerId],
     );
     return Number(r?.rowCount ?? r?.changes ?? 1) > 0;
   }
@@ -643,10 +660,11 @@ export function createAiEngine({ db, uploadDir, demo }) {
         const limit = ['video', 'upscale_video'].includes(job.capability) ? 30 * 60000 : 10 * 60000;
         if (Date.now() - started > limit) throw Object.assign(new Error('AI 공급사 응답이 너무 오래 걸려 작업을 중단했어요.'), { retryable: true });
         // 그사이 취소 · 종료 정리된 작업은 되살리지 않아요.
-        await db.run("UPDATE ai_jobs SET vendor_ref=?,next_poll_at=?,claimed_by=NULL,poll_failures=0 WHERE id=? AND status='running'", [
+        await db.run("UPDATE ai_jobs SET vendor_ref=?,next_poll_at=?,claimed_by=NULL,poll_failures=0 WHERE id=? AND status='running' AND claimed_by=?", [
           res.ref,
           new Date(Date.now() + pollDelay(job.capability, model.kind)).toISOString(),
           job.id,
+          workerId,
         ]);
         return;
       }
@@ -694,7 +712,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
       [workerId, stamp, job.id, status],
     );
     const row = await db.get('SELECT * FROM ai_jobs WHERE id=?', [job.id]);
-    return row.claimed_by === workerId && row.status === 'running' ? row : null;
+    // 그사이 작업이 지워졌으면(회원 삭제 등) 건너뜁니다.
+    return row?.claimed_by === workerId && row.status === 'running' ? row : null;
   }
   let ticking = false;
   let paused = false;
@@ -712,6 +731,8 @@ export function createAiEngine({ db, uploadDir, demo }) {
     const settings = await loadSettings(db);
     const max = Math.max(1, Number(settings.ai_concurrency || 3));
     if (inflight.size >= max) return;
+    // 관리자가 AI 제작을 멈추면 대기 중인 작업은 새로 시작하지 않아요(이미 공급사에 보낸 작업의 결과 확인은 계속).
+    const enabled = !!Number(settings.ai_enabled);
     const stamp = iso();
     // 공급사별 동시 작업 한도: 한도에 찬 공급사의 새 작업은 조회 단계에서 빼서, 다른 공급사 작업이 막히지 않게 합니다.
     const limits = new Map((await db.all('SELECT id,max_concurrency FROM ai_providers WHERE max_concurrency>0')).map((r) => [r.id, Number(r.max_concurrency)]));
@@ -725,7 +746,7 @@ export function createAiEngine({ db, uploadDir, demo }) {
       `SELECT * FROM ai_jobs WHERE claimed_by IS NULL AND status='running' AND vendor_ref<>'' AND (next_poll_at IS NULL OR next_poll_at<=?) ORDER BY next_poll_at LIMIT 50`,
       [stamp],
     );
-    const queued = await db.all(
+    const queued = !enabled ? [] : await db.all(
       `SELECT * FROM ai_jobs WHERE claimed_by IS NULL AND status='queued' AND (next_poll_at IS NULL OR next_poll_at<=?)` +
         (full.length ? ` AND (provider_id IS NULL OR provider_id NOT IN (${full.map(() => '?').join(',')}))` : '') +
         ' ORDER BY created_at LIMIT 50',
