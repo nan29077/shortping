@@ -1661,7 +1661,7 @@ const routeContext = {
 };
 studioRoutes(routeContext);
 adminRoutes(routeContext);
-accountRoutes({ ...routeContext, authLimiters, sessionToken, publicUser, origin, proxyStatus, production });
+accountRoutes({ ...routeContext, authLimiters, sessionToken, publicUser, origin, proxyStatus, production, dropOldAvatar });
 uploadRoutes(routeContext);
 lamaRoutes(routeContext);
 serialRoutes(routeContext);

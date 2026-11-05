@@ -129,6 +129,9 @@ const leaveBlocked = () => {
 };
 const scrollMemory = new Map<number, number>();
 let pendingScroll: number | null = null;
+// 뒤로 · 앞으로 이동 때 브라우저가 hashchange보다 먼저 스크롤을 옮기면 떠나는 화면 위치를 잘못 기억해요.
+// 스크롤 복원은 앱이 직접 합니다.
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 window.addEventListener('hashchange', () => {
   // 링크·뒤로 가기로 주소가 바뀌었는데 떠나지 않기로 했다면, 주소를 원래 화면으로 되돌립니다
   // (다른 hashchange 처리기는 되돌린 주소를 읽으므로 화면이 바뀌지 않아요).

@@ -35,7 +35,9 @@ window.addEventListener('vite:preloadError', (event) => {
     if (Date.now() - last < 10_000) return;
     sessionStorage.setItem('sp:chunk-reload', String(Date.now()));
   } catch {
-    /* 저장소를 못 쓰면 한 번만 시도하는 보호 없이 그대로 새로 고칩니다 */
+    // 저장소를 못 쓰는 환경(일부 비공개 모드)에서는 새로 고쳐도 시도 횟수를 기억할 수 없어
+    // 같은 오류가 계속되면 끝없이 새로 고칠 수 있어요. 이때는 오류 화면의 '다시 시도'에 맡깁니다.
+    return;
   }
   event.preventDefault();
   location.reload();

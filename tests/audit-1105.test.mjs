@@ -106,6 +106,10 @@ test('탈퇴 · 이용 제한 회원의 방송국은 다시 공개하거나 추�
   assert.equal((await request('/admin/channels/' + channelId, { method: 'PATCH', cookie: admin, body: { status: 'hidden', featured: true } })).status, 409);
   // 숨김 유지는 할 수 있어요.
   assert.equal((await request('/admin/channels/' + channelId, { method: 'PATCH', cookie: admin, body: { status: 'hidden', featured: false } })).status, 200);
+  // 이미 추천돼 있던 방송국을 그대로 저장하는 것(새로 켜지 않음)은 막지 않아요.
+  await testDb.run('UPDATE channels SET featured=1 WHERE id=?', [channelId]);
+  assert.equal((await request('/admin/channels/' + channelId, { method: 'PATCH', cookie: admin, body: { status: 'hidden', featured: true } })).status, 200);
+  await testDb.run('UPDATE channels SET featured=0 WHERE id=?', [channelId]);
   await testDb.run("UPDATE users SET status='active' WHERE id=?", [pd.id]);
   assert.equal((await request('/admin/channels/' + channelId, { method: 'PATCH', cookie: admin, body: { status: 'active', featured: false } })).status, 200);
 });

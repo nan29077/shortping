@@ -692,10 +692,12 @@ export function adminRoutes({ app, db, fail, now, roles, catalogSql }) {
         featured_order: z.number().int().min(0).max(99).default(0),
       })
       .parse(req.body);
-    const ch = await db.get('SELECT c.id, u.status AS owner_status FROM channels c LEFT JOIN users u ON u.id=c.owner_id WHERE c.id=?', [req.params.id]);
+    const ch = await db.get('SELECT c.id, c.status, c.featured, u.status AS owner_status FROM channels c LEFT JOIN users u ON u.id=c.owner_id WHERE c.id=?', [req.params.id]);
     if (!ch) fail(404, '방송국을 찾을 수 없습니다.');
-    // 작품 판매 설정과 같은 기준: 탈퇴 · 이용 제한 회원의 방송국은 다시 공개하거나 추천할 수 없어요.
-    if ((b.status === 'active' || b.featured) && ch.owner_status && ch.owner_status !== 'active')
+    // 작품 판매 설정과 같은 기준: 탈퇴 · 이용 제한 회원의 방송국은 새로 공개하거나 추천할 수 없어요.
+    // 이미 켜져 있던 값을 그대로 저장(예: 숨김 유지 · 추천 해제)하는 것은 막지 않습니다.
+    const turningOn = (b.status === 'active' && ch.status !== 'active') || (b.featured && !Number(ch.featured));
+    if (turningOn && ch.owner_status && ch.owner_status !== 'active')
       fail(409, '탈퇴 · 이용 제한된 회원의 방송국은 공개 · 추천할 수 없어요.');
     await db.run('UPDATE channels SET status=?,featured=?,featured_order=?,admin_hidden=? WHERE id=?', [
       b.status,

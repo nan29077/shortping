@@ -689,17 +689,20 @@ export function createAiEngine({ db, uploadDir, demo }) {
           .transaction(async () => {
             const fresh = await db.get('SELECT * FROM ai_jobs WHERE id=?' + forUpdate(), [job.id]);
             if (!fresh || !['running', 'queued'].includes(fresh.status)) return;
+            // 다른 처리기가 이어받은 작업은 건드리지 않아요(정상 실패 처리와 같은 기준).
+            if (fresh.claimed_by && fresh.claimed_by !== workerId) return;
             if (Number(fresh.hold_paid) + Number(fresh.hold_bonus) > 0)
               await releaseLama(db, { userId: fresh.user_id, jobId: fresh.id, holdPaid: Number(fresh.hold_paid), holdBonus: Number(fresh.hold_bonus), memo: '작업 실패 · 전액 반환' });
             await db.run("UPDATE ai_jobs SET hold_paid=0,hold_bonus=0 WHERE id=?", [fresh.id]);
           })
           .catch((e) => console.error('ai release on fail', e.message));
         await db
-          .run("UPDATE ai_jobs SET status='failed',claimed_by=NULL,error=?,error_detail=?,finished_at=? WHERE id=? AND status IN ('running','queued')", [
+          .run("UPDATE ai_jobs SET status='failed',claimed_by=NULL,error=?,error_detail=?,finished_at=? WHERE id=? AND status IN ('running','queued') AND (claimed_by=? OR claimed_by IS NULL)", [
             publicError(err),
             String(inner.message || err?.message || '처리 실패').slice(0, 500),
             iso(),
             job.id,
+            workerId,
           ])
           .catch(() => {});
       }

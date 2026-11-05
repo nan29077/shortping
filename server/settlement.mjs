@@ -314,6 +314,8 @@ export async function closeSubscriptionPeriod(db, period, settings, actorId, pre
   ]);
   return { period, pool, shares, ...plan.summary };
 }
+const boundTotal = async (db, payoutId) =>
+  Number((await db.get('SELECT COALESCE(SUM(net),0) AS n FROM settlement_entries WHERE payout_id=?', [payoutId]))?.n || 0);
 // loadProfile을 넘기면 잠금을 잡은 뒤 세무 정보를 다시 읽습니다. 출금 신청과 동시에 계좌 · 사업자 정보가
 // 바뀌어도 바뀌기 전 계좌로 신청되거나, 확인이 풀린 사업자 정보에 부가세가 붙지 않게 해요.
 export async function requestPayout(db, { pdId, profile, settings, loadProfile }) {
@@ -333,11 +335,11 @@ export async function requestPayout(db, { pdId, profile, settings, loadProfile }
       "SELECT id,net FROM settlement_entries WHERE pd_id=? AND status='available'",
       [pdId],
     );
-    const amount = rows.reduce((n, r) => n + Number(r.net), 0);
+    let amount = rows.reduce((n, r) => n + Number(r.net), 0);
     if (!rows.length || amount <= 0) throw error(400, '출금 가능한 정산 금액이 없습니다.');
     if (amount < settings.payout_min)
       throw error(400, `최소 출금 금액은 ${settings.payout_min.toLocaleString('ko-KR')}원입니다.`);
-    const tax = taxFor(amount, profile, settings);
+    let tax = taxFor(amount, profile, settings);
     const id = randomUUID();
     await db.run(
       'INSERT INTO payouts (id,pd_id,amount,vat,income_tax,local_tax,payable,business_type,bank_name,account_number,account_holder,status,requested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -359,11 +361,16 @@ export async function requestPayout(db, { pdId, profile, settings, loadProfile }
       ],
     );
     // 정산 건마다 ?를 붙이면 판매가 많은 PD는 DB 변수 한도(SQLite 32,766 · PostgreSQL 65,535)를 넘어
-    // 출금이 계속 실패해요. 잠금 안에서 같은 조건으로 한 번에 묶고, 아래에서 건수로 확인합니다.
+    // 출금이 계속 실패해요. 잠금 안에서 같은 조건으로 한 번에 묶습니다.
     await db.run("UPDATE settlement_entries SET status='requested', payout_id=? WHERE pd_id=? AND status='available'", [id, pdId]);
-    const locked = await db.all("SELECT id FROM settlement_entries WHERE payout_id=?", [id]);
-    if (locked.length !== rows.length)
-      throw error(409, '다른 출금 신청이 처리 중입니다. 잠시 후 다시 시도해 주세요.');
+    // 위 조회와 묶기 사이에 정산 확정(refreshEntries) · 구독 배분 마감이 새 건을 넣었을 수 있어요(PostgreSQL).
+    // 실제로 묶인 건 기준으로 금액과 세금을 다시 맞춥니다.
+    const bound = await boundTotal(db, id);
+    if (bound !== amount) {
+      amount = bound;
+      tax = taxFor(amount, profile, settings);
+      await db.run('UPDATE payouts SET amount=?,vat=?,income_tax=?,local_tax=?,payable=?,business_type=? WHERE id=?', [amount, tax.vat, tax.incomeTax, tax.localTax, tax.payable, tax.businessType, id]);
+    }
     return { id, amount, ...tax };
   });
 }
@@ -379,13 +386,13 @@ export async function convertToLama(db, { pdId, profile, settings, credit, loadP
       "SELECT id,net FROM settlement_entries WHERE pd_id=? AND status='available'",
       [pdId],
     );
-    const amount = rows.reduce((n, r) => n + Number(r.net), 0);
+    let amount = rows.reduce((n, r) => n + Number(r.net), 0);
     if (!rows.length || amount <= 0) throw error(400, '라마로 바꿀 수 있는 정산 금액이 없습니다.');
     if (amount < settings.lama_convert_min)
       throw error(400, `라마 전환은 ${settings.lama_convert_min.toLocaleString('ko-KR')}원부터 할 수 있어요.`);
-    const tax = taxFor(amount, profile, settings);
-    const lama = Math.ceil(tax.payable / 10);
-    const bonus = Math.floor((lama * Number(settings.lama_convert_bonus_rate || 0)) / 100);
+    let tax = taxFor(amount, profile, settings);
+    let lama = Math.ceil(tax.payable / 10);
+    let bonus = Math.floor((lama * Number(settings.lama_convert_bonus_rate || 0)) / 100);
     const id = randomUUID();
     const stamp = iso();
     await db.run(
@@ -393,9 +400,15 @@ export async function convertToLama(db, { pdId, profile, settings, credit, loadP
       [id, pdId, amount, tax.vat, tax.incomeTax, tax.localTax, tax.payable, tax.businessType, '', '', '', 'paid', '라마 전환', stamp, stamp, pdId, 'lama', lama + bonus],
     );
     await db.run("UPDATE settlement_entries SET status='paid', payout_id=? WHERE pd_id=? AND status='available'", [id, pdId]);
-    const locked = await db.all('SELECT id FROM settlement_entries WHERE payout_id=?', [id]);
-    if (locked.length !== rows.length)
-      throw error(409, '다른 출금 신청이 처리 중입니다. 잠시 후 다시 시도해 주세요.');
+    // 출금과 같은 이유로 실제로 묶인 건 기준으로 다시 맞춘 뒤 라마를 지급해요.
+    const bound = await boundTotal(db, id);
+    if (bound !== amount) {
+      amount = bound;
+      tax = taxFor(amount, profile, settings);
+      lama = Math.ceil(tax.payable / 10);
+      bonus = Math.floor((lama * Number(settings.lama_convert_bonus_rate || 0)) / 100);
+      await db.run('UPDATE payouts SET amount=?,vat=?,income_tax=?,local_tax=?,payable=?,business_type=?,lama=? WHERE id=?', [amount, tax.vat, tax.incomeTax, tax.localTax, tax.payable, tax.businessType, lama + bonus, id]);
+    }
     const wallet = await credit({ payoutId: id, paid: lama, bonus });
     await db.run(
       'INSERT INTO audit_logs (id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)',
