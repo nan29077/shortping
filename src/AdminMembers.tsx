@@ -84,9 +84,13 @@ export default function AdminMembers({
     void load();
   }, [load]);
   const detailId = useRef('');
+  // 회원 A를 누르고 바로 B를 누르면 늦게 온 A 응답이 B 화면을 덮지 않게, 마지막으로 연 회원만 반영해요.
+  const wanted = useRef('');
   const openDetail = async (id: string) => {
+    wanted.current = id;
     try {
       const next = await api<MemberDetail>('/admin/members/' + id);
+      if (wanted.current !== id) return;
       // 다른 회원을 열면 쓰던 운영 메모를 비워요(엉뚱한 회원에게 저장되지 않게).
       if (detailId.current !== id) setNote('');
       detailId.current = id;

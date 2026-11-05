@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Eye, Info, Mail, MessageSquare, Scale, Send, ShieldAlert } from 'lucide-react';
 import { api, moment, won } from './api';
 import { Empty } from './App';
@@ -373,11 +373,14 @@ export function SubscriptionRulesPanel({ notify }: { notify: Notify }) {
       setError((e as Error).message);
     }
   }, []);
+  const previewSeq = useRef(0);
   const loadPreview = useCallback(async (p: string) => {
+    const t = ++previewSeq.current;
     try {
-      setPreview(await api<Preview>('/admin/subscription/preview?period=' + p));
+      const r = await api<Preview>('/admin/subscription/preview?period=' + p);
+      if (t === previewSeq.current) setPreview(r);
     } catch (e) {
-      notify((e as Error).message);
+      if (t === previewSeq.current) notify((e as Error).message);
     }
   }, [notify]);
   useEffect(() => {

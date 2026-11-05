@@ -434,7 +434,15 @@ function InviteForm({ ws, team, busy, act }: { ws: WS; team: TeamData; busy: str
               >
                 <RefreshCw size={14} />
               </button>
-              <button type="button" className="icon-button" aria-label="링크 지우기" onClick={() => void act('l:' + i.id, () => api(`/studio/ai/projects/${pid}/invites/${i.id}`, 'DELETE'))}>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="링크 지우기"
+                onClick={async () => {
+                  if (!(await ws.ask({ title: '초대 링크를 지울까요?', text: '이 링크로는 더 이상 팀에 참여할 수 없어요. 되돌릴 수 없어요.', ok: '지우기', danger: true }))) return;
+                  void act('l:' + i.id, () => api(`/studio/ai/projects/${pid}/invites/${i.id}`, 'DELETE'));
+                }}
+              >
                 <Trash2 size={14} />
               </button>
             </li>
@@ -596,6 +604,7 @@ export function CommentsPanel({ ws, target, close }: { ws: WS; target: CommentTa
                   type="button"
                   className="text-link"
                   onClick={async () => {
+                    if (!(await ws.ask({ title: '의견을 지울까요?', text: '지운 의견과 답글은 되돌릴 수 없어요.', ok: '지우기', danger: true }))) return;
                     try {
                       await api(`/studio/ai/projects/${pid}/comments/${c.id}`, 'DELETE');
                       await load();

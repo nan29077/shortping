@@ -138,8 +138,15 @@ function Recorder({ line, maxSeconds, close, use }: { line: string; maxSeconds: 
       setError('이 기기·브라우저에서는 녹음을 쓸 수 없어요. 녹음한 파일을 ‘음성 파일’로 올려 주세요.');
       return;
     }
+    if (stream.current || rec.current?.state === 'recording') return; // 권한 창이 떠 있는 동안 두 번 누름
     try {
-      stream.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      // 권한을 묻는 동안 창을 닫았거나 이미 다른 녹음이 시작됐으면, 마이크가 켜진 채 남지 않게 바로 끕니다.
+      if (!alive.current || stream.current) {
+        s.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      stream.current = s;
     } catch {
       setError('마이크를 쓸 수 없어요. 브라우저·앱 설정에서 마이크 권한을 허용해 주세요.');
       return;

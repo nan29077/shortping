@@ -264,7 +264,14 @@ export default function EpisodeManager({
       } catch (e) {
         // 서버가 파일을 거절한 경우(형식·용량 등)는 다시 올려도 같아서 자동 재시도에서 뺍니다.
         // 동시 업로드 한도(upload_limit)는 파일 문제가 아니라 잠시 뒤 다시 시도하면 돼요.
-        const rejected = e instanceof ApiError && e.code !== 'network' && e.code !== 'unauthorized' && e.code !== 'upload_limit';
+        // 서버 일시 오류(5xx)나 상태 코드를 모르는 오류는 파일 문제가 아니므로 다시 시도할 수 있게 둡니다.
+        const rejected =
+          e instanceof ApiError &&
+          e.code !== 'network' &&
+          e.code !== 'unauthorized' &&
+          e.code !== 'upload_limit' &&
+          (e.status ?? 0) >= 400 &&
+          (e.status ?? 0) < 500;
         if (rejected) cancelUpload(handle);
         patch(item.key, {
           status: 'error',
@@ -318,15 +325,20 @@ export default function EpisodeManager({
     try {
       const r = await api<{ id: string; lama: number }>(path, 'POST', body);
       notify(`AI가 작업을 시작했어요. 최대 ${lama(r.lama)}가 예약돼요.`);
+      // 상태 확인 한 번이 네트워크 문제로 실패해도 작업은 서버에서 계속 돌고 라마도 쓰여요.
+      // 그래서 연속 5번 실패할 때까지는 기다렸다 다시 확인합니다.
+      let misses = 0;
       for (let i = 0; i < 600; i++) {
         await new Promise((x) => setTimeout(x, 1500));
         if (!alive.current) return;
-        const j = await api<{
-          status: string;
-          error: string;
-          output: { url?: string };
-          charged_lama: number;
-        }>('/studio/ai/tools/jobs/' + r.id);
+        let j: { status: string; error: string; output: { url?: string }; charged_lama: number };
+        try {
+          j = await api<typeof j>('/studio/ai/tools/jobs/' + r.id);
+          misses = 0;
+        } catch (e) {
+          if (++misses >= 5) throw e;
+          continue;
+        }
         if (!alive.current) return;
         if (j.status === 'succeeded') {
           await done(j.output);

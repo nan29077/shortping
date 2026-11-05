@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BadgeCheck,
   Banknote,
@@ -57,12 +57,17 @@ export function AdminSettlementPanel({
     [memo, setMemo] = useState(''),
     [filter, setFilter] = useState('requested');
   const [ask, confirmUi] = useConfirm();
+  // 달을 빠르게 바꾸면 늦게 온 예전 달 응답이 새 달 표를 덮지 않도록 마지막 요청만 반영합니다.
+  const latest = useRef(0);
   const load = useCallback(async (key: string) => {
+    const t = ++latest.current;
     try {
-      setData(await api<AdminSettlementData>('/admin/settlements' + (key ? '?month=' + key : '')));
+      const r = await api<AdminSettlementData>('/admin/settlements' + (key ? '?month=' + key : ''));
+      if (t !== latest.current) return;
+      setData(r);
       setError('');
     } catch (e) {
-      setError((e as Error).message);
+      if (t === latest.current) setError((e as Error).message);
     }
   }, []);
   useEffect(() => {

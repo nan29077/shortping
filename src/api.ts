@@ -525,7 +525,9 @@ export class ApiError extends Error {
   code?: string;
   need?: number;
   balance?: number;
-  constructor(message: string, extra: { code?: string; need?: number; balance?: number } = {}) {
+  // HTTP 상태 코드(서버 응답이 있을 때만). 일시 오류(5xx)와 입력·파일 거절(4xx)을 구분할 때 씁니다.
+  status?: number;
+  constructor(message: string, extra: { code?: string; need?: number; balance?: number; status?: number } = {}) {
     super(message);
     Object.assign(this, extra);
   }
@@ -568,6 +570,7 @@ export async function api<T = unknown>(url: string, method = 'GET', body?: unkno
       code: res.status === 401 ? data.code || 'unauthorized' : data.code,
       need: data.need,
       balance: data.balance,
+      status: res.status,
     });
   }
   return data;

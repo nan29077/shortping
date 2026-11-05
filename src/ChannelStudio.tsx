@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useConfirm } from './confirm';
 import {
   ArrowRight,
   Check,
@@ -110,6 +111,7 @@ export default function ChannelStudio({
     [busy, setBusy] = useState(false),
     [uploading, setUploading] = useState(''),
     [category, setCategory] = useState('');
+  const [ask, confirmUi] = useConfirm();
   // keepForm: 카테고리·진열처럼 폼과 무관한 작업 뒤에는 편집 중인 배너·문구를 서버 값으로 덮어쓰지 않습니다.
   const load = useCallback(async (keepForm = false) => {
     try {
@@ -203,6 +205,7 @@ export default function ChannelStudio({
   } as unknown as Channel;
   return (
     <>
+      {confirmUi}
       {data.channel && (
         <div className="stats-grid">
           <div className="stat-card">
@@ -383,7 +386,12 @@ export default function ChannelStudio({
               type="file"
               accept="image/jpeg,image/png,image/webp"
               disabled={!!uploading}
-              onChange={(e) => void upload('banner', e.target.files?.[0])}
+              onChange={(e) => {
+                // 실패 뒤 같은 파일을 다시 골라도 onChange가 오도록 값을 비웁니다.
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                void upload('banner', f);
+              }}
             />
           </label>
           <label className="upload-button compact">
@@ -393,7 +401,11 @@ export default function ChannelStudio({
               type="file"
               accept="image/jpeg,image/png,image/webp"
               disabled={!!uploading}
-              onChange={(e) => void upload('logo', e.target.files?.[0])}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                void upload('logo', f);
+              }}
             />
           </label>
           {(form.banner || form.logo) && (
@@ -513,12 +525,19 @@ export default function ChannelStudio({
                   <button
                     aria-label={c.name + ' 삭제'}
                     disabled={busy}
-                    onClick={() =>
-                      void act(
-                        () => api('/studio/channel/categories/' + c.id, 'DELETE'),
-                        '카테고리를 삭제했어요.',
+                    onClick={async () => {
+                      // 삭제하면 이 카테고리에 묶인 작품이 모두 미분류로 돌아가고 되돌릴 수 없어요.
+                      if (
+                        !(await ask({
+                          title: `‘${c.name}’ 카테고리를 삭제할까요?`,
+                          text: '이 카테고리에 묶인 작품은 미분류로 돌아가요. 진열 순서는 되돌릴 수 없어요.',
+                          ok: '삭제',
+                          danger: true,
+                        }))
                       )
-                    }
+                        return;
+                      void act(() => api('/studio/channel/categories/' + c.id, 'DELETE'), '카테고리를 삭제했어요.');
+                    }}
                   >
                     <Trash2 size={13} />
                   </button>

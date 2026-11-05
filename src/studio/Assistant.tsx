@@ -38,7 +38,8 @@ export default function Assistant({ ws, focus, close }: { ws: WS; focus: string;
     setSending(true);
     try {
       await api(`/studio/ai/projects/${ws.data.project.id}/assistant`, 'POST', { message: m, episodeId: ws.episode?.id, focus: focus || undefined, choices });
-      setText('');
+      // 보내는 동안 이어서 적은 내용은 지우지 않아요.
+      setText((cur) => (cur.trim() === m ? '' : cur));
       await ws.load();
     } catch (e) {
       ws.notify((e as Error).message);
