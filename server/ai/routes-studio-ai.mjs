@@ -2189,6 +2189,7 @@ export function studioAiRoutes({ app, db, fail, now, roles, engine, renderer, up
     if (scriptJob) fail(409, '이 회차의 대본을 AI가 다시 쓰는 중이에요. 대본이 바뀐 뒤 컷을 만들어 주세요.');
   }
   async function runSpecsTx(req, p, b, specs, exclude, price) {
+    const owner = !req.teamMember || req.teamRole === 'owner';
     const createdFlags = [];
     const jobs = await db.transaction(async () => {
       if (db.engine === 'postgresql') await db.get('SELECT id FROM studio_projects WHERE id=? FOR UPDATE', [p.id]);
